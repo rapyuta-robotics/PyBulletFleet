@@ -4030,7 +4030,8 @@ class MultiRobotSimulationCore:
             duration: Absolute simulation-time cutoff in seconds (not wall time).
                      If None, uses self._params.duration. If duration <= 0, runs indefinitely.
             resume: Continue an explicitly restored completed-step state without
-                    resetting its clock. Ordinary runs initialize as before.
+                    resetting its clock. A core returned by the supported
+                    recording loader resumes on its first plain call too.
 
         Example::
 
@@ -4059,6 +4060,11 @@ class MultiRobotSimulationCore:
                 height=record_height,
                 time_base=record_time_base,
             )
+
+        # A completed-step restore has already initialized this core. Treat its
+        # first plain run as continuation; a fresh core still initializes as
+        # before. Explicit resume=True remains useful for lower-level callers.
+        resume = resume or self._resume_ready
 
         # Initialize simulation state (counters, visualizer, rendering)
         # Note: initialize_simulation() already starts tracemalloc if needed

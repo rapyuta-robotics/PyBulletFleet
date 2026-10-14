@@ -3,10 +3,11 @@
 Practical guides for common tasks.
 
 ```{warning}
-Snapshot/replay, state recording, checkpoint/restore and result playback are
-under development. The linked replay and checkpoint guides describe restricted
-validation profiles, not general save/load support for ordinary simulations.
-Do not rely on these APIs or artifacts for production runs yet.
+State recording, checkpoint/restore and result playback are under development.
+The [supported kinematic recording guide](supported-state-recording) describes
+the current validation profile; it does not provide general save/load for
+ordinary simulations. Do not rely on its artifacts for production runs yet.
+Video capture in [Capturing Demos](capturing-demos) is a separate feature.
 ```
 
 **📘 For Simulation Users** — building and configuring your own simulation:
@@ -17,6 +18,7 @@ Do not rely on these APIs or artifacts for production runs yet.
 | [Controller Configuration](controller-config) | `controller` argument forms, `motion_mode` vs `controller.type`, batch controllers (auto-registration, coexistence, direction, action system), custom controllers |
 | [Custom Profiling](custom-profiling) | Adding your own profiling metrics via Agent/SimulationCore subclasses |
 | [Capturing Demos](capturing-demos) | Recording demo videos, `demos.yaml` format, centralized defaults (`_defaults.py`) |
+| [Supported Kinematic Recording](supported-state-recording) | Development profile: record, restore and play back supported kinematic state |
 
 **🔧 For PyBulletFleet Developers** — developing and debugging the framework:
 
@@ -37,6 +39,7 @@ collision-config
 controller-config
 custom-profiling
 capturing-demos
+supported-state-recording
 fleet-corridor-evaluation
 fleet-corridor-traffic-failure
 ```
@@ -48,7 +51,4 @@ fleet-corridor-traffic-failure
 time-profiling
 memory-profiling
 logging
-replay
-manipulation-state-scenario
-omni-checkpoint-proof
 ```

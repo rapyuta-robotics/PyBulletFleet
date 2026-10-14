@@ -9,6 +9,13 @@ import pybullet as p
 import pybullet_fleet.examples.validation.manipulation_state_scenario as scenario
 
 
+def test_unknown_restored_scenario_stage_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Invalid manipulation scenario state"):
+        scenario._restore_scenario_state(  # type: ignore[arg-type]
+            None, {"stage": "unknown", "observations": {}, "lifecycle": []}
+        )
+
+
 def test_manipulation_state_and_entity_lifecycle():
     result = scenario.run_scenario()
     samples = result["observations"]
@@ -68,33 +75,15 @@ def test_gui_options_reach_scenario_without_requiring_a_desktop(monkeypatch, cap
         return {"observations": {"CP1": {"step": 3, "sim_time": 0.3, "box_present": True, "box_attached": False}}}
 
     monkeypatch.setattr(scenario, "run_scenario", fake_run)
-    monkeypatch.setattr(sys, "argv", ["scenario", "--gui", "--rtf", "2", "--hold-gui"])
+    monkeypatch.setattr(sys, "argv", ["scenario", "--gui", "--rtf", "2"])
     scenario.main()
-    assert called == [{"gui": True, "view_rtf": 2.0, "hold_gui": True}]
+    assert called == [{"gui": True, "view_rtf": 2.0}]
     assert "CP1: step=3" in capsys.readouterr().out
 
 
-def test_gui_hold_runs_before_core_disconnect_without_a_desktop(monkeypatch):
-    real_core = scenario.MultiRobotSimulationCore
-    held_clients = []
-
-    def direct_core(params):
-        params.gui = False
-        params.target_rtf = 0
-        return real_core(params)
-
-    monkeypatch.setattr(scenario, "MultiRobotSimulationCore", direct_core)
-    monkeypatch.setattr(scenario, "_hold_final_gui", lambda sim: held_clients.append(sim.client))
-    result = scenario.run_scenario(gui=True, view_rtf=2, hold_gui=True)
-    assert result["final_stage"] == "done"
-    assert len(held_clients) == 1
-
-
-def test_invalid_gui_rate_and_hold_mode():
+def test_invalid_gui_rate():
     with pytest.raises(ValueError, match="view_rtf"):
         scenario.run_scenario(gui=True, view_rtf=0)
-    with pytest.raises(ValueError, match="hold_gui"):
-        scenario.run_scenario(hold_gui=True)
 
 
 def test_setup_failure_disconnects_client(monkeypatch):

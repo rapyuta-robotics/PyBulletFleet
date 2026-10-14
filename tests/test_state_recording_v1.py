@@ -16,7 +16,7 @@ from pybullet_fleet.replay.state_recording import (
     load_recording_manifest,
     load_supported_checkpoint,
 )
-from pybullet_fleet.examples.validation.manipulation_recording_profile import KinematicManipulationProfile
+from pybullet_fleet.replay.kinematic_profile import KinematicProfile
 
 
 @pytest.mark.parametrize(
@@ -33,8 +33,8 @@ def test_data_record_rejects_invalid_declaration_at_creation(name, version, capt
         DataRecord(name, version, capture, required_for_restore=required)
 
 
-def _profile(directory: Path) -> KinematicManipulationProfile:
-    return KinematicManipulationProfile.from_manifest(load_recording_manifest(directory))
+def _profile(directory: Path) -> KinematicProfile:
+    return KinematicProfile.from_manifest(load_recording_manifest(directory))
 
 
 def _fresh_process(script: str, *args: str) -> dict:
@@ -95,12 +95,12 @@ def test_fresh_process_resume_matches_uninterrupted_run(recorded_run: tuple[Path
             "import json,sys,pybullet as p; "
             "from pybullet_fleet.replay.state_recording import "
             "load_recording_manifest,load_supported_checkpoint,restore_supported_simulation; "
-            "from pybullet_fleet.examples.validation.manipulation_recording_profile import KinematicManipulationProfile; "
-            "profile=KinematicManipulationProfile.from_manifest(load_recording_manifest(sys.argv[1])); "
+            "from pybullet_fleet.replay.kinematic_profile import KinematicProfile; "
+            "profile=KinematicProfile.from_manifest(load_recording_manifest(sys.argv[1])); "
             "m,c=load_supported_checkpoint(sys.argv[1],at_or_before=float(sys.argv[2]),profile=profile); "
             "s=restore_supported_simulation(m,c,profile=profile); "
-            "r=next(agent for agent in s.agents if agent.name==m['construction']['robot_name']); "
-            "b=next((obj for obj in s.sim_objects if obj.name==m['construction']['box_name']),None); "
+            "r=s.get_unique_agent_by_name('mobile-arm'); "
+            "b=next((obj for obj in s.sim_objects if obj.name=='box-001'),None); "
             "print('RESULT:'+json.dumps({'step':s.get_completed_step_boundary()[0],"
             "'time':s.get_completed_step_boundary()[1],"
             "'pose':list(r.get_pose().position),"
@@ -164,14 +164,14 @@ def test_checkpoint_selection_and_rejection(recorded_run: tuple[Path, dict]) -> 
     original = json.loads(manifest_path.read_text())
     manifest_path.write_text(json.dumps({**original, "complete": False}))
     with pytest.raises(ValueError, match="incomplete"):
-        load_supported_checkpoint(directory, at_or_before=1.9, profile=KinematicManipulationProfile.from_manifest(original))
+        load_supported_checkpoint(directory, at_or_before=1.9, profile=KinematicProfile.from_manifest(original))
     manifest_path.write_text(json.dumps(original))
 
     changed_asset = json.loads(manifest_path.read_text())
-    changed_asset["construction"]["robot_asset_sha256"] = "0" * 64
+    changed_asset["construction"]["agents"]["mobile-arm"]["asset_sha256"] = "0" * 64
     manifest_path.write_text(json.dumps(changed_asset))
-    with pytest.raises(ValueError, match="missing or changed"):
-        load_supported_checkpoint(directory, at_or_before=1.9, profile=KinematicManipulationProfile.from_manifest(original))
+    with pytest.raises(ValueError, match="asset changed"):
+        load_supported_checkpoint(directory, at_or_before=1.9, profile=KinematicProfile.from_manifest(original))
     manifest_path.write_text(json.dumps(original))
 
     checkpoint_path = directory / "checkpoints" / "000000025.json"
@@ -202,7 +202,7 @@ def test_required_custom_data_and_state_type_are_checked_before_restore(recorded
 
     for change, message in (
         (lambda state: state["records"].pop("scenario"), "data records"),
-        (lambda state: state["agents"]["mobile-arm"].update({"version": 2}), "agent state type or version"),
+        (lambda state: state["agents"]["mobile-arm"].update({"version": 3}), "Agent state type"),
     ):
         changed = json.loads(json.dumps(original))
         change(changed)
@@ -213,24 +213,38 @@ def test_required_custom_data_and_state_type_are_checked_before_restore(recorded
             load_supported_checkpoint(directory, at_or_before=2.5, profile=_profile(directory))
 
 
+@pytest.mark.parametrize("change", ["speed", "trajectory"])
+def test_invalid_joint_execution_is_rejected_before_restore(recorded_run: tuple[Path, dict], change: str) -> None:
+    directory, _ = recorded_run
+    manifest_path = directory / "manifest.json"
+    checkpoint_path = directory / "checkpoints" / "000000025.json"
+    manifest = json.loads(manifest_path.read_text())
+    checkpoint = json.loads(checkpoint_path.read_text())
+    joint = checkpoint["agents"]["mobile-arm"]["state"]["joints"][0]
+    if change == "speed":
+        joint["speed"] = "invalid"
+    else:
+        joint["trajectory"] = {"p0": 0.0}
+    checkpoint_path.write_text(json.dumps(checkpoint))
+    manifest["checkpoint_sha256"]["25"] = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="joint"):
+        load_supported_checkpoint(directory, at_or_before=2.5, profile=_profile(directory))
+
+
 def test_undeclared_event_handler_is_not_silently_checkpointed() -> None:
     import pybullet as p
 
     from pybullet_fleet.core_simulation import MultiRobotSimulationCore, SimulationParams
     from pybullet_fleet.events import SimEvents
-    from pybullet_fleet.geometry import Pose
 
-    sim = MultiRobotSimulationCore(SimulationParams(gui=False, monitor=False, enable_monitor_gui=False))
+    sim = MultiRobotSimulationCore(
+        SimulationParams(gui=False, monitor=False, enable_monitor_gui=False, collision_check_frequency=0)
+    )
     try:
         sim.events.on(SimEvents.PRE_STEP, lambda **_: None)
-        profile = KinematicManipulationProfile(
-            robot_name="robot",
-            joint_name="joint",
-            box_name="box",
-            robot_asset="missing.urdf",
-            controller={"type": "omni"},
-            initial_pose=Pose.from_xyz(0, 0, 0),
-        )
+        profile = KinematicProfile()
         with pytest.raises(ValueError, match="Undeclared event handler"):
             profile.capture(sim)
     finally:
@@ -375,7 +389,7 @@ def test_failed_capture_does_not_stop_simulation_or_publish_complete_artifact(tm
 
 
 def test_gui_playback_uses_first_available_checkpoint(recorded_run, monkeypatch: pytest.MonkeyPatch) -> None:
-    import pybullet_fleet.examples.validation.manipulation_recording_profile as module
+    import pybullet_fleet.replay.kinematic_profile as module
 
     directory, _ = recorded_run
     manifest_path = directory / "manifest.json"
@@ -391,6 +405,32 @@ def test_gui_playback_uses_first_available_checkpoint(recorded_run, monkeypatch:
     monkeypatch.setattr(module, "restore_supported_simulation", inspect_first_checkpoint)
     with pytest.raises(RuntimeError, match="selected second checkpoint"):
         playback.play_gui(rtf=1.0)
+
+
+def test_gui_playback_follows_box_attachment_and_removal_without_steps(
+    recorded_run: tuple[Path, dict], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import pybullet_fleet.replay.kinematic_profile as module
+    from pybullet_fleet.core_simulation import MultiRobotSimulationCore
+
+    directory, _ = recorded_run
+    restore = module.restore_supported_simulation
+    simulations = []
+
+    def headless_restore(manifest, state, **kwargs):
+        sim = restore(manifest, state, **{**kwargs, "gui": False})
+        simulations.append(sim)
+        return sim
+
+    def no_steps(*_args, **_kwargs):
+        raise AssertionError("Playback must not execute a simulation step")
+
+    monkeypatch.setattr(module, "restore_supported_simulation", headless_restore)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(MultiRobotSimulationCore, "step_once", no_steps)
+    playback = ResultPlayback(directory, profile=_profile(directory))
+    playback.play_gui(rtf=100.0)
+    assert simulations and simulations[0].find_objects_by_name("box-001") == []
 
 
 def test_spawn_record_failure_preserves_spawn_and_marks_artifact_incomplete(tmp_path: Path) -> None:

@@ -14,6 +14,10 @@ loads the checkpoint in a new process, and resumes the normal
 recorded-result playback or a checkpoint for arbitrary robots, Actions,
 attachments, plugins, physics or callbacks.
 
+This is a historical proof for a fixed scenario. The current development
+profile and its one-call loader are described in the
+[supported kinematic recording guide](../../how-to/supported-state-recording.md).
+
 From the repository root, run the three commands in order:
 
 ```bash

@@ -56,6 +56,26 @@ velocity limits without requiring `stepSimulation()`.
 > because motor commands have no effect without `stepSimulation()`. An info-level
 > message is logged once (per process) when this fallback activates.
 
+Kinematic joints have two motion patterns:
+
+| Configuration | Movement toward a target |
+|---------------|--------------------------|
+| Default, or `max_velocity` only | Constant speed. The joint reaches the URDF velocity limit (or the configured limit) immediately and moves up to that limit each step. |
+| `max_accel` configured with `set_joint_motion_profile()` | A two-point interpolation (TPI) trajectory accelerates, optionally cruises, then decelerates to the target. `max_decel` can set a different braking rate; otherwise it follows `max_accel`. |
+
+For example, `arm_agent.set_joint_motion_profile("base_to_shoulder",
+max_velocity=1.0, max_accel=2.0)` enables the TPI pattern for that joint.
+Setting only `max_velocity` keeps the constant-speed pattern. These are
+kinematic joint settings, separate from the base-navigation controller.
+
+In the TPI pattern, changing the target while the joint moves away from it,
+or placing the target inside its stopping distance, can leave no usable
+trajectory yet. The joint then reduces its speed without a trajectory and
+tries to plan again on the next step. Its internal `braking` flag marks this
+temporary state, including the step when speed reaches zero but the target
+has not been reached. This is different from the normal deceleration phase
+of a valid TPI trajectory.
+
 ### Performance
 
 Kinematic mode is **significantly faster** than physics mode for joint control because

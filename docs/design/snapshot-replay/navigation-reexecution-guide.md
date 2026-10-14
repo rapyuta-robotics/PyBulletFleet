@@ -12,6 +12,10 @@ the saved inputs at their original steps and compares computed results. Explicit
 `pbf_overrides` or a changed code environment allow a variant run from that same
 initial state; they do not resume an intermediate state.
 
+This is the earlier, separate initial-state re-execution profile. For the
+current development checkpoint/restore profile, see the
+[supported kinematic recording guide](../../how-to/supported-state-recording.md).
+
 This is an opt-in PBF-owned v1 profile. It is not complete simulation-state
 restoration, result playback, or an execution checkpoint. It has no ROS or USO
 runtime dependency and makes no USO compatibility or canonical-schema claim.

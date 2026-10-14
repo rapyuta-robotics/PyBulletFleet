@@ -24,12 +24,11 @@ from pybullet_fleet.core_simulation import MultiRobotSimulationCore, SimulationP
 from pybullet_fleet.events import SimEvents
 from pybullet_fleet.geometry import Pose
 
-
 # Fixed inputs and assertions for this one verification scenario. These are
 # not limits of a future checkpoint API: an ordinary recorder must read the
 # effective runtime configuration and received commands from PBF's boundary.
 PROFILE = "pbf.single_omni_straight_checkpoint"
-VERSION = 1
+VERSION = 2
 DT = 0.1
 CHECKPOINT_STEP = 3
 END_TIME = 1.4
@@ -136,7 +135,7 @@ def _capture(sim: MultiRobotSimulationCore, robot: Agent) -> dict:
     # general capture operation must not require this step or moving=True.
     if step != CHECKPOINT_STEP or not robot.is_moving:
         raise ValueError("Capture must occur at the supported in-motion completed step")
-    controller = _controller(robot).capture_straight_navigation()
+    controller = _controller(robot).capture_navigation_state()
     if not 0 < elapsed_time < END_TIME:
         raise ValueError("Checkpoint time is outside the supported run")
     return {
@@ -206,15 +205,34 @@ def validate_checkpoint(checkpoint: object) -> dict:
         raise ValueError("Checkpoint is outside the straight, fixed-orientation profile")
     controller = _keys(
         state["controller"],
-        {"goal_position", "goal_orientation", "origin", "t0", "vmax", "accel"},
+        {
+            "path",
+            "waypoint_index",
+            "goal",
+            "align_final_orientation",
+            "final_target_orientation",
+            "final_alignment_in_progress",
+            "phase",
+            "forward",
+            "rotation",
+        },
         "controller",
     )
-    goal = _vector(controller["goal_position"], 3, "goal_position")
-    goal_orientation = _vector(controller["goal_orientation"], 4, "goal_orientation")
-    origin = _vector(controller["origin"], 3, "origin")
-    t0 = _number(controller["t0"], "t0")
-    vmax = _number(controller["vmax"], "vmax", positive=True)
-    accel = _number(controller["accel"], "accel", positive=True)
+    goal_pose = _keys(controller["goal"], {"position", "orientation"}, "goal")
+    goal = _vector(goal_pose["position"], 3, "goal_position")
+    goal_orientation = _vector(goal_pose["orientation"], 4, "goal_orientation")
+    if controller["path"] != [goal_pose] or controller["waypoint_index"] != 0:
+        raise ValueError("Checkpoint path differs from the supported straight profile")
+    forward = _keys(
+        controller["forward"],
+        {"origin", "t0", "vmax", "accel", "decel", "orientation_after_rotation"},
+        "forward trajectory",
+    )
+    origin = _vector(forward["origin"], 3, "origin")
+    t0 = _number(forward["t0"], "t0")
+    vmax = _number(forward["vmax"], "vmax", positive=True)
+    accel = _number(forward["accel"], "accel", positive=True)
+    decel = _number(forward["decel"], "decel", positive=True)
     if (
         goal != list(GOAL.position)
         or goal_orientation != list(GOAL.orientation)
@@ -222,12 +240,19 @@ def validate_checkpoint(checkpoint: object) -> dict:
         or not math.isclose(t0, 0.0, abs_tol=1e-10)
         or not math.isclose(vmax, CONTROLLER["max_linear_vel"], abs_tol=1e-10)
         or not math.isclose(accel, CONTROLLER["max_linear_accel"], abs_tol=1e-10)
+        or not math.isclose(decel, accel, abs_tol=1e-10)
+        or controller["phase"] != "forward"
+        or controller["rotation"] is not None
+        or controller["align_final_orientation"] is not False
+        or controller["final_target_orientation"] is not None
+        or controller["final_alignment_in_progress"] is not False
+        or forward["orientation_after_rotation"] is not None
     ):
         raise ValueError("Checkpoint trajectory differs from the supported profile")
     # The last step evaluated its TPI at (k-1)*dt, not at the next-step time.
     from pybullet_fleet._tpi import build_tpi
 
-    tpi = build_tpi(0, math.dist(origin, goal), vmax, accel, t0)
+    tpi = build_tpi(0, math.dist(origin, goal), vmax, accel, t0, decel=decel)
     traveled, expected_speed, _ = tpi.get_point((CHECKPOINT_STEP - 1) * DT)
     direction = [(g - o) / math.dist(origin, goal) for o, g in zip(origin, goal)]
     expected_position = [o + d * traveled for o, d in zip(origin, direction)]
@@ -280,7 +305,7 @@ def restore_checkpoint(sim: MultiRobotSimulationCore, robot: Agent, checkpoint: 
     state = record["state"]
     pose = Pose(position=list(state["position"]), orientation=list(state["orientation"]))
     robot.restore_motion_state(pose, state["velocity"], state["angular_velocity"], moving=True)
-    controller.restore_straight_navigation(state["controller"], pose.orientation)
+    controller.restore_navigation_state(state["controller"], pose.orientation)
     sim.restore_completed_step_boundary(state["step"], state["elapsed_time"])
 
 

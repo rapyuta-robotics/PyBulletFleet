@@ -17,6 +17,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Protocol
 
+import pybullet as p
+
 from pybullet_fleet.core_simulation import MultiRobotSimulationCore
 from pybullet_fleet.geometry import Pose
 from pybullet_fleet.sim_object import SimObject, SimObjectSpawnParams
@@ -133,6 +135,32 @@ class RecordingProfile(Protocol):
     def capture(self, sim: MultiRobotSimulationCore) -> dict: ...
     def validate_checkpoint(self, manifest: dict, state: dict) -> None: ...
     def restore(self, manifest: dict, state: dict, *, gui: bool, target_rtf: float) -> MultiRobotSimulationCore: ...
+
+
+# Only code installed and explicitly registered in this process may interpret
+# artifact IDs. Never import a module path supplied by an artifact.
+_PROFILE_FACTORIES: dict[tuple[str, int], Callable[[dict], RecordingProfile]] = {}
+_DATA_RESTORERS: dict[tuple[str, int], Callable[[MultiRobotSimulationCore, Any], None]] = {}
+
+
+def register_recording_profile(profile_id: str, version: int, factory: Callable[[dict], RecordingProfile]) -> None:
+    """Register trusted local code for a versioned recording profile."""
+    if not profile_id or type(version) is not int or version < 1 or not callable(factory):
+        raise ValueError("Invalid recording profile registration")
+    key = (profile_id, version)
+    if key in _PROFILE_FACTORIES and _PROFILE_FACTORIES[key] is not factory:
+        raise ValueError(f"Recording profile already registered: {key}")
+    _PROFILE_FACTORIES[key] = factory
+
+
+def register_data_restorer(name: str, version: int, restore: Callable[[MultiRobotSimulationCore, Any], None]) -> None:
+    """Register installed application code for a required DataRecord."""
+    if not name or type(version) is not int or version < 1 or not callable(restore):
+        raise ValueError("Invalid data restorer registration")
+    key = (name, version)
+    if key in _DATA_RESTORERS and _DATA_RESTORERS[key] is not restore:
+        raise ValueError(f"Data restorer already registered: {key}")
+    _DATA_RESTORERS[key] = restore
 
 
 def _validate_envelope(manifest: dict, state: dict, profile: RecordingProfile) -> None:
@@ -466,6 +494,43 @@ def restore_supported_simulation(
     return profile.restore(manifest, state, gui=gui, target_rtf=target_rtf)
 
 
+def load_supported_simulation(
+    directory: str | Path, *, at_or_before: float, gui: bool = False, target_rtf: float = 0.0
+) -> MultiRobotSimulationCore:
+    """Construct a declared supported simulation from a complete artifact.
+
+    The first ordinary ``run_simulation()`` on the returned core continues
+    from the restored completed-step boundary. Required application data is
+    handed to explicitly registered local restorers before this returns.
+    """
+    manifest = load_recording_manifest(directory)
+    # Importing this PBF module registers only PBF-owned built-in profiles.
+    from pybullet_fleet.replay import kinematic_profile  # noqa: F401
+
+    key = (manifest.get("profile"), manifest.get("version"))
+    factory = _PROFILE_FACTORIES.get(key)
+    if factory is None:
+        raise ValueError(f"No trusted recording profile registered for {key}")
+    profile = factory(manifest)
+    manifest, state = load_supported_checkpoint(directory, at_or_before=at_or_before, profile=profile)
+    restorers = []
+    for name, declaration in manifest["records"].items():
+        if declaration["required_for_restore"]:
+            restorer = _DATA_RESTORERS.get((name, declaration["version"]))
+            if restorer is None:
+                raise ValueError(f"No trusted data restorer registered for {name!r}")
+            restorers.append((name, restorer))
+    sim = restore_supported_simulation(manifest, state, profile=profile, gui=gui, target_rtf=target_rtf)
+    try:
+        for name, restorer in restorers:
+            restorer(sim, state["records"][name]["value"])
+        return sim
+    except BaseException:
+        if p.isConnected(sim.client):
+            p.disconnect(sim.client)
+        raise
+
+
 class ResultPlayback:
     """Read recorded results without executing PBF simulation steps."""
 
@@ -513,7 +578,7 @@ class ResultPlayback:
     def __exit__(self, *_: object) -> None:
         return None
 
-    def play_gui(self, *, rtf: float = 1.0, hold: bool = False) -> None:
+    def play_gui(self, *, rtf: float = 1.0, hold: bool = False, camera_config: dict | None = None) -> None:
         """Ask the declared profile to render the recorded frames."""
         if self.profile is None:
             raise ValueError("GUI playback requires the recording profile")
@@ -522,4 +587,7 @@ class ResultPlayback:
         render = getattr(self.profile, "play_gui", None)
         if render is None:
             raise NotImplementedError("This recording profile has no GUI renderer")
-        render(self, rtf=rtf, hold=hold)
+        if camera_config is None:
+            render(self, rtf=rtf, hold=hold)
+        else:
+            render(self, rtf=rtf, hold=hold, camera_config=camera_config)

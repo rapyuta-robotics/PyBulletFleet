@@ -85,8 +85,30 @@ evaluation as useful in its own right, but do not count it as checkpoint
 progress. Assess whether #50's re-execution code serves a real user operation
 before extending or removing it.
 
-**Status:** This PR proposes promoting the general rules about feature goals,
-split decisions, approval reuse, documentation and change-based verification into
-[`docs/AI_DEVELOPMENT_WORKFLOW.md`](docs/AI_DEVELOPMENT_WORKFLOW.md) and
-[`AGENTS.md`](AGENTS.md). This entry retains the historical evidence and
-replay-specific follow-up; assess the revised workflow during the next V1.
+**Status:** The general workflow and verification changes were merged in #57.
+This entry retains the historical evidence and replay-specific follow-up;
+assess the revised workflow during the next V1 work.
+
+## Validate the user-facing restore operation as one capability
+
+**Occurrence:** PR #59 delivered a versioned recorder and a manipulation
+validation profile, but review still required the application to resolve a
+profile, read a manifest, choose a checkpoint, restore the core and arrange
+continuation. It also exposed recording failures that could interrupt normal
+simulation until the runtime failure path was corrected.
+
+**Observation:** Extensible artifact internals and a passing validation
+scenario do not by themselves make recording and restart usable from an
+ordinary PBF example. The next acceptance test should begin with the user
+operation: enable recording in a normal run, then construct and restore from
+an artifact in one public call and continue with ordinary `run_simulation()`.
+Prove the support boundary on a second, differently composed simulation and
+reject unsupported restore state. Keep recording failures from stopping a
+healthy simulation while reporting an incomplete artifact.
+
+**Scope implication:** Measure duplicate frame/checkpoint storage, step cost
+and load time, but decide on a format change separately. This is one
+observation from the same snapshot/replay theme, not evidence for another
+workflow rule or a reason to change `AGENTS.md` or CI now.
+
+**Status:** Watch during the next user-facing restore slice.

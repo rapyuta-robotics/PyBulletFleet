@@ -37,6 +37,7 @@ Registry
 import inspect
 import math
 from abc import ABC, abstractmethod
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, TypeVar
 
 import numpy as np
@@ -51,12 +52,13 @@ from pybullet_fleet.geometry import (
     rotate_vector,
 )
 from pybullet_fleet.logging_utils import get_lazy_logger
-from pybullet_fleet.plugin_utils import PluginRegistry, from_config_introspect
+from pybullet_fleet.plugin_utils import PluginRegistry
 from pybullet_fleet.types import ControllerMode, MovementDirection, PosePhase
 
 from two_point_interpolation import TwoPointInterpolation
 
 from pybullet_fleet._tpi import build_tpi, extract_phase_params
+from pybullet_fleet._tpi_state import capture_tpi_state, restore_tpi_state
 from pybullet_fleet._motion_planning import align_x_axis_quat
 from pybullet_fleet.controller_params import ControllerParams
 
@@ -153,6 +155,23 @@ class Controller(ABC):
         from pybullet_fleet.controller_params import ControllerParams
 
         self.params: ControllerParams = params if params is not None else ControllerParams()
+
+    def _construction_config(self) -> Optional[dict]:
+        """Registered type and shared settings, separate from execution state.
+
+        Subclass-specific constructor arguments are outside this descriptor;
+        profiles must explicitly support and validate those controllers.
+        """
+        from pybullet_fleet.controller_params import ControllerParams
+
+        kind = type(self).__dict__.get("_registry_name")
+        if kind is None or not isinstance(self.params, ControllerParams):
+            return None
+        config = {"type": kind, **asdict(self.params)}
+        direction = config.get("default_direction")
+        if isinstance(direction, MovementDirection):
+            config["default_direction"] = direction.value
+        return config
 
     @classmethod
     def from_config(cls: Type[_ControllerT], config: dict) -> "_ControllerT":
@@ -713,98 +732,10 @@ class KinematicController(Controller):
         self._final_target_orientation = None
         self._is_final_orientation_aligning = False
 
-
-# ---------------------------------------------------------------------------
-# OmniController (6-DoF velocity + omnidirectional TPI pose)
-# ---------------------------------------------------------------------------
-
-
-class OmniController(KinematicController):
-    """Unified omnidirectional controller: velocity commands + TPI pose navigation.
-
-    **Velocity mode (VELOCITY):**
-        6-DoF body-frame velocity (vx, vy, vz, wx, wy, wz) → quaternion-based
-        world-frame integration. Linear and angular magnitudes are clamped.
-
-    **Pose mode (POSE):**
-        Per-axis TPI with distance-ratio velocity scaling for straight-line
-        motion from start to goal.
-    """
-
-    _registry_name = "omni"
-
-    def __init__(self, params: Optional[ControllerParams] = None) -> None:
-        super().__init__(params)
-
-    def capture_straight_navigation(self) -> dict:
-        """Capture the supported one-waypoint forward trajectory, not generic controller state."""
-        tpi = self._tpi_forward
-        if (
-            self._mode is not ControllerMode.POSE
-            or self._pose_phase is not PosePhase.FORWARD
-            or len(self._path) != 1
-            or self._current_waypoint_index != 0
-            or self._goal_pose is None
-            or self._align_final_orientation
-            or self._is_final_orientation_aligning
-            or self._forward_start_pos is None
-            or tpi is None
-            # The captured record carries a single "accel", so an asymmetric
-            # profile could not be rebuilt from it. Refuse rather than restore
-            # a trajectory that silently brakes at the wrong rate.
-            or float(tpi.amax_decel) != float(tpi.amax_accel)
-        ):
-            raise ValueError("Unsupported omni navigation state for the straight checkpoint profile")
-        return {
-            "goal_position": list(self._goal_pose.position),
-            "goal_orientation": list(self._goal_pose.orientation),
-            "origin": self._forward_start_pos.tolist(),
-            "t0": float(tpi.t0),
-            "vmax": float(tpi.vmax),
-            "accel": float(tpi.amax_accel),
-        }
-
-    def restore_straight_navigation(self, state: dict, orientation: list[float]) -> None:
-        """Rebuild the one-waypoint TPI from validated scalar trajectory data."""
-        if self._mode is not ControllerMode.IDLE:
-            raise ValueError("Straight navigation restore requires an idle controller")
-        goal = Pose(position=list(state["goal_position"]), orientation=list(state["goal_orientation"]))
-        origin = np.asarray(state["origin"], dtype=float)
-        displacement = np.asarray(goal.position, dtype=float) - origin
-        if self.params.navigation_2d and abs(displacement[2]) > 1e-9:
-            raise ValueError("Planar checkpoint goal must have the trajectory origin height")
-        distance = float(np.linalg.norm(displacement))
-        if distance <= 0:
-            raise ValueError("Straight navigation checkpoint requires a nonzero distance")
-        self._path = [goal]
-        self._current_waypoint_index = 0
-        self._goal_pose = goal
-        self._mode = ControllerMode.POSE
-        self._pose_phase = PosePhase.FORWARD
-        self._align_final_orientation = False
-        self._final_target_orientation = None
-        self._is_final_orientation_aligning = False
-        self._forward_start_pos = origin
-        self._forward_direction_3d = displacement
-        self._forward_total_distance_3d = distance
-        self._forward_direction_unit = displacement / distance
-        qx, qy, qz, qw = orientation
-        self._forward_direction_unit_body = np.asarray(rotate_vector(tuple(self._forward_direction_unit), (-qx, -qy, -qz, qw)))
-        self._tpi_forward = build_tpi(
-            p0=0.0,
-            pe=distance,
-            vmax=state["vmax"],
-            accel=state["accel"],
-            t0=state["t0"],
-            # Checkpoints written before asymmetric decel existed carry no
-            # "decel" key; None reproduces their symmetric profile.
-            decel=state.get("decel"),
-        )
-
     def capture_navigation_state(self) -> dict:
-        """Capture the active omni pose path, including waypoint and turn phases."""
+        """Capture the active kinematic pose path, including waypoint and turn phases."""
         if self._mode is not ControllerMode.POSE or self._goal_pose is None:
-            raise ValueError("Omni checkpoint requires active pose navigation")
+            raise ValueError("Checkpoint requires active pose navigation")
 
         def pose_value(pose: Pose) -> dict:
             return {"position": list(pose.position), "orientation": list(pose.orientation)}
@@ -812,19 +743,14 @@ class OmniController(KinematicController):
         forward = None
         if self._pose_phase is PosePhase.FORWARD:
             if self._tpi_forward is None or (self._forward_start_pos is None and not self._is_final_orientation_aligning):
-                raise ValueError("Omni forward trajectory is incomplete")
-            # Same reason as capture_straight_navigation(): this record carries
-            # a single "accel", and restore_navigation_state() rebuilds the
-            # forward TPI from it with symmetric braking. Capturing an
-            # asymmetric trajectory here would resume it at the wrong rate,
-            # and silently -- the schema is unchanged, so it is refused.
-            if float(self._tpi_forward.amax_decel) != float(self._tpi_forward.amax_accel):
-                raise ValueError("Unsupported omni navigation state: asymmetric deceleration cannot be checkpointed")
+                raise ValueError("Forward trajectory is incomplete")
+            forward_tpi = capture_tpi_state(self._tpi_forward)
             forward = {
                 "origin": self._forward_start_pos.tolist() if self._forward_start_pos is not None else None,
-                "t0": float(self._tpi_forward.t0),
-                "vmax": float(self._tpi_forward.vmax),
-                "accel": float(self._tpi_forward.amax_accel),
+                "t0": forward_tpi["t0"],
+                "vmax": forward_tpi["vmax"],
+                "accel": forward_tpi["accel"],
+                "decel": forward_tpi["decel"],
                 "orientation_after_rotation": (
                     self._rotation_target_quat.tolist() if self._rotation_target_quat is not None else None
                 ),
@@ -832,13 +758,15 @@ class OmniController(KinematicController):
         rotation = None
         if self._pose_phase is PosePhase.ROTATE and self._tpi_rotation_angle is not None:
             if self._rotation_start_quat is None or self._rotation_target_quat is None:
-                raise ValueError("Omni rotation trajectory is incomplete")
+                raise ValueError("Rotation trajectory is incomplete")
+            rotation_tpi = capture_tpi_state(self._tpi_rotation_angle)
             rotation = {
                 "start_orientation": self._rotation_start_quat.tolist(),
                 "target_orientation": self._rotation_target_quat.tolist(),
-                "t0": float(self._tpi_rotation_angle.t0),
-                "vmax": float(self._tpi_rotation_angle.vmax),
-                "accel": float(self._tpi_rotation_angle.amax_accel),
+                "t0": rotation_tpi["t0"],
+                "vmax": rotation_tpi["vmax"],
+                "accel": rotation_tpi["accel"],
+                "decel": rotation_tpi["decel"],
             }
         return {
             "path": [pose_value(pose) for pose in self._path],
@@ -855,9 +783,9 @@ class OmniController(KinematicController):
         }
 
     def restore_navigation_state(self, state: dict, orientation: list[float]) -> None:
-        """Restore an omni pose path without reissuing its navigation command."""
+        """Restore a kinematic pose path without reissuing its navigation command."""
         if self._mode is not ControllerMode.IDLE:
-            raise ValueError("Omni navigation restore requires an idle controller")
+            raise ValueError("Navigation restore requires an idle controller")
 
         def pose_from(value: dict) -> Pose:
             return Pose(position=list(value["position"]), orientation=list(value["orientation"]))
@@ -894,12 +822,17 @@ class OmniController(KinematicController):
             )
             after_rotation = forward["orientation_after_rotation"]
             self._rotation_target_quat = np.asarray(after_rotation, dtype=float) if after_rotation is not None else None
-            self._tpi_forward = build_tpi(
-                p0=0.0,
-                pe=distance,
-                vmax=forward["vmax"],
-                accel=forward["accel"],
-                t0=forward["t0"],
+            self._tpi_forward = restore_tpi_state(
+                {
+                    "p0": 0.0,
+                    "pe": distance,
+                    "v0": 0.0,
+                    "ve": 0.0,
+                    "vmax": forward["vmax"],
+                    "accel": forward["accel"],
+                    "decel": forward["decel"],
+                    "t0": forward["t0"],
+                }
             )
         else:
             self._reset_forward_state()
@@ -911,14 +844,42 @@ class OmniController(KinematicController):
                 self._rotation_start_quat = start
                 self._rotation_target_quat = target
                 self._rotation_total_angle = float(angle)
-                self._tpi_rotation_angle = build_tpi(
-                    p0=0.0,
-                    pe=angle,
-                    vmax=rotation["vmax"],
-                    accel=rotation["accel"],
-                    t0=rotation["t0"],
+                self._tpi_rotation_angle = restore_tpi_state(
+                    {
+                        "p0": 0.0,
+                        "pe": angle,
+                        "v0": 0.0,
+                        "ve": 0.0,
+                        "vmax": rotation["vmax"],
+                        "accel": rotation["accel"],
+                        "decel": rotation["decel"],
+                        "t0": rotation["t0"],
+                    }
                 )
                 self._slerp_precomp = quat_slerp_precompute(start, target)
+
+
+# ---------------------------------------------------------------------------
+# OmniController (6-DoF velocity + omnidirectional TPI pose)
+# ---------------------------------------------------------------------------
+
+
+class OmniController(KinematicController):
+    """Unified omnidirectional controller: velocity commands + TPI pose navigation.
+
+    **Velocity mode (VELOCITY):**
+        6-DoF body-frame velocity (vx, vy, vz, wx, wy, wz) → quaternion-based
+        world-frame integration. Linear and angular magnitudes are clamped.
+
+    **Pose mode (POSE):**
+        Per-axis TPI with distance-ratio velocity scaling for straight-line
+        motion from start to goal.
+    """
+
+    _registry_name = "omni"
+
+    def __init__(self, params: Optional[ControllerParams] = None) -> None:
+        super().__init__(params)
 
     # -- Velocity kinematics -------------------------------------------
 
@@ -1071,6 +1032,37 @@ class DifferentialController(KinematicController):
     ) -> None:
         super().__init__(params)
         self._wheel_separation = wheel_separation
+
+    def capture_navigation_state(self) -> dict:
+        """Capture the common pose path plus differential heading and direction."""
+        state = super().capture_navigation_state()
+        if self._forward_start_pos is None and not self._is_final_orientation_aligning:
+            raise ValueError("Differential navigation origin is missing")
+        state["movement_direction"] = self._movement_direction.value
+        state["requested_direction"] = self._original_direction.value
+        state["forward_origin"] = self._forward_start_pos.tolist() if self._forward_start_pos is not None else None
+        return state
+
+    def restore_navigation_state(self, state: dict, orientation: list[float]) -> None:
+        """Restore a turn or straight segment without issuing another command."""
+        super().restore_navigation_state(state, orientation)
+        self._movement_direction = MovementDirection(state["movement_direction"])
+        self._original_direction = MovementDirection(state["requested_direction"])
+        if self._movement_direction is MovementDirection.AUTO:
+            raise ValueError("Differential checkpoint direction must be resolved")
+        origin = np.asarray(state["forward_origin"], dtype=float) if state["forward_origin"] is not None else None
+        if self._pose_phase is PosePhase.ROTATE and origin is not None:
+            goal = np.asarray(self._goal_pose.position, dtype=float)
+            if self.params.navigation_2d:
+                goal[2] = origin[2]
+            displacement = goal - origin
+            distance = float(np.linalg.norm(displacement))
+            self._forward_start_pos = origin
+            self._forward_direction_3d = displacement
+            self._forward_total_distance_3d = distance
+            self._forward_direction_unit = displacement / distance if distance > 1e-9 else np.zeros(3)
+        sign = -1.0 if self._movement_direction is MovementDirection.BACKWARD else 1.0
+        self._forward_direction_unit_body = np.array([sign, 0.0, 0.0])
 
     def set_velocity(
         self,
