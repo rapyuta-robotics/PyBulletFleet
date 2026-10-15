@@ -33,6 +33,8 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "monitor": True,
         # None: follow `gui`, so a headless run opens no window.
         "enable_monitor_gui": None,
+        # Wall seconds between INFO-level [MONITOR] lines; 0 keeps them off.
+        "monitor_log_interval": 0.0,
         "log_level": "warn",
         "max_steps_per_frame": 10,
         "max_sleep_frames": 4.0,  # real-time sleep clamp: at most this many normal frame intervals
