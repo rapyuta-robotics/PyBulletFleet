@@ -59,6 +59,13 @@ are not recommended for production use yet.
 
 ### Added
 
+- Add `SimulationParams.monitor_log_interval`: when positive, the monitor's
+  figures -- real-time factor, collision totals, step count -- are logged as
+  an INFO `[MONITOR]` line every that many wall-clock seconds, whether or not
+  `monitor` is on. They were otherwise computed only for the DataMonitor and
+  logged at DEBUG, so a headless run kept no record of its real-time factor
+  or collisions. Defaults to `0`, which logs nothing new.
+
 - Add `SimObject.from_urdf()` and a `urdf_path` field on
   `SimObjectSpawnParams`, so a URDF-defined body with no behaviour can be
   loaded as a plain `SimObject` instead of an `Agent`. `from_sdf()` already
