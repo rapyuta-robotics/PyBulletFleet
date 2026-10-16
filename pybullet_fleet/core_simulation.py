@@ -67,10 +67,6 @@ from pybullet_fleet._defaults import SIMULATION as _SIM_D
 if TYPE_CHECKING:
     from pybullet_fleet.sim_plugin import SimPlugin
 
-#: Seconds between DataMonitor refreshes without a GUI (with one it refreshes
-#: every step), and the default for ``SimulationParams.monitor_log_interval``.
-MONITOR_UPDATE_INTERVAL = 1.0
-
 # Generic plugin type so register_plugin() returns the concrete subclass type.
 _SimPluginT = TypeVar("_SimPluginT", bound="SimPlugin")
 
@@ -183,15 +179,18 @@ class SimulationParams:
     #: Tk window on screen. ``True`` or ``False`` is honoured as given, so a
     #: monitor window without the PyBullet viewer is still available.
     enable_monitor_gui: Optional[bool] = _SIM_D["enable_monitor_gui"]
+    #: Simulated seconds between DataMonitor refreshes while ``monitor`` is
+    #: on. ``None`` (the default) is every step with a GUI, so the window stays
+    #: live, and every second without one. ``0`` is every step.
+    monitor_update_interval: Optional[float] = _SIM_D["monitor_update_interval"]
     #: Wall-clock seconds between ``[MONITOR]`` lines logged at INFO -- RTF,
-    #: collision totals, step count -- independent of ``monitor`` and ``gui``.
-    #: ``monitor`` drives the DataMonitor, whose line is logged at DEBUG; this
-    #: keeps those figures in the log whether or not anything is on screen.
-    #: ``None`` (the default) is the monitor's own refresh interval,
-    #: ``MONITOR_UPDATE_INTERVAL`` (1 s); ``0`` logs none. Wall clock rather
-    #: than simulated time, so the log's volume does not scale with the
+    #: collision totals, step count -- independent of ``monitor``, ``gui`` and
+    #: ``monitor_update_interval``. ``monitor`` drives the DataMonitor, whose
+    #: line is logged at DEBUG; this keeps those figures in the log whether or
+    #: not anything is on screen. Default 1 s; ``0`` logs none. Wall clock
+    #: rather than simulated time, so the log's volume does not scale with the
     #: real-time factor.
-    monitor_log_interval: Optional[float] = _SIM_D["monitor_log_interval"]
+    monitor_log_interval: float = _SIM_D["monitor_log_interval"]
     collision_check_frequency: Optional[float] = None
     log_level: str = _SIM_D["log_level"]
     max_steps_per_frame: int = _SIM_D["max_steps_per_frame"]
@@ -451,9 +450,6 @@ class MultiRobotSimulationCore:
         self._monitor_enabled: bool = params.monitor
         self._last_monitor_update: float = 0
         self._last_monitor_log: Optional[float] = None  # time.monotonic() of the last INFO [MONITOR] line
-        self._monitor_log_interval: float = (
-            MONITOR_UPDATE_INTERVAL if params.monitor_log_interval is None else params.monitor_log_interval
-        )
         self._callbacks: List[Dict[str, Any]] = []  # List of callback functions
         self._behavior_tree_callbacks: List[Tuple[BehaviorTree, Callable]] = []
         self._data_monitor: Optional[DataMonitor] = None
@@ -3506,7 +3502,7 @@ class MultiRobotSimulationCore:
         seconds stale.
         """
         now = time.monotonic()
-        if self._last_monitor_log is not None and now - self._last_monitor_log < self._monitor_log_interval:
+        if self._last_monitor_log is not None and now - self._last_monitor_log < self._params.monitor_log_interval:
             return
         self._last_monitor_log = now
         self.update_monitor()
@@ -3535,8 +3531,11 @@ class MultiRobotSimulationCore:
         sim_time = self._elapsed_sim_time
         # --- Speed history buffer ---
         self._speed_history.append((now, sim_time))
-        # Keep only history within 10 seconds (O(1) popleft with deque)
-        while self._speed_history and now - self._speed_history[0][0] > 10.0:
+        # Keep only history within 10 seconds (O(1) popleft with deque), plus
+        # the newest sample older than that as the baseline: when updates are
+        # sparser than the window (a long monitor_log_interval with the
+        # monitor off), dropping it would leave one sample and report rtf=0.
+        while len(self._speed_history) > 1 and now - self._speed_history[1][0] > 10.0:
             self._speed_history.popleft()
         # Calculate actual RTF for the last 10 seconds
         if len(self._speed_history) >= 2:
@@ -3647,6 +3646,7 @@ class MultiRobotSimulationCore:
         self._resume_ready = False
         self._last_collision_check = 0.0
         self._last_monitor_update = 0.0
+        self._last_monitor_log = None  # a fresh run logs its first step
         self._last_logged_collision_count = 0
         self._last_monitor_frame = None
         self._single_step_requested = False
@@ -4685,12 +4685,14 @@ class MultiRobotSimulationCore:
                 t_mon0 = time.perf_counter()
 
             if self._monitor_enabled:
-                interval = self._params.timestep if self._params.gui else MONITOR_UPDATE_INTERVAL
+                interval = self._params.monitor_update_interval
+                if interval is None:
+                    interval = self._params.timestep if self._params.gui else 1.0
                 if self.sim_time - self._last_monitor_update > interval:
                     self.update_monitor()
                     self._last_monitor_update = self.sim_time
 
-            if self._monitor_log_interval > 0:
+            if self._params.monitor_log_interval > 0:
                 self._maybe_log_monitor_line()
 
             if measure_timing:

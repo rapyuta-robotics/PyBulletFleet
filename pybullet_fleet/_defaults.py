@@ -33,9 +33,11 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "monitor": True,
         # None: follow `gui`, so a headless run opens no window.
         "enable_monitor_gui": None,
+        # Simulated seconds between DataMonitor refreshes. None: every step
+        # with a GUI, every second without one.
+        "monitor_update_interval": None,
         # Wall seconds between INFO-level [MONITOR] lines; 0 keeps them off.
-        # None: the monitor's own refresh interval (MONITOR_UPDATE_INTERVAL).
-        "monitor_log_interval": None,
+        "monitor_log_interval": 1.0,
         "log_level": "warn",
         "max_steps_per_frame": 10,
         "max_sleep_frames": 4.0,  # real-time sleep clamp: at most this many normal frame intervals

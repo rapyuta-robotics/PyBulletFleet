@@ -75,18 +75,70 @@ def test_logs_once_per_interval(make_sim, caplog, monkeypatch):
     assert len(_monitor_lines(caplog)) == 3
 
 
-def test_on_by_default_at_the_monitor_interval(make_sim, caplog, monkeypatch):
+def test_on_by_default_once_a_second(make_sim, caplog, monkeypatch):
     import pybullet_fleet.core_simulation as core
 
-    assert SimulationParams().monitor_log_interval is None
+    assert SimulationParams().monitor_log_interval == 1.0
     clock = {"now": 1000.0}
     monkeypatch.setattr(core.time, "monotonic", lambda: clock["now"])
     sim = make_sim()
     with caplog.at_level(logging.INFO):
-        for _ in range(10):  # 0.25 * MONITOR_UPDATE_INTERVAL apart
+        for _ in range(10):  # 0.25 s apart: 2.25 s in all
             sim.step_once()
-            clock["now"] += 0.25 * core.MONITOR_UPDATE_INTERVAL
+            clock["now"] += 0.25
     assert len(_monitor_lines(caplog)) == 3
+
+
+def test_a_fresh_run_logs_its_first_step(make_sim, caplog):
+    """The interval does not carry over into the next run: a short run would
+    otherwise end without a single line."""
+    sim = make_sim(monitor_log_interval=60.0)
+    with caplog.at_level(logging.INFO):
+        sim.step_once()
+        sim.initialize_simulation()
+        sim.step_once()
+    assert len(_monitor_lines(caplog)) == 2
+
+
+def test_a_sparse_interval_still_reports_the_rtf(make_sim, caplog, monkeypatch):
+    """With the monitor off, the log is the only thing sampling the speed. An
+    interval longer than the monitor's 10 s window must still measure across
+    it rather than report rtf=0.00."""
+    import pybullet_fleet.core_simulation as core
+
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(core.time, "monotonic", lambda: clock["now"])
+    sim = make_sim(monitor_log_interval=30.0, timestep=0.1)
+    with caplog.at_level(logging.INFO):
+        for _ in range(11):  # 3 s apart: 30 real seconds per simulated second
+            sim.step_once()
+            clock["now"] += 3.0
+    lines = _monitor_lines(caplog)
+    assert len(lines) == 2
+    assert "rtf=0.03," in lines[1], lines[1]
+
+
+def _monitor_updates(make_sim, monkeypatch, steps=40, **params):
+    calls = []
+    sim = make_sim(monitor=True, monitor_log_interval=0, timestep=0.1, **params)
+    monkeypatch.setattr(sim, "update_monitor", lambda: calls.append(sim.sim_time))
+    for _ in range(steps):
+        sim.step_once()
+    return len(calls)
+
+
+def test_the_monitor_refresh_is_set_separately(make_sim, monkeypatch):
+    """monitor_update_interval paces the DataMonitor; monitor_log_interval
+    paces the log. Neither moves the other."""
+    headless_default = _monitor_updates(make_sim, monkeypatch)
+    twice_as_often = _monitor_updates(make_sim, monkeypatch, monitor_update_interval=0.5)
+    every_step = _monitor_updates(make_sim, monkeypatch, monitor_update_interval=0)
+    assert SimulationParams().monitor_update_interval is None
+    # 4 simulated seconds: about once a second headless by default, about
+    # twice as often at 0.5 s, and on every step but the first at 0.
+    assert 3 <= headless_default <= 4
+    assert twice_as_often >= 2 * headless_default
+    assert every_step == 39
 
 
 def test_zero_turns_it_off(make_sim, caplog):
