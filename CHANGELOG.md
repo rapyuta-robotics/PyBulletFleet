@@ -59,6 +59,22 @@ are not recommended for production use yet.
 
 ### Added
 
+- Add `SimulationParams.monitor_log_interval`: the monitor's figures --
+  real-time factor, collision totals, step count -- are logged as an INFO
+  `[MONITOR]` line every that many wall-clock seconds, whether or not
+  `monitor` or `gui` is on. They were otherwise computed only for the
+  DataMonitor and logged at DEBUG, so a run kept no record of its real-time
+  factor or collisions. Defaults to 1 s; `0` turns it off.
+
+- Add `SimulationParams.monitor_update_interval`: simulated seconds between
+  DataMonitor refreshes, which were fixed at every step with a GUI and every
+  second without one. That remains the default (`None`); `0` is every step.
+  It is independent of `monitor_log_interval`.
+
+- The monitor's real-time factor is measured against the newest sample older
+  than its 10 s window as well, so updates sparser than the window no longer
+  report `rtf=0.00`.
+
 - Add `SimObject.from_urdf()` and a `urdf_path` field on
   `SimObjectSpawnParams`, so a URDF-defined body with no behaviour can be
   loaded as a plain `SimObject` instead of an `Agent`. `from_sdf()` already
