@@ -432,9 +432,12 @@ An ignored pair is excluded everywhere: it is not an active pair, is not
 counted in `collision_count`, raises no `COLLISION_STARTED` and is absent from
 `get_collision_observation()`. Filtering in a `COLLISION_STARTED` handler
 instead would leave those figures counting the contact. A pair that becomes
-ignored while active resolves on the next check with `COLLISION_ENDED`.
-Ignored pairs skip the narrow phase, so the filter runs once per candidate or
-active pair on each check and should be cheap.
+ignored while active resolves on the next check with `COLLISION_ENDED`, and
+an ignored pair that stops being ignored -- an in-place `detach_object()`, a
+filter whose answer changes -- is checked again on the next one, even if
+neither body moved. Ignored pairs skip the narrow phase, so the filter runs
+once per candidate, active or previously ignored pair on each check and
+should be cheap.
 
 ### Collision Margin Recommendations
 

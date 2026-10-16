@@ -41,14 +41,20 @@ def sim():
     p.disconnect(sim.client)
 
 
-def box(sim: MultiRobotSimulationCore, x: float, z: float = 0.0, name: Optional[str] = None) -> SimObject:
+def box(
+    sim: MultiRobotSimulationCore,
+    x: float,
+    z: float = 0.0,
+    name: Optional[str] = None,
+    mode: CollisionMode = CollisionMode.NORMAL_3D,
+) -> SimObject:
     shape = ShapeParams(shape_type="box", half_extents=[0.2, 0.2, 0.2])
     return SimObject.from_mesh(
         visual_shape=shape,
         collision_shape=shape,
         pose=Pose.from_xyz(x, 0.0, z),
         sim_core=sim,
-        collision_mode=CollisionMode.NORMAL_3D,
+        collision_mode=mode,
         name=name,
     )
 
@@ -113,6 +119,22 @@ class TestIgnoreAttachedCollision:
 
         assert pairs == []
         assert events == [("ended", "carrier", "load")] or events == [("ended", "load", "carrier")]
+
+    def test_detaching_in_place_reports_the_contact(self, sim):
+        """detach_object() without a drop pose moves nothing, so the pair is
+        found again only because ignored pairs are re-evaluated."""
+        carrier = box(sim, 0.0, name="carrier")
+        load = box(sim, 0.0, z=0.3, name="load")
+        assert carrier.attach_object(load, keep_world_pose=True)
+        sim.check_collisions()
+        assert sim.get_active_collision_pairs() == []
+        events = record_events(sim)
+
+        assert carrier.detach_object(load)
+        pairs, _ = sim.check_collisions()
+
+        assert pairs == [pair_of(carrier, load)]
+        assert [kind for kind, _, _ in events] == ["started"]
 
     def test_can_be_turned_off(self):
         sim = make_sim(ignore_attached_collision=False)
@@ -184,6 +206,54 @@ class TestCollisionIgnoreFilter:
         pairs, _ = sim.check_collisions()
 
         assert pairs == []
+
+    def test_a_filter_that_stops_ignoring_reports_the_pair(self, sim):
+        """The reverse of the case above, without calling the setter again."""
+        a = box(sim, 0.0, name="a")
+        b = box(sim, 0.3, name="b")
+        expected = {frozenset(("a", "b"))}
+        sim.set_collision_ignore_filter(lambda x, y: frozenset((x.name, y.name)) in expected)
+        sim.check_collisions()
+        assert sim.get_active_collision_pairs() == []
+
+        expected.clear()
+        pairs, _ = sim.check_collisions()
+
+        assert pairs == [pair_of(a, b)]
+
+    def test_a_static_pair_that_becomes_ignored_resolves(self):
+        """Active STATIC-STATIC pairs are otherwise never rechecked; the ignore
+        rule has to reach them anyway."""
+        sim = make_sim(ignore_static_collision=False)
+        try:
+            a = box(sim, 0.0, name="a", mode=CollisionMode.STATIC)
+            b = box(sim, 0.3, name="b", mode=CollisionMode.STATIC)
+            expected = set()
+            sim.set_collision_ignore_filter(lambda x, y: frozenset((x.name, y.name)) in expected)
+            sim.check_collisions()
+            assert sim.get_active_collision_pairs() == [pair_of(a, b)]
+            events = record_events(sim)
+
+            expected.add(frozenset(("a", "b")))
+            pairs, _ = sim.check_collisions()
+
+            assert pairs == []
+            assert observed_pairs(sim) == []
+            assert [kind for kind, _, _ in events] == ["ended"]
+        finally:
+            p.disconnect(sim.client)
+
+    def test_an_ignored_pair_that_moves_apart_is_forgotten(self, sim):
+        a = box(sim, 0.0, name="a")
+        b = box(sim, 0.3, name="b")
+        sim.set_collision_ignore_filter(lambda x, y: True)
+        sim.check_collisions()
+        assert sim._ignored_collision_pairs == {pair_of(a, b)}
+
+        b.set_pose(Pose.from_xyz(10.0, 0.0, 0.0))
+        sim.check_collisions()
+
+        assert sim._ignored_collision_pairs == set()
 
     def test_removing_it_reports_a_stationary_pair_again(self, sim):
         a = box(sim, 0.0, name="a")

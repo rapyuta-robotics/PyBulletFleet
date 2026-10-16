@@ -65,7 +65,9 @@ are not recommended for production use yet.
   `COLLISION_STARTED` and the collision observation -- and skip the narrow
   phase. Filtering in a `COLLISION_STARTED` handler instead left every other
   figure counting the contact. A pair that becomes ignored while active
-  resolves on the next check, so the filter may depend on run-time state.
+  resolves on the next check, and one that stops being ignored is checked
+  again on the next one even if neither body moved, so the filter may depend
+  on run-time state.
 
 - Add `SimulationParams.ignore_attached_collision` (default `true`): contact
   between an object and the object it is attached to is no longer reported

@@ -574,6 +574,12 @@ class MultiRobotSimulationCore:
         self._last_collision_check_metadata: Optional[Tuple[int, float, CollisionDetectionMethod, float]] = None
         self._recheck_stationary_pairs = False
         self._collision_ignore_filter: Optional[CollisionIgnoreFilter] = None
+        # Broad-phase candidate pairs the ignore rules excluded last time they
+        # were checked. Their narrow phase was skipped, so whether they touch
+        # is unknown; they are re-evaluated on every check, so a pair that
+        # stops being ignored without either body moving (an in-place detach,
+        # a filter reading run-time state) is still found.
+        self._ignored_collision_pairs: Set[Tuple[int, int]] = set()
 
         # --- Recording ---
         self._recorder: Optional[Any] = None  # Optional[SimulationRecorder] (lazy import to avoid circular)
@@ -1962,13 +1968,16 @@ class MultiRobotSimulationCore:
         shows up: it is not an active pair, not counted, not recoloured, not
         in the collision observation and raises no ``COLLISION_STARTED``. A
         pair that becomes ignored while active is resolved (``COLLISION_ENDED``)
-        on the next collision check, so the filter may depend on state that
-        changes at run time -- which object carries which, say. It is applied
-        on top of ``ignore_attached_collision``. ``None`` removes it.
+        on the next collision check, and an ignored pair that stops being
+        ignored is checked again on the next one, whether or not either body
+        moved. So the filter may depend on state that changes at run time --
+        which object carries which, say. It is applied on top of
+        ``ignore_attached_collision``. ``None`` removes it.
 
-        Ignored pairs skip the narrow phase, so the filter is called for every
-        broad-phase candidate pair involving a moved object, and for every
-        active pair, on each collision check; keep it cheap.
+        Ignored pairs skip the narrow phase, so the filter is called, on each
+        collision check, for every broad-phase candidate pair involving a
+        moved object, every active pair and every pair it ignored last time
+        until they move apart; keep it cheap.
         """
         self._collision_ignore_filter = ignore
         # Stationary pairs are otherwise not rechecked until one of them moves.
@@ -2322,6 +2331,7 @@ class MultiRobotSimulationCore:
         self._active_collision_pairs.clear()
         self._active_pairs_by_object.clear()
         self._collision_pair_observations.clear()
+        self._ignored_collision_pairs.clear()
         self._last_collision_check_metadata = None
 
     def set_collision_spatial_hash_cell_size_mode(
@@ -3307,6 +3317,15 @@ class MultiRobotSimulationCore:
             # (to detect when collisions are resolved)
             # Skip static-static pairs (they never change after initial check)
             for obj_id_i, obj_id_j in list(self._active_collision_pairs):
+                # Re-check a pair that is now ignored, so that it resolves even
+                # when neither object moved (e.g. one was just attached). Ahead
+                # of the static shortcut: the rule can change for any pair.
+                obj_i = self._sim_objects_dict.get(obj_id_i)
+                obj_j = self._sim_objects_dict.get(obj_id_j)
+                if obj_i is not None and obj_j is not None and self._is_ignored_collision(obj_i, obj_j):
+                    pairs_to_check.add((obj_id_i, obj_id_j))
+                    continue
+
                 # Skip if both objects are static (no need to re-check)
                 if (
                     not self._recheck_stationary_pairs
@@ -3318,14 +3337,17 @@ class MultiRobotSimulationCore:
                 # Re-check if at least one object moved
                 if obj_id_i in moved_since_last_check or obj_id_j in moved_since_last_check:
                     pairs_to_check.add((obj_id_i, obj_id_j))
-                    continue
 
-                # Or if the pair is now ignored, so that it resolves even
-                # when neither object moved (e.g. one was just attached).
-                obj_i = self._sim_objects_dict.get(obj_id_i)
-                obj_j = self._sim_objects_dict.get(obj_id_j)
-                if obj_i is not None and obj_j is not None and self._is_ignored_collision(obj_i, obj_j):
-                    pairs_to_check.add((obj_id_i, obj_id_j))
+            # And the pairs the ignore rules excluded last time. A moved pair
+            # the broad phase no longer offers is apart and is dropped; the
+            # rest are checked again, ignored or not.
+            for pair in list(self._ignored_collision_pairs):
+                obj_id_i, obj_id_j = pair
+                moved = obj_id_i in moved_since_last_check or obj_id_j in moved_since_last_check
+                if moved and pair not in pairs_to_check:
+                    self._ignored_collision_pairs.discard(pair)
+                else:
+                    pairs_to_check.add(pair)
 
             # Check contact points for all pairs
             new_collisions = set()
@@ -3341,6 +3363,7 @@ class MultiRobotSimulationCore:
                 if obj_i is None or obj_j is None:
                     # Object was removed — clean up stale pair
                     self._discard_active_collision_pair((obj_id_i, obj_id_j))
+                    self._ignored_collision_pairs.discard((obj_id_i, obj_id_j))
                     continue
 
                 # Select collision detection method based on configuration
@@ -3348,8 +3371,11 @@ class MultiRobotSimulationCore:
                 signed_distance: Optional[float] = None
                 pair_method = detection_method
 
+                self._ignored_collision_pairs.discard((obj_id_i, obj_id_j))
                 if self._is_ignored_collision(obj_i, obj_j):
-                    pass  # Treated as not touching: resolves the pair if it was active.
+                    # Treated as not touching: resolves the pair if it was
+                    # active. Remembered, so it is re-evaluated next check.
+                    self._ignored_collision_pairs.add((obj_id_i, obj_id_j))
 
                 elif detection_method == CollisionDetectionMethod.CONTACT_POINTS:
                     # Method 1: getContactPoints (physics mode, actual contact manifold)
