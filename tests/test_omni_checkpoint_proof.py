@@ -91,11 +91,11 @@ def test_gui_rtf_is_checked_before_opening_window():
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [
-        (lambda c: c.update(version=2), "profile or version"),
+        (lambda c: c.update(version=3), "profile or version"),
         (lambda c: c["conditions"].update(timestep=0.2), "conditions differ"),
         (lambda c: c["state"].update(elapsed_time=0.4), "clock is inconsistent"),
-        (lambda c: c["state"]["controller"].update(vmax=float("nan")), "finite number"),
-        (lambda c: c["state"]["controller"].pop("origin"), "missing or unsupported"),
+        (lambda c: c["state"]["controller"]["forward"].update(vmax=float("nan")), "finite number"),
+        (lambda c: c["state"]["controller"]["forward"].pop("origin"), "missing or unsupported"),
         (lambda c: c["state"].update(position=[0.2, 0, 0.1]), "does not match"),
     ],
 )

@@ -60,6 +60,13 @@ New robot and infrastructure models:
 
 ## Simulation Capabilities
 
+- **Articulated-body collision candidates** — Correct the collision broadphase
+  so contacts involving child links outside an articulated URDF's base-link
+  AABB are not missed by PBF collision observations, events, or counts. Cover
+  joint movement, both candidate-extraction paths, and collision margins
+  without regressing the jointless fast path. Track the correctness fix in
+  [issue #68](https://github.com/yuokamoto/PyBulletFleet/issues/68).
+
 - **Snapshot, Event log & Replay** —
   **Development status:** The replay, recording, checkpoint and playback work
   below consists of restricted validation profiles. It is not ready for
@@ -72,7 +79,7 @@ New robot and infrastructure models:
   step/order, full observations, supported outcomes, and comparison. The
   versioned artifact is PBF-owned;
   it is evidence for evolving USO concepts, not a canonical/USO-compatible
-  schema or a shared runtime dependency. See [Navigation replay](how-to/replay)
+  schema or a shared runtime dependency. See the [initial-state navigation re-execution guide](https://github.com/yuokamoto/PyBulletFleet/blob/main/docs/design/snapshot-replay/navigation-reexecution-guide.md)
   and the [design record](https://github.com/yuokamoto/PyBulletFleet/blob/main/docs/design/snapshot-replay/spec.md).
 
   Before scoping new work in this area, read the product goals in
@@ -128,7 +135,7 @@ New robot and infrastructure models:
   the ordinary omni pose path, generated approach waypoint, final turn,
   direct supported commands and an explicit application-stage hook;
   it is not arbitrary-example save/load or Action/BT/plugin restoration. See
-  [the manipulation guide](how-to/manipulation-state-scenario) and the
+  [manipulation validation guide](https://github.com/yuokamoto/PyBulletFleet/blob/main/docs/design/snapshot-replay/manipulation-validation-guide.md) and the
   [V1 feature plan](https://github.com/yuokamoto/PyBulletFleet/blob/main/docs/design/snapshot-replay/feature-v1-spec-plan.md).
 
   Distinguish three records where the user goals require them:

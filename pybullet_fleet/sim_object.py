@@ -3,6 +3,7 @@ sim_object.py
 Base class for simulation objects with attachment support.
 """
 
+import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Tuple, Union
 import logging
@@ -24,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 # Lazy logger for debug messages (avoids expensive string formatting when disabled)
 lazy_logger = get_lazy_logger(__name__)
+
+# Shapes supported by SimObject spawning. Recording currently supports only
+# the primitive subset; mesh construction needs separate checkpoint handling.
+PRIMITIVE_SHAPE_TYPES = frozenset({"box", "sphere", "cylinder"})
+SUPPORTED_SHAPE_TYPES = PRIMITIVE_SHAPE_TYPES | {"mesh"}
 
 
 @dataclass
@@ -318,6 +324,14 @@ class SimObjectSpawnParams:
             collision_mode=collision_mode_value,
             user_data=config.get("user_data", {}),
         )
+
+
+@dataclass
+class _UrdfSpawnDescriptor(SimObjectSpawnParams):
+    """Effective URDF-only options retained for declared recording handlers."""
+
+    use_fixed_base: bool = True
+    global_scaling: float = 1.0
 
 
 class SimObject:
@@ -624,6 +638,8 @@ class SimObject:
     @staticmethod
     def _create_visual_shape(shape: ShapeParams, physics_client_id: int) -> int:
         """Create a PyBullet visual shape from ShapeParams."""
+        if shape.shape_type not in SUPPORTED_SHAPE_TYPES:
+            raise ValueError(f"Unknown visual shape_type: {shape.shape_type}")
         # Get frame offset
         frame_position = [0.0, 0.0, 0.0]
         frame_orientation = [0.0, 0.0, 0.0, 1.0]
@@ -680,6 +696,8 @@ class SimObject:
     @staticmethod
     def _create_collision_shape(shape: ShapeParams, physics_client_id: int) -> int:
         """Create a PyBullet collision shape from ShapeParams."""
+        if shape.shape_type not in SUPPORTED_SHAPE_TYPES:
+            raise ValueError(f"Unknown collision shape_type: {shape.shape_type}")
         # Get frame offset
         frame_position = [0.0, 0.0, 0.0]
         frame_orientation = [0.0, 0.0, 0.0, 1.0]
@@ -828,7 +846,7 @@ class SimObject:
             physics_client_id=physics_client_id,
         )
 
-        return cls(
+        obj = cls(
             body_id=body_id,
             sim_core=sim_core,
             pickable=pickable,
@@ -837,6 +855,23 @@ class SimObject:
             name=name,
             user_data=user_data,
         )
+        # Keep the effective factory inputs for declared kinematic checkpoint
+        # handlers. Direct body-id construction remains unsupported.
+        obj._checkpoint_spawn_params = SimObjectSpawnParams(
+            name=name,
+            visual_shape=copy.deepcopy(visual_shape),
+            collision_shape=copy.deepcopy(collision_shape),
+            initial_pose=copy.deepcopy(pose),
+            mass=mass,
+            pickable=pickable,
+            collision_mode=collision_mode,
+            user_data=dict(user_data) if user_data else {},
+        )
+        if sim_core is not None:
+            record_spawn = getattr(sim_core, "_record_state_spawn", None)
+            if record_spawn is not None:
+                record_spawn(obj, obj._checkpoint_spawn_params)
+        return obj
 
     @classmethod
     def from_urdf(
@@ -919,6 +954,23 @@ class SimObject:
             name=name,
             user_data=user_data,
         )
+        # Keep the complete effective construction for future declared URDF
+        # handlers. The built-in kinematic profile still rejects URDF objects.
+        obj._checkpoint_spawn_params = _UrdfSpawnDescriptor(
+            urdf_path=loaded.path,
+            name=name,
+            initial_pose=copy.deepcopy(pose) if pose is not None else Pose.from_xyz(0.0, 0.0, 0.0),
+            mass=loaded.mass,
+            pickable=pickable,
+            collision_mode=collision_mode,
+            user_data=dict(user_data) if user_data else {},
+            use_fixed_base=use_fixed_base,
+            global_scaling=global_scaling,
+        )
+        if sim_core is not None:
+            record_spawn = getattr(sim_core, "_record_state_spawn", None)
+            if record_spawn is not None:
+                record_spawn(obj, obj._checkpoint_spawn_params)
         lazy_logger.info(lambda: f"Loaded SimObject from URDF: {loaded.path}")
         return obj
 
@@ -1050,7 +1102,7 @@ class SimObject:
             obj = SimObject.from_params(params, sim_core)
         """
         factory = cls.from_urdf if spawn_params.urdf_path is not None else cls.from_mesh
-        obj = factory(
+        return factory(
             **_forward_spawn_params(
                 factory,
                 spawn_params,
@@ -1058,15 +1110,6 @@ class SimObject:
                 extra_kwargs={"sim_core": sim_core},
             )
         )
-
-        # Runtime body/object IDs remain process-local; the core records the
-        # effective construction request only when state recording is enabled.
-        if sim_core is not None:
-            record_spawn = getattr(sim_core, "_record_state_spawn", None)
-            if record_spawn is not None:
-                record_spawn(obj, spawn_params)
-
-        return obj
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any], sim_core=None) -> "SimObject":

@@ -109,7 +109,9 @@ class PluginRegistry(Generic[T]):
         Intended to be called from ``__init_subclass__`` in base classes.
         Abstract classes (detected via :func:`inspect.isabstract`) are skipped.
         """
-        name = getattr(cls, "_registry_name", None)
+        # A subclass must opt in with its own name; inheriting a built-in
+        # name would silently replace that built-in in the registry.
+        name = cls.__dict__.get("_registry_name")
         if name and not inspect.isabstract(cls):
             self._registry[name] = cls
 

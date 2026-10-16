@@ -1,6 +1,7 @@
 # Snapshot / Restore / Replay / Playback V1 — feature specification and plan
 
-**Status:** Under development for a restricted validation profile; pending Human Review.
+**Status:** Restricted validation profile merged in PR #59; broader V1 remains
+under development.
 The current APIs and artifacts are not recommended for general or production
 use. The profile and extension boundary are still being reviewed.
 Material changes to the supported profile or state ownership return for Human
@@ -31,7 +32,7 @@ different profile as well as the existing CP1/CP3 fresh-process demonstration.
 This is an extension contract, not a claim that arbitrary kinematic state can
 already be restored.
 
-The correction is implemented in this working branch. `RecordingProfile`
+The correction was merged in PR #59. `RecordingProfile`
 declares construction, capture, validation, restore, profile ID/version and
 coverage. The common recorder stores named `DataRecord` values returned at a
 completed boundary. The artifact has versioned `sim`, `agents` and `objects`
@@ -41,9 +42,9 @@ GUI renderer live with the validation example. A second empty-world profile
 test records custom data and restores its clock without changing the writer.
 Fresh-process CP1, active-turn and CP3 continuation tests remain the acceptance
 checks. This proves extensibility of the writer, not support for every
-kinematic entity or controller. Data callback failures still follow the
-existing fail-visible recording path; the best-effort capture policy remains
-on the product-goal checklist.
+kinematic entity or controller. Runtime data callback failures now mark the
+artifact incomplete and stop recording while normal simulation continues;
+partial-record recovery remains on the product-goal checklist.
 
 Read the [product goals and capability checklist](product-goals.md) before
 changing this scope. The goal here is a usable path through those goals, not a
@@ -67,12 +68,13 @@ the recorded results for step/seek playback. The artifact reports exactly
 which inputs, state owners and steps it covers. A changed external policy or
 runtime setting is a new continuation, not proof of identical replay.
 
-The implemented supported-profile Python shape is:
+The current supported-profile Python shape is (application callbacks and
+their data restorer must be installed by the caller):
 
 ```python
 sim = build_supported_simulation()  # ordinary PBF setup
 sim.configure_state_recording(
-    profile=KinematicManipulationProfile(...),  # validation example's declared support
+    profile=KinematicProfile(allowed_callbacks=(scenario_callback,)),
     records=(DataRecord("scenario", 1, capture_scenario_state, required_for_restore=True),),
     output="run-dir",
     checkpoint_every_steps=1,
@@ -81,14 +83,9 @@ register_scenario_callbacks(sim, scenario_state=ScenarioState())
 sim.run_simulation()  # PBF records completed steps; no user step loop
 
 # Separate process, after the source has exited:
-profile = KinematicManipulationProfile.from_manifest(load_recording_manifest("run-dir"))
-manifest, checkpoint = load_supported_checkpoint("run-dir", at_or_before=2.1, profile=profile)
-sim = restore_supported_simulation(manifest, checkpoint, profile=profile)
-robot = next(agent for agent in sim.agents if agent.name == "mobile-arm")
-box = next((obj for obj in sim.sim_objects if obj.name == "box-001"), None)
-scenario_state = checkpoint["records"]["scenario"]["value"]
-register_scenario_callbacks(sim, scenario_state=scenario_state)
-sim.run_simulation(resume=True)
+register_data_restorer("scenario", 1, restore_scenario_state)
+sim = load_supported_simulation("run-dir", at_or_before=2.1)
+sim.run_simulation()
 
 with ResultPlayback("run-dir") as playback:
     playback.seek_step(21)
@@ -140,7 +137,7 @@ capture and re-execution; V1 does not assume that mechanism is already proven.
 
 ## Proposed supported V1 profile
 
-Use the existing [manipulation state scenario](../../how-to/manipulation-state-scenario.md)
+Use the existing [manipulation state scenario](manipulation-validation-guide.md)
 as the **acceptance sequence**, adapting rather than duplicating its setup:
 spawn a box; navigate while the base is moving (CP1); move one named joint;
 attach the box to a named robot link; move the attached joint while it is in

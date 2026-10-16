@@ -88,6 +88,8 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
     "agent": {
         "motion_mode": "differential",
         "use_fixed_base": False,
+        "global_scaling": 1.0,
+        "joint_tolerance": None,
         # Not centralized (complex / per-instance):
         #   urdf_path   — str, per-robot URDF path
         #   ik_params   — IKParams dataclass (see "ik" section for scalars)
