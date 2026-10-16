@@ -9,6 +9,8 @@ are decoupled from how many times run_simulation() reads time.monotonic().
 
 import logging
 
+import pytest
+
 import pybullet_fleet.core_simulation as cs
 from pybullet_fleet import MultiRobotSimulationCore, SimulationParams
 
@@ -124,3 +126,55 @@ def test_steady_clock_no_warnings(monkeypatch, caplog):
     msgs = "\n".join(r.getMessage() for r in caplog.records)
     assert "wall clock jumped" not in msgs
     assert "clamping sleep" not in msgs
+
+
+def _run_with_pause(monkeypatch, pause, *, target_rtf, at_step=3, duration=0.5, timestep=0.05):
+    """Run with mocked clocks, ``pause`` real seconds passing inside one step.
+
+    The pause advances the fake monotonic clock from a step callback, not from
+    the mocked sleep, so an unpaced run (which never sleeps) can stall too.
+    """
+    clock = {"mono": 0.0}
+
+    def fake_sleep(seconds):
+        clock["mono"] += max(0.0, seconds)
+
+    monkeypatch.setattr(cs.time, "monotonic", lambda: clock["mono"])
+    monkeypatch.setattr(cs.time, "sleep", fake_sleep)
+    monkeypatch.setattr(cs.time, "time", lambda: 1000.0 + clock["mono"])
+
+    sim = MultiRobotSimulationCore(
+        SimulationParams(gui=False, monitor=False, physics=False, target_rtf=target_rtf, duration=duration, timestep=timestep)
+    )
+
+    def stall(sim_core, dt):
+        if sim_core.step_count == at_step:
+            clock["mono"] += pause
+
+    sim.register_callback(stall, frequency=None)
+    sim.run_simulation()
+    return sim
+
+
+def _stall_warnings(caplog):
+    return [r.getMessage() for r in caplog.records if "since the previous loop iteration" in r.getMessage()]
+
+
+@pytest.mark.parametrize("target_rtf", [3.0, 0.0, -1.0])
+def test_a_stall_is_flagged_once_whatever_the_pacing(monkeypatch, caplog, target_rtf):
+    """Paced or not: the clock-jump diagnostic only covers target_rtf > 0."""
+    with caplog.at_level(logging.WARNING, logger="pybullet_fleet.core_simulation"):
+        sim = _run_with_pause(monkeypatch, 2.5, target_rtf=target_rtf)
+    warnings = _stall_warnings(caplog)
+    # One warning for the stalled iteration; the normal ones after it are quiet.
+    assert len(warnings) == 1, warnings
+    assert "2.50s" in warnings[0]
+    assert sim.step_count > 3
+
+
+@pytest.mark.parametrize("target_rtf", [3.0, 0.0, -1.0])
+@pytest.mark.parametrize("pause", [0.0, 2.0])
+def test_up_to_the_threshold_is_quiet(monkeypatch, caplog, target_rtf, pause):
+    with caplog.at_level(logging.WARNING, logger="pybullet_fleet.core_simulation"):
+        _run_with_pause(monkeypatch, pause, target_rtf=target_rtf)
+    assert _stall_warnings(caplog) == []
