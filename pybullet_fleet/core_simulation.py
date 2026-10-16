@@ -67,6 +67,10 @@ from pybullet_fleet._defaults import SIMULATION as _SIM_D
 if TYPE_CHECKING:
     from pybullet_fleet.sim_plugin import SimPlugin
 
+#: ``fn(obj_a, obj_b) -> bool for :meth:`MultiRobotSimulationCore.set_collision_ignore_filter`:
+#: ``True`` when the two touching objects are meant to touch and should not count as a collision.
+CollisionIgnoreFilter = Callable[[SimObject, SimObject], bool]
+
 # Generic plugin type so register_plugin() returns the concrete subclass type.
 _SimPluginT = TypeVar("_SimPluginT", bound="SimPlugin")
 
@@ -206,6 +210,11 @@ class SimulationParams:
     enable_shadows: bool = _SIM_D["enable_shadows"]
     enable_gui_panel: bool = _SIM_D["enable_gui_panel"]
     ignore_static_collision: bool = _SIM_D["ignore_static_collision"]
+    #: Do not count contact between an object and the object it is attached
+    #: to (``attach_object``): a carried load touches its carrier by design.
+    #: Only the direct parent and child; contact with anything else the
+    #: carrier holds is still reported.
+    ignore_attached_collision: bool = _SIM_D["ignore_attached_collision"]
     enable_time_profiling: bool = _SIM_D["enable_time_profiling"]
     profiling_interval: int = _SIM_D["profiling_interval"]
     enable_memory_profiling: bool = _SIM_D["enable_memory_profiling"]
@@ -563,7 +572,8 @@ class MultiRobotSimulationCore:
         self._active_pairs_by_object: Dict[int, Set[Tuple[int, int]]] = {}
         self._collision_pair_observations: Dict[Tuple[int, int], CollisionPairObservation] = {}
         self._last_collision_check_metadata: Optional[Tuple[int, float, CollisionDetectionMethod, float]] = None
-        self._collision_margin_changed = False
+        self._recheck_stationary_pairs = False
+        self._collision_ignore_filter: Optional[CollisionIgnoreFilter] = None
 
         # --- Recording ---
         self._recorder: Optional[Any] = None  # Optional[SimulationRecorder] (lazy import to avoid circular)
@@ -1945,6 +1955,32 @@ class MultiRobotSimulationCore:
         """
         return int(math.floor(coord / cast(float, self._cached_cell_size)))
 
+    def set_collision_ignore_filter(self, ignore: Optional[CollisionIgnoreFilter]) -> None:
+        """Exclude the touching pairs ``ignore(obj_a, obj_b)`` returns ``True`` for from collision results.
+
+        An ignored pair is treated as not touching everywhere a collision
+        shows up: it is not an active pair, not counted, not recoloured, not
+        in the collision observation and raises no ``COLLISION_STARTED``. A
+        pair that becomes ignored while active is resolved (``COLLISION_ENDED``)
+        on the next collision check, so the filter may depend on state that
+        changes at run time -- which object carries which, say. It is applied
+        on top of ``ignore_attached_collision``. ``None`` removes it.
+
+        Ignored pairs skip the narrow phase, so the filter is called for every
+        broad-phase candidate pair involving a moved object, and for every
+        active pair, on each collision check; keep it cheap.
+        """
+        self._collision_ignore_filter = ignore
+        # Stationary pairs are otherwise not rechecked until one of them moves.
+        self._moved_this_step.update(self._sim_objects_dict)
+        self._recheck_stationary_pairs = True
+
+    def _is_ignored_collision(self, obj_a: SimObject, obj_b: SimObject) -> bool:
+        """Whether two touching objects are excluded from collision results."""
+        if self._params.ignore_attached_collision and (obj_a._attached_to is obj_b or obj_b._attached_to is obj_a):
+            return True
+        return self._collision_ignore_filter is not None and bool(self._collision_ignore_filter(obj_a, obj_b))
+
     def _collision_broadphase_margin(self) -> float:
         """Match the clearance used by the configured narrow phase."""
         if self._params.collision_detection_method in (
@@ -1966,7 +2002,7 @@ class MultiRobotSimulationCore:
             return
         self._rebuild_spatial_grid()
         self._moved_this_step.update(self._sim_objects_dict)
-        self._collision_margin_changed = True
+        self._recheck_stationary_pairs = True
 
     def _get_overlapping_cells(self, object_id: int, margin: float = 0.0) -> List[Tuple[int, int, int]]:
         """
@@ -3273,7 +3309,7 @@ class MultiRobotSimulationCore:
             for obj_id_i, obj_id_j in list(self._active_collision_pairs):
                 # Skip if both objects are static (no need to re-check)
                 if (
-                    not self._collision_margin_changed
+                    not self._recheck_stationary_pairs
                     and obj_id_i in self._static_collision_objects
                     and obj_id_j in self._static_collision_objects
                 ):
@@ -3281,6 +3317,14 @@ class MultiRobotSimulationCore:
 
                 # Re-check if at least one object moved
                 if obj_id_i in moved_since_last_check or obj_id_j in moved_since_last_check:
+                    pairs_to_check.add((obj_id_i, obj_id_j))
+                    continue
+
+                # Or if the pair is now ignored, so that it resolves even
+                # when neither object moved (e.g. one was just attached).
+                obj_i = self._sim_objects_dict.get(obj_id_i)
+                obj_j = self._sim_objects_dict.get(obj_id_j)
+                if obj_i is not None and obj_j is not None and self._is_ignored_collision(obj_i, obj_j):
                     pairs_to_check.add((obj_id_i, obj_id_j))
 
             # Check contact points for all pairs
@@ -3304,7 +3348,10 @@ class MultiRobotSimulationCore:
                 signed_distance: Optional[float] = None
                 pair_method = detection_method
 
-                if detection_method == CollisionDetectionMethod.CONTACT_POINTS:
+                if self._is_ignored_collision(obj_i, obj_j):
+                    pass  # Treated as not touching: resolves the pair if it was active.
+
+                elif detection_method == CollisionDetectionMethod.CONTACT_POINTS:
                     # Method 1: getContactPoints (physics mode, actual contact manifold)
                     # Best for: physics simulation after a collision-detection pass.
                     # Note: Cache/solver-dependent for kinematic-kinematic pairs.
@@ -3445,7 +3492,7 @@ class MultiRobotSimulationCore:
             # PyBullet disconnected, skip collision checking
             pass
 
-        self._collision_margin_changed = False
+        self._recheck_stationary_pairs = False
 
         if return_profiling:
             timings["total"] = (time.perf_counter() - t0) * 1000  # ms
@@ -3666,7 +3713,7 @@ class MultiRobotSimulationCore:
 
         # Reset filter_aabb_pairs mode-change detection (#6: fresh start)
         self._last_ignore_static = None
-        self._collision_margin_changed = False
+        self._recheck_stationary_pairs = False
 
         # Clear speed history (#2: prevents stale data in update_monitor)
         self._speed_history.clear()

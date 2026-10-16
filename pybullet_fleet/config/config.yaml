@@ -36,6 +36,8 @@ simulation:
   # collision_check_frequency: 0.1
   # Ignore collisions with structure (True/False)
   ignore_static_collision: true
+  # Ignore contact between an attached object and its carrier (True/False)
+  ignore_attached_collision: true
 
   # Enable profiling output (True/False)
   enable_time_profiling: false

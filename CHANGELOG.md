@@ -59,6 +59,18 @@ are not recommended for production use yet.
 
 ### Added
 
+- Add `MultiRobotSimulationCore.set_collision_ignore_filter(fn)`: touching
+  pairs for which `fn(obj_a, obj_b)` returns `True` are excluded from
+  collision results -- active pairs, `collision_count`, collision colouring,
+  `COLLISION_STARTED` and the collision observation -- and skip the narrow
+  phase. Filtering in a `COLLISION_STARTED` handler instead left every other
+  figure counting the contact. A pair that becomes ignored while active
+  resolves on the next check, so the filter may depend on run-time state.
+
+- Add `SimulationParams.ignore_attached_collision` (default `true`): contact
+  between an object and the object it is attached to is no longer reported
+  as a collision. Set it to `false` for the previous behaviour.
+
 - Add `SimulationParams.monitor_log_interval`: the monitor's figures --
   real-time factor, collision totals, step count -- are logged as an INFO
   `[MONITOR]` line every that many wall-clock seconds, whether or not
