@@ -30,6 +30,8 @@ disabled behaviour.
 | `duration` | `0` | Default `run_simulation()` duration; `0` runs until interrupted or the GUI closes. |
 | `gui` / `physics` | `true` / `false` | Open a GUI / call `p.stepSimulation()` and update physics bodies each step. |
 | `monitor` / `enable_monitor_gui` | `true` / `true` | Enable DataMonitor and its optional tkinter window. The window provides playback controls plus entity selection and camera follow; requests are applied on the simulation step thread. |
+| `monitor_update_interval` | `None` | Simulated seconds between DataMonitor refreshes while `monitor` is on. `None` refreshes every step with a GUI and every second without one; `0` refreshes every step. |
+| `monitor_log_interval` | `1.0` | Wall-clock seconds between INFO `[MONITOR]` log lines (real-time factor, collision totals, step count), independent of `monitor`, `gui` and `monitor_update_interval`; `0` logs none. The line shows only when `log_level` is `info` or lower. |
 | `log_level` | `warn` | Python logging level applied to the process root logger. |
 | `max_steps_per_frame` | `10` | Catch-up-step limit used by the pacing loop. |
 | `max_sleep_frames` | `4.0` | Maximum one pacing sleep in normal frame intervals. |
@@ -63,6 +65,7 @@ their periodic reports.
 | `spatial_hash_cell_size` | `None` | Fixed cell size in metres when mode is `constant`. |
 | `multi_cell_threshold` | `1.5` | Dimensionless cell-size multiplier for multi-cell registration. |
 | `ignore_static_collision` | `true` | Skip every pair containing an entity with `collision_mode: static`. |
+| `ignore_attached_collision` | `true` | Do not report contact between an object and the object it is attached to (`attach_object()`); only the direct parent and child. For other expected contact, see `set_collision_ignore_filter()` in the collision internals. |
 | `enable_collision_color_change` | `false` | Change object colour while a collision is active. |
 | `enable_collision_shapes` | `false` | Initially show collision-shape wireframes in the GUI. |
 | `enable_structure_transparency` | `false` | Initially render structure bodies semi-transparently. |

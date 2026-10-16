@@ -77,6 +77,36 @@ are not recommended for production use yet.
 
 ### Added
 
+- Add `MultiRobotSimulationCore.set_collision_ignore_filter(fn)`: touching
+  pairs for which `fn(obj_a, obj_b)` returns `True` are excluded from
+  collision results -- active pairs, `collision_count`, collision colouring,
+  `COLLISION_STARTED` and the collision observation -- and skip the narrow
+  phase. Filtering in a `COLLISION_STARTED` handler instead left every other
+  figure counting the contact. A pair that becomes ignored while active
+  resolves on the next check, and one that stops being ignored is checked
+  again on the next one even if neither body moved, so the filter may depend
+  on run-time state.
+
+- Add `SimulationParams.ignore_attached_collision` (default `true`): contact
+  between an object and the object it is attached to is no longer reported
+  as a collision. Set it to `false` for the previous behaviour.
+
+- Add `SimulationParams.monitor_log_interval`: the monitor's figures --
+  real-time factor, collision totals, step count -- are logged as an INFO
+  `[MONITOR]` line every that many wall-clock seconds, whether or not
+  `monitor` or `gui` is on. They were otherwise computed only for the
+  DataMonitor and logged at DEBUG, so a run kept no record of its real-time
+  factor or collisions. Defaults to 1 s; `0` turns it off.
+
+- Add `SimulationParams.monitor_update_interval`: simulated seconds between
+  DataMonitor refreshes, which were fixed at every step with a GUI and every
+  second without one. That remains the default (`None`); `0` is every step.
+  It is independent of `monitor_log_interval`.
+
+- The monitor's real-time factor is measured against the newest sample older
+  than its 10 s window as well, so updates sparser than the window no longer
+  report `rtf=0.00`.
+
 - Add `SimObject.from_urdf()` and a `urdf_path` field on
   `SimObjectSpawnParams`, so a URDF-defined body with no behaviour can be
   loaded as a plain `SimObject` instead of an `Agent`. `from_sdf()` already
@@ -182,6 +212,12 @@ are not recommended for production use yet.
 - Add a macOS launcher for viewing Linux GUI examples in a browser via Colima
   and noVNC.
 - Opt-in, versioned kinematic navigation replay: record effective Fleet API navigate/stop inputs, reconstruct a fresh supported initial world, and compare acknowledgements, events and full observations. Supports omni/batch_omni, stable artifact entity IDs, integrity validation and explicit changed-configuration comparisons; does not provide checkpoint/resume or ROS/DDS replay.
+- `run_simulation()` now warns when real time between consecutive loop
+  iterations exceeds 2 seconds, regardless of `target_rtf`. The existing
+  wall-vs-monotonic clock-jump diagnostic only logged in the `target_rtf > 0`
+  branch, so `target_rtf <= 0` (run-as-fast-as-possible) had no loop-timing
+  instrumentation at all — a host overload or a stalled GUI event left
+  nothing to go on after the fact.
 
 ### Changed
 

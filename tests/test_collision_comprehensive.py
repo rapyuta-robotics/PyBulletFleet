@@ -570,7 +570,7 @@ def test_contact_points_margin_update_does_not_rebuild(sim_core_physics, monkeyp
     monkeypatch.setattr(sim_core_physics, "_rebuild_spatial_grid", unexpected_rebuild)
     sim_core_physics.set_collision_margin(0.25)
     assert sim_core_physics.params.collision_margin == 0.25
-    assert not sim_core_physics._collision_margin_changed
+    assert not sim_core_physics._recheck_stationary_pairs
 
 
 def test_contact_points_candidates_ignore_positive_margin(sim_core_physics):

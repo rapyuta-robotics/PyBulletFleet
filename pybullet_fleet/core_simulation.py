@@ -67,6 +67,10 @@ from pybullet_fleet._defaults import SIMULATION as _SIM_D
 if TYPE_CHECKING:
     from pybullet_fleet.sim_plugin import SimPlugin
 
+#: ``fn(obj_a, obj_b) -> bool for :meth:`MultiRobotSimulationCore.set_collision_ignore_filter`:
+#: ``True`` when the two touching objects are meant to touch and should not count as a collision.
+CollisionIgnoreFilter = Callable[[SimObject, SimObject], bool]
+
 # Generic plugin type so register_plugin() returns the concrete subclass type.
 _SimPluginT = TypeVar("_SimPluginT", bound="SimPlugin")
 
@@ -122,6 +126,13 @@ logger = get_lazy_logger(__name__)
 # log only; does not affect pacing.
 _CLOCK_JUMP_LOG_THRESHOLD_S = 0.5
 
+# Real seconds between consecutive run_simulation() loop iterations worth
+# flagging as a stall (host overloaded, GUI event processing stuck, etc.).
+# WARNING log only. Unlike the clock-jump diagnostic above, this fires in
+# every pacing mode including target_rtf<=0 (run-as-fast-as-possible), which
+# otherwise has no loop-timing instrumentation at all.
+_STEP_STALL_LOG_THRESHOLD_S = 2.0
+
 # PyBullet does not expose these mouse constants in every wheel build.  Keep
 # them aligned with CameraController's documented event tuple values.
 _MOUSE_BUTTON_EVENT = 2
@@ -172,6 +183,18 @@ class SimulationParams:
     #: Tk window on screen. ``True`` or ``False`` is honoured as given, so a
     #: monitor window without the PyBullet viewer is still available.
     enable_monitor_gui: Optional[bool] = _SIM_D["enable_monitor_gui"]
+    #: Simulated seconds between DataMonitor refreshes while ``monitor`` is
+    #: on. ``None`` (the default) is every step with a GUI, so the window stays
+    #: live, and every second without one. ``0`` is every step.
+    monitor_update_interval: Optional[float] = _SIM_D["monitor_update_interval"]
+    #: Wall-clock seconds between ``[MONITOR]`` lines logged at INFO -- RTF,
+    #: collision totals, step count -- independent of ``monitor``, ``gui`` and
+    #: ``monitor_update_interval``. ``monitor`` drives the DataMonitor, whose
+    #: line is logged at DEBUG; this keeps those figures in the log whether or
+    #: not anything is on screen. Default 1 s; ``0`` logs none. Wall clock
+    #: rather than simulated time, so the log's volume does not scale with the
+    #: real-time factor.
+    monitor_log_interval: float = _SIM_D["monitor_log_interval"]
     collision_check_frequency: Optional[float] = None
     log_level: str = _SIM_D["log_level"]
     max_steps_per_frame: int = _SIM_D["max_steps_per_frame"]
@@ -187,6 +210,11 @@ class SimulationParams:
     enable_shadows: bool = _SIM_D["enable_shadows"]
     enable_gui_panel: bool = _SIM_D["enable_gui_panel"]
     ignore_static_collision: bool = _SIM_D["ignore_static_collision"]
+    #: Do not count contact between an object and the object it is attached
+    #: to (``attach_object``): a carried load touches its carrier by design.
+    #: Only the direct parent and child; contact with anything else the
+    #: carrier holds is still reported.
+    ignore_attached_collision: bool = _SIM_D["ignore_attached_collision"]
     enable_time_profiling: bool = _SIM_D["enable_time_profiling"]
     profiling_interval: int = _SIM_D["profiling_interval"]
     enable_memory_profiling: bool = _SIM_D["enable_memory_profiling"]
@@ -430,6 +458,7 @@ class MultiRobotSimulationCore:
         self._last_logged_collision_count: int = 0  # Track last logged collision count
         self._monitor_enabled: bool = params.monitor
         self._last_monitor_update: float = 0
+        self._last_monitor_log: Optional[float] = None  # time.monotonic() of the last INFO [MONITOR] line
         self._callbacks: List[Dict[str, Any]] = []  # List of callback functions
         self._behavior_tree_callbacks: List[Tuple[BehaviorTree, Callable]] = []
         self._data_monitor: Optional[DataMonitor] = None
@@ -543,7 +572,14 @@ class MultiRobotSimulationCore:
         self._active_pairs_by_object: Dict[int, Set[Tuple[int, int]]] = {}
         self._collision_pair_observations: Dict[Tuple[int, int], CollisionPairObservation] = {}
         self._last_collision_check_metadata: Optional[Tuple[int, float, CollisionDetectionMethod, float]] = None
-        self._collision_margin_changed = False
+        self._recheck_stationary_pairs = False
+        self._collision_ignore_filter: Optional[CollisionIgnoreFilter] = None
+        # Broad-phase candidate pairs the ignore rules excluded last time they
+        # were checked. Their narrow phase was skipped, so whether they touch
+        # is unknown; they are re-evaluated on every check, so a pair that
+        # stops being ignored without either body moving (an in-place detach,
+        # a filter reading run-time state) is still found.
+        self._ignored_collision_pairs: Set[Tuple[int, int]] = set()
 
         # --- Recording ---
         self._recorder: Optional[Any] = None  # Optional[SimulationRecorder] (lazy import to avoid circular)
@@ -1925,6 +1961,35 @@ class MultiRobotSimulationCore:
         """
         return int(math.floor(coord / cast(float, self._cached_cell_size)))
 
+    def set_collision_ignore_filter(self, ignore: Optional[CollisionIgnoreFilter]) -> None:
+        """Exclude the touching pairs ``ignore(obj_a, obj_b)`` returns ``True`` for from collision results.
+
+        An ignored pair is treated as not touching everywhere a collision
+        shows up: it is not an active pair, not counted, not recoloured, not
+        in the collision observation and raises no ``COLLISION_STARTED``. A
+        pair that becomes ignored while active is resolved (``COLLISION_ENDED``)
+        on the next collision check, and an ignored pair that stops being
+        ignored is checked again on the next one, whether or not either body
+        moved. So the filter may depend on state that changes at run time --
+        which object carries which, say. It is applied on top of
+        ``ignore_attached_collision``. ``None`` removes it.
+
+        Ignored pairs skip the narrow phase, so the filter is called, on each
+        collision check, for every broad-phase candidate pair involving a
+        moved object, every active pair and every pair it ignored last time
+        until they move apart; keep it cheap.
+        """
+        self._collision_ignore_filter = ignore
+        # Stationary pairs are otherwise not rechecked until one of them moves.
+        self._moved_this_step.update(self._sim_objects_dict)
+        self._recheck_stationary_pairs = True
+
+    def _is_ignored_collision(self, obj_a: SimObject, obj_b: SimObject) -> bool:
+        """Whether two touching objects are excluded from collision results."""
+        if self._params.ignore_attached_collision and (obj_a._attached_to is obj_b or obj_b._attached_to is obj_a):
+            return True
+        return self._collision_ignore_filter is not None and bool(self._collision_ignore_filter(obj_a, obj_b))
+
     def _collision_broadphase_margin(self) -> float:
         """Match the clearance used by the configured narrow phase."""
         if self._params.collision_detection_method in (
@@ -1946,7 +2011,7 @@ class MultiRobotSimulationCore:
             return
         self._rebuild_spatial_grid()
         self._moved_this_step.update(self._sim_objects_dict)
-        self._collision_margin_changed = True
+        self._recheck_stationary_pairs = True
 
     def _get_overlapping_cells(self, object_id: int, margin: float = 0.0) -> List[Tuple[int, int, int]]:
         """
@@ -2266,6 +2331,7 @@ class MultiRobotSimulationCore:
         self._active_collision_pairs.clear()
         self._active_pairs_by_object.clear()
         self._collision_pair_observations.clear()
+        self._ignored_collision_pairs.clear()
         self._last_collision_check_metadata = None
 
     def set_collision_spatial_hash_cell_size_mode(
@@ -3251,9 +3317,18 @@ class MultiRobotSimulationCore:
             # (to detect when collisions are resolved)
             # Skip static-static pairs (they never change after initial check)
             for obj_id_i, obj_id_j in list(self._active_collision_pairs):
+                # Re-check a pair that is now ignored, so that it resolves even
+                # when neither object moved (e.g. one was just attached). Ahead
+                # of the static shortcut: the rule can change for any pair.
+                obj_i = self._sim_objects_dict.get(obj_id_i)
+                obj_j = self._sim_objects_dict.get(obj_id_j)
+                if obj_i is not None and obj_j is not None and self._is_ignored_collision(obj_i, obj_j):
+                    pairs_to_check.add((obj_id_i, obj_id_j))
+                    continue
+
                 # Skip if both objects are static (no need to re-check)
                 if (
-                    not self._collision_margin_changed
+                    not self._recheck_stationary_pairs
                     and obj_id_i in self._static_collision_objects
                     and obj_id_j in self._static_collision_objects
                 ):
@@ -3262,6 +3337,17 @@ class MultiRobotSimulationCore:
                 # Re-check if at least one object moved
                 if obj_id_i in moved_since_last_check or obj_id_j in moved_since_last_check:
                     pairs_to_check.add((obj_id_i, obj_id_j))
+
+            # And the pairs the ignore rules excluded last time. A moved pair
+            # the broad phase no longer offers is apart and is dropped; the
+            # rest are checked again, ignored or not.
+            for pair in list(self._ignored_collision_pairs):
+                obj_id_i, obj_id_j = pair
+                moved = obj_id_i in moved_since_last_check or obj_id_j in moved_since_last_check
+                if moved and pair not in pairs_to_check:
+                    self._ignored_collision_pairs.discard(pair)
+                else:
+                    pairs_to_check.add(pair)
 
             # Check contact points for all pairs
             new_collisions = set()
@@ -3277,6 +3363,7 @@ class MultiRobotSimulationCore:
                 if obj_i is None or obj_j is None:
                     # Object was removed — clean up stale pair
                     self._discard_active_collision_pair((obj_id_i, obj_id_j))
+                    self._ignored_collision_pairs.discard((obj_id_i, obj_id_j))
                     continue
 
                 # Select collision detection method based on configuration
@@ -3284,7 +3371,13 @@ class MultiRobotSimulationCore:
                 signed_distance: Optional[float] = None
                 pair_method = detection_method
 
-                if detection_method == CollisionDetectionMethod.CONTACT_POINTS:
+                self._ignored_collision_pairs.discard((obj_id_i, obj_id_j))
+                if self._is_ignored_collision(obj_i, obj_j):
+                    # Treated as not touching: resolves the pair if it was
+                    # active. Remembered, so it is re-evaluated next check.
+                    self._ignored_collision_pairs.add((obj_id_i, obj_id_j))
+
+                elif detection_method == CollisionDetectionMethod.CONTACT_POINTS:
                     # Method 1: getContactPoints (physics mode, actual contact manifold)
                     # Best for: physics simulation after a collision-detection pass.
                     # Note: Cache/solver-dependent for kinematic-kinematic pairs.
@@ -3425,7 +3518,7 @@ class MultiRobotSimulationCore:
             # PyBullet disconnected, skip collision checking
             pass
 
-        self._collision_margin_changed = False
+        self._recheck_stationary_pairs = False
 
         if return_profiling:
             timings["total"] = (time.perf_counter() - t0) * 1000  # ms
@@ -3473,6 +3566,55 @@ class MultiRobotSimulationCore:
             tuple(self._collision_pair_observations[pair] for pair in sorted(self._active_collision_pairs)),
         )
 
+    def _maybe_log_monitor_line(self) -> None:
+        """Log the monitor figures at INFO once every ``monitor_log_interval`` wall seconds.
+
+        Computes them afresh rather than reading the last monitor frame: with
+        ``monitor`` off there is none, and with it on it advances only every
+        ``monitor_update_interval``. It does not go through
+        ``update_monitor()``, which would also write a DataMonitor frame and
+        so tie the window's refresh to the log's.
+        """
+        if not logger.isEnabledFor(logging.INFO):
+            return
+        now = time.monotonic()
+        if self._last_monitor_log is not None and now - self._last_monitor_log < self._params.monitor_log_interval:
+            return
+        self._last_monitor_log = now
+        sim_time = self._elapsed_sim_time
+        num_agents = len(self._agents)
+        logger.info(
+            "[MONITOR] sim_time=%.2f, real_time=%.2f, rtf=%.2f, target_rtf=%g, agents=%d, objects=%d, "
+            "active_collisions=%d, total_collisions=%d, steps=%d",
+            sim_time,
+            now - self._start_time if self._start_time else 0,
+            self._sample_speed(now, sim_time),
+            self._params.target_rtf,
+            num_agents,
+            len(self._sim_objects) - num_agents,
+            len(self._active_collision_pairs),
+            self._collision_count,
+            self._step_count,
+        )
+
+    def _sample_speed(self, now: float, sim_time: float) -> float:
+        """Record a (real, simulated) time sample and return the real-time factor.
+
+        Measured over a 10-second sliding window, plus the newest sample older
+        than that as the baseline: when samples are sparser than the window (a
+        long monitor_log_interval with the monitor off), dropping it would
+        leave one sample and report 0.
+        """
+        self._speed_history.append((now, sim_time))
+        while len(self._speed_history) > 1 and now - self._speed_history[1][0] > 10.0:
+            self._speed_history.popleft()
+        if len(self._speed_history) < 2:
+            return 0.0
+        rt0, st0 = self._speed_history[0]
+        rt1, st1 = self._speed_history[-1]
+        elapsed = rt1 - rt0
+        return (st1 - st0) / elapsed if elapsed > 0 else 0.0
+
     def update_monitor(self) -> None:
         """Update simulation monitor with current statistics.
 
@@ -3481,20 +3623,7 @@ class MultiRobotSimulationCore:
         """
         now = time.monotonic()  # monotonic: RTF/elapsed stay correct across wall-clock jumps
         sim_time = self._elapsed_sim_time
-        # --- Speed history buffer ---
-        self._speed_history.append((now, sim_time))
-        # Keep only history within 10 seconds (O(1) popleft with deque)
-        while self._speed_history and now - self._speed_history[0][0] > 10.0:
-            self._speed_history.popleft()
-        # Calculate actual RTF for the last 10 seconds
-        if len(self._speed_history) >= 2:
-            rt0, st0 = self._speed_history[0]
-            rt1, st1 = self._speed_history[-1]
-            elapsed = rt1 - rt0
-            sim_elapsed = st1 - st0
-            actual_rtf = sim_elapsed / elapsed if elapsed > 0 else 0
-        else:
-            actual_rtf = 0
+        actual_rtf = self._sample_speed(now, sim_time)
         elapsed_time = now - self._start_time if self._start_time else 0
 
         # Use len(self._agents) for O(1) agent count instead of O(N) iteration
@@ -3595,6 +3724,7 @@ class MultiRobotSimulationCore:
         self._resume_ready = False
         self._last_collision_check = 0.0
         self._last_monitor_update = 0.0
+        self._last_monitor_log = None  # a fresh run logs its first step
         self._last_logged_collision_count = 0
         self._last_monitor_frame = None
         self._single_step_requested = False
@@ -3614,7 +3744,7 @@ class MultiRobotSimulationCore:
 
         # Reset filter_aabb_pairs mode-change detection (#6: fresh start)
         self._last_ignore_static = None
-        self._collision_margin_changed = False
+        self._recheck_stationary_pairs = False
 
         # Clear speed history (#2: prevents stale data in update_monitor)
         self._speed_history.clear()
@@ -4093,8 +4223,21 @@ class MultiRobotSimulationCore:
             # Resume rebases pacing, but clock-jump diagnostics start now.
             diag_prev_wall = time.time()
             diag_prev_mono = pacing_now
+            last_iter_mono = pacing_now
 
             while True:
+                iter_now = time.monotonic()
+                stall = iter_now - last_iter_mono
+                if stall > _STEP_STALL_LOG_THRESHOLD_S:
+                    logger.warning(
+                        "run_simulation: %.2fs since the previous loop iteration started (step %d) -- "
+                        "the host was likely overloaded, or GUI event processing stalled; this is real "
+                        "time elapsed between steps, not a jump in the simulation's own clock.",
+                        stall,
+                        self._step_count,
+                    )
+                last_iter_mono = iter_now
+
                 current_sim_time = self._elapsed_sim_time
 
                 # Check duration based on simulation time (not real time)
@@ -4626,10 +4769,15 @@ class MultiRobotSimulationCore:
                 t_mon0 = time.perf_counter()
 
             if self._monitor_enabled:
-                interval = self._params.timestep if self._params.gui else 1.0
+                interval = self._params.monitor_update_interval
+                if interval is None:
+                    interval = self._params.timestep if self._params.gui else 1.0
                 if self.sim_time - self._last_monitor_update > interval:
                     self.update_monitor()
                     self._last_monitor_update = self.sim_time
+
+            if self._params.monitor_log_interval > 0:
+                self._maybe_log_monitor_line()
 
             if measure_timing:
                 t_mon1 = time.perf_counter()
