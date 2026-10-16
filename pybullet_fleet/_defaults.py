@@ -48,6 +48,7 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "enable_shadows": True,
         "enable_gui_panel": False,
         "ignore_static_collision": True,
+        "ignore_attached_collision": True,
         "enable_time_profiling": False,
         "profiling_interval": 100,
         "enable_memory_profiling": False,
