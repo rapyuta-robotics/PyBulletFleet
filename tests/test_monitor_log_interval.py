@@ -1,9 +1,10 @@
 """`monitor_log_interval`: the monitor's figures in the log, without the monitor.
 
 The DataMonitor exists to feed a window, and its own ``[MONITOR]`` line is
-logged at DEBUG, so a headless run had no record of its real-time factor or
-collision count. ``monitor_log_interval`` logs that line at INFO on a wall-clock
-interval whatever ``monitor`` is set to.
+logged at DEBUG, so a run had no record of its real-time factor or collision
+count. ``monitor_log_interval`` logs that line at INFO on a wall-clock interval
+whatever ``monitor`` and ``gui`` are set to -- by default as often as the
+monitor itself refreshes without a GUI.
 """
 
 import logging
@@ -74,8 +75,22 @@ def test_logs_once_per_interval(make_sim, caplog, monkeypatch):
     assert len(_monitor_lines(caplog)) == 3
 
 
-def test_off_by_default(make_sim, caplog):
+def test_on_by_default_at_the_monitor_interval(make_sim, caplog, monkeypatch):
+    import pybullet_fleet.core_simulation as core
+
+    assert SimulationParams().monitor_log_interval is None
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(core.time, "monotonic", lambda: clock["now"])
     sim = make_sim()
+    with caplog.at_level(logging.INFO):
+        for _ in range(10):  # 0.25 * MONITOR_UPDATE_INTERVAL apart
+            sim.step_once()
+            clock["now"] += 0.25 * core.MONITOR_UPDATE_INTERVAL
+    assert len(_monitor_lines(caplog)) == 3
+
+
+def test_zero_turns_it_off(make_sim, caplog):
+    sim = make_sim(monitor_log_interval=0)
     with caplog.at_level(logging.INFO):
         for _ in range(5):
             sim.step_once()

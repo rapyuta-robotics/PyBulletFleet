@@ -67,6 +67,10 @@ from pybullet_fleet._defaults import SIMULATION as _SIM_D
 if TYPE_CHECKING:
     from pybullet_fleet.sim_plugin import SimPlugin
 
+#: Seconds between DataMonitor refreshes without a GUI (with one it refreshes
+#: every step), and the default for ``SimulationParams.monitor_log_interval``.
+MONITOR_UPDATE_INTERVAL = 1.0
+
 # Generic plugin type so register_plugin() returns the concrete subclass type.
 _SimPluginT = TypeVar("_SimPluginT", bound="SimPlugin")
 
@@ -180,12 +184,14 @@ class SimulationParams:
     #: monitor window without the PyBullet viewer is still available.
     enable_monitor_gui: Optional[bool] = _SIM_D["enable_monitor_gui"]
     #: Wall-clock seconds between ``[MONITOR]`` lines logged at INFO -- RTF,
-    #: collision totals, step count -- independent of ``monitor``. ``monitor``
-    #: drives the DataMonitor, whose line is logged at DEBUG; this is for a
-    #: headless run that wants those figures in its log without one. ``0``
-    #: (the default) logs none. Wall clock rather than simulated time, so the
-    #: log's volume does not scale with the real-time factor.
-    monitor_log_interval: float = _SIM_D["monitor_log_interval"]
+    #: collision totals, step count -- independent of ``monitor`` and ``gui``.
+    #: ``monitor`` drives the DataMonitor, whose line is logged at DEBUG; this
+    #: keeps those figures in the log whether or not anything is on screen.
+    #: ``None`` (the default) is the monitor's own refresh interval,
+    #: ``MONITOR_UPDATE_INTERVAL`` (1 s); ``0`` logs none. Wall clock rather
+    #: than simulated time, so the log's volume does not scale with the
+    #: real-time factor.
+    monitor_log_interval: Optional[float] = _SIM_D["monitor_log_interval"]
     collision_check_frequency: Optional[float] = None
     log_level: str = _SIM_D["log_level"]
     max_steps_per_frame: int = _SIM_D["max_steps_per_frame"]
@@ -445,6 +451,9 @@ class MultiRobotSimulationCore:
         self._monitor_enabled: bool = params.monitor
         self._last_monitor_update: float = 0
         self._last_monitor_log: Optional[float] = None  # time.monotonic() of the last INFO [MONITOR] line
+        self._monitor_log_interval: float = (
+            MONITOR_UPDATE_INTERVAL if params.monitor_log_interval is None else params.monitor_log_interval
+        )
         self._callbacks: List[Dict[str, Any]] = []  # List of callback functions
         self._behavior_tree_callbacks: List[Tuple[BehaviorTree, Callable]] = []
         self._data_monitor: Optional[DataMonitor] = None
@@ -3497,7 +3506,7 @@ class MultiRobotSimulationCore:
         seconds stale.
         """
         now = time.monotonic()
-        if self._last_monitor_log is not None and now - self._last_monitor_log < self._params.monitor_log_interval:
+        if self._last_monitor_log is not None and now - self._last_monitor_log < self._monitor_log_interval:
             return
         self._last_monitor_log = now
         self.update_monitor()
@@ -4676,12 +4685,12 @@ class MultiRobotSimulationCore:
                 t_mon0 = time.perf_counter()
 
             if self._monitor_enabled:
-                interval = self._params.timestep if self._params.gui else 1.0
+                interval = self._params.timestep if self._params.gui else MONITOR_UPDATE_INTERVAL
                 if self.sim_time - self._last_monitor_update > interval:
                     self.update_monitor()
                     self._last_monitor_update = self.sim_time
 
-            if self._params.monitor_log_interval > 0:
+            if self._monitor_log_interval > 0:
                 self._maybe_log_monitor_line()
 
             if measure_timing:

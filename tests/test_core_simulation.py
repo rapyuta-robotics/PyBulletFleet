@@ -1703,6 +1703,9 @@ class TestRunSimulation:
             gui=False,
             physics=False,
             monitor=False,
+            # The fake clock advances per time.monotonic() call; the [MONITOR]
+            # log's own call would shift the pacing these tests count.
+            monitor_log_interval=0,
             target_rtf=10000.0,  # extreme: always far behind after any sleep
             max_steps_per_frame=10,
             log_level="warning",
@@ -1771,6 +1774,9 @@ class TestRunSimulation:
             gui=False,
             physics=False,
             monitor=False,
+            # The fake clock advances per time.monotonic() call; the [MONITOR]
+            # log's own call would shift the pacing these tests count.
+            monitor_log_interval=0,
             target_rtf=10000.0,
             timestep=1.0 / 240.0,
             max_steps_per_frame=max_steps,
