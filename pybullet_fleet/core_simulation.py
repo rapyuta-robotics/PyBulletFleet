@@ -122,6 +122,13 @@ logger = get_lazy_logger(__name__)
 # log only; does not affect pacing.
 _CLOCK_JUMP_LOG_THRESHOLD_S = 0.5
 
+# Real seconds between consecutive run_simulation() loop iterations worth
+# flagging as a stall (host overloaded, GUI event processing stuck, etc.).
+# WARNING log only. Unlike the clock-jump diagnostic above, this fires in
+# every pacing mode including target_rtf<=0 (run-as-fast-as-possible), which
+# otherwise has no loop-timing instrumentation at all.
+_STEP_STALL_LOG_THRESHOLD_S = 2.0
+
 # PyBullet does not expose these mouse constants in every wheel build.  Keep
 # them aligned with CameraController's documented event tuple values.
 _MOUSE_BUTTON_EVENT = 2
@@ -4087,8 +4094,21 @@ class MultiRobotSimulationCore:
             # Resume rebases pacing, but clock-jump diagnostics start now.
             diag_prev_wall = time.time()
             diag_prev_mono = pacing_now
+            last_iter_mono = pacing_now
 
             while True:
+                iter_now = time.monotonic()
+                stall = iter_now - last_iter_mono
+                if stall > _STEP_STALL_LOG_THRESHOLD_S:
+                    logger.warning(
+                        "run_simulation: %.2fs since the previous loop iteration started (step %d) -- "
+                        "the host was likely overloaded, or GUI event processing stalled; this is real "
+                        "time elapsed between steps, not a jump in the simulation's own clock.",
+                        stall,
+                        self._step_count,
+                    )
+                last_iter_mono = iter_now
+
                 current_sim_time = self._elapsed_sim_time
 
                 # Check duration based on simulation time (not real time)

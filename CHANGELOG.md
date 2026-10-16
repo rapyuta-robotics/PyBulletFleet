@@ -141,6 +141,12 @@ are not recommended for production use yet.
 - Add a macOS launcher for viewing Linux GUI examples in a browser via Colima
   and noVNC.
 - Opt-in, versioned kinematic navigation replay: record effective Fleet API navigate/stop inputs, reconstruct a fresh supported initial world, and compare acknowledgements, events and full observations. Supports omni/batch_omni, stable artifact entity IDs, integrity validation and explicit changed-configuration comparisons; does not provide checkpoint/resume or ROS/DDS replay.
+- `run_simulation()` now warns when real time between consecutive loop
+  iterations exceeds 2 seconds, regardless of `target_rtf`. The existing
+  wall-vs-monotonic clock-jump diagnostic only logged in the `target_rtf > 0`
+  branch, so `target_rtf <= 0` (run-as-fast-as-possible) had no loop-timing
+  instrumentation at all — a host overload or a stalled GUI event left
+  nothing to go on after the fact.
 
 ### Changed
 
