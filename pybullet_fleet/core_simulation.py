@@ -3569,30 +3569,51 @@ class MultiRobotSimulationCore:
     def _maybe_log_monitor_line(self) -> None:
         """Log the monitor figures at INFO once every ``monitor_log_interval`` wall seconds.
 
-        Refreshes them first rather than reading the last frame: with
-        ``monitor`` off nothing else does, and with it on the frame advances
-        once a simulated second, which at a low real-time factor is many wall
-        seconds stale.
+        Computes them afresh rather than reading the last monitor frame: with
+        ``monitor`` off there is none, and with it on it advances only every
+        ``monitor_update_interval``. It does not go through
+        ``update_monitor()``, which would also write a DataMonitor frame and
+        so tie the window's refresh to the log's.
         """
+        if not logger.isEnabledFor(logging.INFO):
+            return
         now = time.monotonic()
         if self._last_monitor_log is not None and now - self._last_monitor_log < self._params.monitor_log_interval:
             return
         self._last_monitor_log = now
-        self.update_monitor()
-        frame = self._last_monitor_frame
+        sim_time = self._elapsed_sim_time
+        num_agents = len(self._agents)
         logger.info(
             "[MONITOR] sim_time=%.2f, real_time=%.2f, rtf=%.2f, target_rtf=%g, agents=%d, objects=%d, "
             "active_collisions=%d, total_collisions=%d, steps=%d",
-            frame.sim_time,
-            frame.real_time,
-            frame.actual_rtf,
-            frame.target_rtf,
-            frame.agents,
-            frame.objects,
-            frame.active_collisions,
-            frame.collisions,
-            frame.steps,
+            sim_time,
+            now - self._start_time if self._start_time else 0,
+            self._sample_speed(now, sim_time),
+            self._params.target_rtf,
+            num_agents,
+            len(self._sim_objects) - num_agents,
+            len(self._active_collision_pairs),
+            self._collision_count,
+            self._step_count,
         )
+
+    def _sample_speed(self, now: float, sim_time: float) -> float:
+        """Record a (real, simulated) time sample and return the real-time factor.
+
+        Measured over a 10-second sliding window, plus the newest sample older
+        than that as the baseline: when samples are sparser than the window (a
+        long monitor_log_interval with the monitor off), dropping it would
+        leave one sample and report 0.
+        """
+        self._speed_history.append((now, sim_time))
+        while len(self._speed_history) > 1 and now - self._speed_history[1][0] > 10.0:
+            self._speed_history.popleft()
+        if len(self._speed_history) < 2:
+            return 0.0
+        rt0, st0 = self._speed_history[0]
+        rt1, st1 = self._speed_history[-1]
+        elapsed = rt1 - rt0
+        return (st1 - st0) / elapsed if elapsed > 0 else 0.0
 
     def update_monitor(self) -> None:
         """Update simulation monitor with current statistics.
@@ -3602,23 +3623,7 @@ class MultiRobotSimulationCore:
         """
         now = time.monotonic()  # monotonic: RTF/elapsed stay correct across wall-clock jumps
         sim_time = self._elapsed_sim_time
-        # --- Speed history buffer ---
-        self._speed_history.append((now, sim_time))
-        # Keep only history within 10 seconds (O(1) popleft with deque), plus
-        # the newest sample older than that as the baseline: when updates are
-        # sparser than the window (a long monitor_log_interval with the
-        # monitor off), dropping it would leave one sample and report rtf=0.
-        while len(self._speed_history) > 1 and now - self._speed_history[1][0] > 10.0:
-            self._speed_history.popleft()
-        # Calculate actual RTF for the last 10 seconds
-        if len(self._speed_history) >= 2:
-            rt0, st0 = self._speed_history[0]
-            rt1, st1 = self._speed_history[-1]
-            elapsed = rt1 - rt0
-            sim_elapsed = st1 - st0
-            actual_rtf = sim_elapsed / elapsed if elapsed > 0 else 0
-        else:
-            actual_rtf = 0
+        actual_rtf = self._sample_speed(now, sim_time)
         elapsed_time = now - self._start_time if self._start_time else 0
 
         # Use len(self._agents) for O(1) agent count instead of O(N) iteration
@@ -4155,7 +4160,8 @@ class MultiRobotSimulationCore:
             duration: Absolute simulation-time cutoff in seconds (not wall time).
                      If None, uses self._params.duration. If duration <= 0, runs indefinitely.
             resume: Continue an explicitly restored completed-step state without
-                    resetting its clock. Ordinary runs initialize as before.
+                    resetting its clock. A core returned by the supported
+                    recording loader resumes on its first plain call too.
 
         Example::
 
@@ -4184,6 +4190,11 @@ class MultiRobotSimulationCore:
                 height=record_height,
                 time_base=record_time_base,
             )
+
+        # A completed-step restore has already initialized this core. Treat its
+        # first plain run as continuation; a fresh core still initializes as
+        # before. Explicit resume=True remains useful for lower-level callers.
+        resume = resume or self._resume_ready
 
         # Initialize simulation state (counters, visualizer, rendering)
         # Note: initialize_simulation() already starts tracemalloc if needed

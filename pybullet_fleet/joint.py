@@ -11,7 +11,10 @@ was doing.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Optional
+
+from pybullet_fleet._tpi_state import capture_tpi_state, restore_tpi_state
 
 
 @dataclass
@@ -58,6 +61,79 @@ class KinematicJoint:
     #: speed reaches exactly zero short of the target, which is what keeps
     #: that step counted as motion.
     braking: bool = False
+
+    def capture_execution(self, name: str, clock: float) -> dict:
+        """Represent this joint's command and trajectory at a completed step."""
+        trajectory = None
+        if self.trajectory is not None:
+            trajectory = capture_tpi_state(self.trajectory)
+            trajectory["t0_offset"] = trajectory.pop("t0") - clock
+            trajectory["target"] = self.trajectory_target
+        return {
+            "name": name,
+            "position": float(self.position),
+            "target": self.target,
+            "max_velocity": self.max_velocity,
+            "max_accel": self.max_accel,
+            "max_decel": self.max_decel,
+            "speed": float(self.speed),
+            "braking": self.braking,
+            "trajectory": trajectory,
+        }
+
+    @classmethod
+    def from_execution(cls, index: int, state: dict, clock: float) -> "KinematicJoint":
+        """Validate and rebuild one joint without changing the live robot."""
+
+        def finite(value: object) -> bool:
+            return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+        position = state.get("position")
+        target = state.get("target")
+        if not finite(position) or (target is not None and not finite(target)):
+            raise ValueError("Joint checkpoint contains a nonfinite or invalid value")
+        limits = [state.get(key) for key in ("max_velocity", "max_accel", "max_decel")]
+        if any(value is not None and (not finite(value) or value <= 0) for value in limits):
+            raise ValueError("Joint checkpoint contains invalid motion limits")
+        max_velocity, max_accel, max_decel = limits
+        if max_decel is not None and max_accel is None:
+            raise ValueError("Joint checkpoint has deceleration without acceleration")
+        speed = state.get("speed")
+        braking = state.get("braking")
+        if not finite(speed) or type(braking) is not bool or (max_accel is None and (speed != 0 or braking)):
+            raise ValueError("Joint checkpoint contains invalid execution state")
+        trajectory_data = state.get("trajectory")
+        trajectory = None
+        trajectory_target = None
+        if trajectory_data is not None:
+            required = {"p0", "pe", "v0", "ve", "vmax", "accel", "decel", "t0_offset", "target"}
+            if not isinstance(trajectory_data, dict) or set(trajectory_data) != required or braking:
+                raise ValueError("Joint checkpoint contains invalid trajectory")
+            if not finite(trajectory_data["t0_offset"]) or not finite(trajectory_data["target"]):
+                raise ValueError("Joint checkpoint contains nonfinite trajectory metadata")
+            if target is None or trajectory_data["target"] != target:
+                raise ValueError("Joint checkpoint trajectory target differs from joint target")
+            if max_accel is None:
+                raise ValueError("Unconfigured joint cannot have a ramp trajectory")
+            trajectory = restore_tpi_state(
+                {
+                    **{key: value for key, value in trajectory_data.items() if key not in {"t0_offset", "target"}},
+                    "t0": clock + trajectory_data["t0_offset"],
+                }
+            )
+            trajectory_target = float(trajectory_data["target"])
+        return cls(
+            index=index,
+            position=float(position),
+            target=None if target is None else float(target),
+            max_velocity=max_velocity,
+            max_accel=max_accel,
+            max_decel=max_decel,
+            speed=float(speed),
+            trajectory=trajectory,
+            trajectory_target=trajectory_target,
+            braking=braking,
+        )
 
     @property
     def is_ramped(self) -> bool:

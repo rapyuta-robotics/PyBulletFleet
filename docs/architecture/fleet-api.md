@@ -74,4 +74,4 @@ Replay inputs preserve payload, source, command ID, allowed target names, and
 the existing pre-mutation `CommandEvent`; that event alone lacks replay payload.
 Python, ROS, RMF and other producers can supply the same effective input after
 translation. Existing ROS endpoints are not automatically moved to this boundary.
-See [Navigation replay](../how-to/replay) for the supported profile and API.
+See the [initial-state navigation re-execution guide](https://github.com/yuokamoto/PyBulletFleet/blob/main/docs/design/snapshot-replay/navigation-reexecution-guide.md) for that restricted profile and API.

@@ -155,7 +155,14 @@ class TestReviewFollowUps:
         params = SimObjectSpawnParams(urdf_path=URDF, name="tile")
         obj = SimObject.from_params(params, sim_core=sim_core)
 
-        assert recorded == [(obj, params)]
+        assert len(recorded) == 1
+        spawned, effective = recorded[0]
+        assert spawned is obj
+        assert effective.urdf_path == obj._checkpoint_spawn_params.urdf_path
+        assert effective.name == params.name
+        assert effective.mass == obj.mass
+        assert effective.pickable == obj.pickable
+        assert effective.collision_mode == obj.collision_mode
 
 
 class TestDisabledCollisionCoversEveryLink:

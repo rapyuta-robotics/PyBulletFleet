@@ -431,9 +431,9 @@ class TestControllerRegistry:
         assert "differential" in registry
 
     def test_create_velocity(self):
-        """create_controller('omni_velocity') returns OmniController."""
+        """Subclass imports must not replace the built-in omni controller."""
         ctrl = create_controller("omni")
-        assert isinstance(ctrl, OmniController)
+        assert type(ctrl) is OmniController
 
     def test_create_differential(self):
         """create_controller('differential_velocity') returns DifferentialController."""

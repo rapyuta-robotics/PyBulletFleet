@@ -35,7 +35,7 @@ independent goals.
 - Same-environment supported-profile comparison, not bitwise/cross-platform determinism.
 - Fail-fast when recording completeness is lost; valid differences remain distinct.
 
-See [user contract](../../how-to/replay.md), [implementation plan](plan.md),
+See [initial-state re-execution contract](navigation-reexecution-guide.md), [implementation plan](plan.md),
 and [evidence](evidence.md).
 
 ## Explicit non-goals

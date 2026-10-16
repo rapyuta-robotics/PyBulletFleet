@@ -16,6 +16,9 @@ from .state_recording import (
     StateRecorder,
     load_recording_manifest,
     load_supported_checkpoint,
+    load_supported_simulation,
+    register_data_restorer,
+    register_recording_profile,
     restore_supported_simulation,
 )
 
@@ -34,5 +37,8 @@ __all__ = [
     "StateRecorder",
     "load_recording_manifest",
     "load_supported_checkpoint",
+    "load_supported_simulation",
+    "register_data_restorer",
+    "register_recording_profile",
     "restore_supported_simulation",
 ]

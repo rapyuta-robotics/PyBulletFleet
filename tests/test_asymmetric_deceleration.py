@@ -8,8 +8,6 @@ integrate the decel phase with the accel scalar — from silently producing
 wrong positions.
 """
 
-import math
-
 import pytest
 
 from pybullet_fleet._tpi import build_tpi, extract_phase_params
@@ -73,8 +71,8 @@ class TestExtractPhaseParams:
 
 
 class TestCheckpointCaptureGuard:
-    def test_capture_rejects_an_asymmetric_trajectory(self):
-        """The record holds one `accel`, so an asymmetric profile is not restorable."""
+    def test_capture_preserves_an_asymmetric_trajectory(self):
+        """Straight navigation records the braking limit separately."""
         from pybullet_fleet import Pose
         from pybullet_fleet.controller import OmniController
         from pybullet_fleet.types import ControllerMode, PosePhase
@@ -90,8 +88,11 @@ class TestCheckpointCaptureGuard:
         controller._forward_start_pos = __import__("numpy").zeros(3)
         controller._tpi_forward = build_tpi(p0=0.0, pe=1.0, vmax=2.0, accel=1.0, t0=0.0, decel=0.25)
 
-        with pytest.raises(ValueError, match="Unsupported omni navigation state"):
-            controller.capture_straight_navigation()
+        state = controller.capture_navigation_state()
+        assert state["forward"]["decel"] == pytest.approx(0.25)
+        restored = OmniController(controller.params)
+        restored.restore_navigation_state(state, [0.0, 0.0, 0.0, 1.0])
+        assert restored._tpi_forward.amax_decel == pytest.approx(0.25)
 
 
 class TestControllerParamsDecel:
@@ -372,14 +373,7 @@ class TestBatchedControllersHonourTheDecelLimit:
 
 
 class TestCheckpointCaptureCoversBothPaths:
-    """Raised in review: only capture_straight_navigation() was guarded.
-
-    The checkpoint record carries a single ``accel`` and
-    ``restore_navigation_state()`` rebuilds the forward TPI from it, so an
-    asymmetric trajectory would resume at a different braking rate. That
-    limit is in the record schema, not in the controllers, so it stands even
-    though the batched controllers now evaluate asymmetric profiles.
-    """
+    """Both navigation capture paths preserve independent braking limits."""
 
     LIMITS = dict(max_linear_vel=[2.5, 2.5, 0.0], navigation_2d=True)
 
@@ -411,11 +405,7 @@ class TestCheckpointCaptureCoversBothPaths:
             sim_core=sim_core,
         )
 
-    def test_the_generic_capture_path_refuses_it_too(self, sim_core):
-        """capture_navigation_state() serializes a single `accel`, and
-        restore_navigation_state() rebuilds the forward TPI from it with
-        symmetric braking -- so capturing an asymmetric trajectory would
-        resume it at the wrong rate, silently."""
+    def test_the_generic_capture_path_preserves_deceleration(self, sim_core):
         from pybullet_fleet.geometry import Pose
 
         agent = self._agent(
@@ -428,8 +418,8 @@ class TestCheckpointCaptureCoversBothPaths:
         for _ in range(20):
             sim_core.step_once()
 
-        with pytest.raises(ValueError, match="asymmetric"):
-            agent._controllers[0].capture_navigation_state()
+        state = agent._controllers[0].capture_navigation_state()
+        assert state["forward"]["decel"] == pytest.approx(0.5)
 
     def test_a_symmetric_trajectory_still_captures(self, sim_core):
         from pybullet_fleet.geometry import Pose

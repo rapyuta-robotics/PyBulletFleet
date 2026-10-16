@@ -147,3 +147,23 @@ def test_zero_turns_it_off(make_sim, caplog):
         for _ in range(5):
             sim.step_once()
     assert _monitor_lines(caplog) == []
+
+
+def test_logging_does_not_refresh_the_monitor(make_sim, caplog, monkeypatch):
+    """A DataMonitor frame is written by update_monitor(); the log must not
+    go through it, or monitor_update_interval would follow the log's."""
+    calls = []
+    sim = make_sim(monitor=True, monitor_update_interval=1000.0, monitor_log_interval=0.001, timestep=0.1)
+    monkeypatch.setattr(sim, "update_monitor", lambda: calls.append(sim.sim_time))
+    with caplog.at_level(logging.INFO):
+        for _ in range(20):
+            sim.step_once()
+    assert calls == []
+    assert len(_monitor_lines(caplog)) >= 1
+
+
+def test_nothing_is_computed_when_info_is_off(make_sim):
+    sim = make_sim(log_level="warning", monitor_log_interval=0.001)
+    for _ in range(5):
+        sim.step_once()
+    assert len(sim._speed_history) == 0

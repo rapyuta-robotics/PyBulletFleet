@@ -8,10 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 Snapshot/replay entries in this section describe development and validation
-profiles. They do not provide general save/load for ordinary simulations and
+profiles. A declared kinematic profile supports fixed-arm and mobile-arm validation programs, but
+they do not provide general save/load for arbitrary simulations and
 are not recommended for production use yet.
 
 ### Changed
+
+- URDF SimObject and mesh Agent factories retain their effective spawn
+  descriptors for recording handlers, including URDF fixed-base and scale
+  settings. The development kinematic profile rejects batch-owned Agents,
+  changed Agent pickability and malformed floor settings before restore.
+
+- The development kinematic recording profile accepts a physics-off world
+  containing supported primitives without requiring an initial Agent.
+
+- Keep the supported kinematic recording guide as the how-to entry point;
+  move earlier re-execution and checkpoint validation guides to the snapshot
+  design records. Demo video capture remains a separate how-to.
+
+- Custom controller subclasses without their own `_registry_name` no longer
+  replace an inherited built-in registry entry such as `omni`.
 
 - Kinematic joint state moves into a `KinematicJoint` dataclass, one per
   joint, replacing the five dictionaries keyed by joint index that held
@@ -41,9 +57,11 @@ are not recommended for production use yet.
   that guards their array writes, so a controller that refuses a path does
   not leave an idle agent reporting `is_moving`.
 
-- `OmniController.capture_straight_navigation()` now rejects an asymmetric
-  profile. Its record carries a single `accel`, so such a trajectory could not
-  be rebuilt from it; the checkpoint schema is unchanged.
+- The validation-only omni checkpoint proof now uses the shared kinematic
+  navigation capture/restore methods, including asymmetric deceleration.
+  Its artifact version advances to 2. The redundant straight-only controller
+  methods have been removed, and per-joint checkpoint conversion now lives
+  with `KinematicJoint` while `Agent` applies the rebuilt joints to PyBullet.
 - An optional state-recorder error during a command, object spawn/removal, or
   completed-step capture now stops recording with an explicitly incomplete
   artifact while the simulation operation continues. GUI playback selects the
@@ -131,6 +149,29 @@ are not recommended for production use yet.
   `Agent.is_joint_moving()` reports whether a ramped joint is still in
   motion, which `Elevator` arrival now waits for instead of taking the
   action's tolerance as arrival.
+- Add a PBF-owned, versioned kinematic recording profile for supported URDF
+  Agents, all kinematic joints, constructed primitives and attachments. A trusted
+  registry and `load_supported_simulation()` reconstruct a complete artifact
+  in a fresh process; the first ordinary `run_simulation()` then continues
+  from its completed-step checkpoint. A fixed-arm validation program records
+  and restores the existing demo's callback behavior through a declared
+  application data restorer; the ordinary demo remains unchanged. Unsupported
+  live state or missing restore code fails closed; recording errors mark
+  artifacts incomplete while simulation continues. The same profile renders
+  recorded kinematic entity frames in the GUI without executing simulation
+  steps; examples may supply an initial camera configuration. The manipulation
+  validation scenario now uses the one-call loader and ordinary
+  `run_simulation()` continuation with a registered external-stage restorer.
+  The supported profile now records joint motion limits, signed speed and
+  in-progress ramp phase for fresh-process continuation of ramped joints.
+  Its development artifact schema is `pbf.kinematic.v4`; older artifacts
+  lack parts of the current execution or object-construction state and must be
+  recorded again.
+  Active differential pose navigation and asymmetric omni/differential forward
+  deceleration are now restorable through shared TPI checkpoint primitives.
+  Physics-off standard `SimObject` box, sphere and cylinder shapes can be
+  reconstructed independently for display and collision, including local
+  shape offsets. Meshes, URDF objects and custom subclasses remain unsupported.
 
 - Add name-based simulation entity lookup on `MultiRobotSimulationCore`:
   ordered multi-result searches for objects and agents, plus unique-result

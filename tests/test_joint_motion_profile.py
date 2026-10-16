@@ -259,9 +259,8 @@ class TestDirectionReversal:
         assert moving > from_rest
 
 
-class TestRestoreResetsTheRamp:
-    """A restored joint resumes from rest: the checkpoint carries no ramp
-    state, so a stale trajectory or speed must not survive the restore."""
+class TestRestorePreservesTheRamp:
+    """A completed-step checkpoint retains a ramp's phase and signed speed."""
 
     def _ramping_agent(self, sim_core):
         agent = Agent.from_params(AgentSpawnParams(urdf_path=URDF, name="a", use_fixed_base=True), sim_core=sim_core)
@@ -271,21 +270,26 @@ class TestRestoreResetsTheRamp:
             sim_core.step_once()
         return agent
 
-    def test_the_checkpoint_does_not_carry_the_speed(self, sim_core):
+    def test_the_checkpoint_carries_the_speed_and_plan(self, sim_core):
         agent = self._ramping_agent(sim_core)
         index = agent._joint_index_by_name(JOINT)
         assert agent._joints[index].speed > 0.0, "the joint is mid-ramp"
-        assert set(agent.capture_kinematic_joint_execution()[index]) == {"name", "position", "target"}
+        record = agent.capture_kinematic_joint_execution()[index]
+        assert record["speed"] == pytest.approx(agent._joints[index].speed)
+        assert record["max_velocity"] == pytest.approx(0.4)
+        assert record["max_accel"] == pytest.approx(1.0)
+        assert record["trajectory"] is not None
 
-    def test_restore_drops_the_ramp_state(self, sim_core):
+    def test_restore_rebuilds_the_ramp_state(self, sim_core):
         agent = self._ramping_agent(sim_core)
         index = agent._joint_index_by_name(JOINT)
         captured = agent.capture_kinematic_joint_execution()
 
         agent.restore_kinematic_joint_execution(captured)
 
-        assert all(j.speed == 0.0 for j in agent._joints.values())
-        assert agent.is_joint_moving(JOINT) is False
+        assert agent._joints[index].speed == pytest.approx(captured[index]["speed"])
+        assert agent.is_joint_moving(JOINT) is True
+        assert agent.capture_kinematic_joint_execution() == captured
 
     def test_the_restored_joint_still_reaches_its_target(self, sim_core):
         agent = self._ramping_agent(sim_core)
