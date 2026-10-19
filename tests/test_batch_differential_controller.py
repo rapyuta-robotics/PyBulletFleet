@@ -158,10 +158,12 @@ class TestBatchDiffEquivalence:
     def test_per_step_pose_matches_diff(self, sim, goal_xyz):
         # Reference agent uses per-agent DifferentialController.
         ref = _spawn_diff(sim, x=0.0, y=0.0, yaw=0.0, max_vel=1.2, max_ang_vel=1.5)
+        # The same path on both sides: bc.set_path() adds no approach waypoint.
         ref.set_path(
             [Pose.from_xyz(*goal_xyz)],
             final_orientation_align=False,
             direction=MovementDirection.FORWARD,
+            auto_approach=False,
         )
 
         # Target agent uses the batch controller (disable final-orient to match ref).
@@ -202,7 +204,7 @@ class TestBatchDiffIntegration:
         bc.set_path(a, [Pose.from_xyz(0.0, 1.0, 0.1)])
 
         sim.step_once()
-        pb_pos, pb_orn = p.getBasePositionAndOrientation(a.object_id, physicsClientId=sim.client)
+        pb_pos, pb_orn = p.getBasePositionAndOrientation(a.body_id, physicsClientId=sim.client)
         cache_pose = a.get_pose()
         assert pb_pos[0] == pytest.approx(cache_pose.position[0], abs=1e-9)
         assert pb_pos[1] == pytest.approx(cache_pose.position[1], abs=1e-9)

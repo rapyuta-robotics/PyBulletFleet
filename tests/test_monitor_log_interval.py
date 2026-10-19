@@ -135,10 +135,10 @@ def test_the_monitor_refresh_is_set_separately(make_sim, monkeypatch):
     every_step = _monitor_updates(make_sim, monkeypatch, monitor_update_interval=0)
     assert SimulationParams().monitor_update_interval is None
     # 4 simulated seconds: about once a second headless by default, about
-    # twice as often at 0.5 s, and on every step but the first at 0.
+    # twice as often at 0.5 s, and on every step at 0.
     assert 3 <= headless_default <= 4
     assert twice_as_often >= 2 * headless_default
-    assert every_step == 39
+    assert every_step == 40
 
 
 def test_zero_turns_it_off(make_sim, caplog):

@@ -1,5 +1,7 @@
 # Manipulation/entity-lifecycle scenario — implementation evidence
 
+**Note (2026-10-19):** these values were recorded with an earlier step timing; a rerun reaches each row one step earlier. The current timing is described in "Which time a pose belongs to" in [two-phase-step.md](../../architecture/two-phase-step.md).
+
 **Usage status:** State-discovery evidence; general snapshot/restore is still
 under development and not ready for production use.
 

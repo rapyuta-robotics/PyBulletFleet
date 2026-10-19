@@ -31,7 +31,7 @@ PROFILE = "pbf.single_omni_straight_checkpoint"
 VERSION = 2
 DT = 0.1
 CHECKPOINT_STEP = 3
-END_TIME = 1.4
+END_TIME = 1.3
 ROBOT_NAME = "checkpoint-robot"
 INITIAL = Pose.from_xyz(0.0, 0.0, 0.1)
 GOAL = Pose.from_xyz(0.4, 0.0, 0.1)
@@ -249,11 +249,12 @@ def validate_checkpoint(checkpoint: object) -> dict:
         or forward["orientation_after_rotation"] is not None
     ):
         raise ValueError("Checkpoint trajectory differs from the supported profile")
-    # The last step evaluated its TPI at (k-1)*dt, not at the next-step time.
+    # A completed step's pose is its trajectory at the step's end, k*dt: the
+    # checkpoint's elapsed time (sim_time outside a step).
     from pybullet_fleet._tpi import build_tpi
 
     tpi = build_tpi(0, math.dist(origin, goal), vmax, accel, t0, decel=decel)
-    traveled, expected_speed, _ = tpi.get_point((CHECKPOINT_STEP - 1) * DT)
+    traveled, expected_speed, _ = tpi.get_point(CHECKPOINT_STEP * DT)
     direction = [(g - o) / math.dist(origin, goal) for o, g in zip(origin, goal)]
     expected_position = [o + d * traveled for o, d in zip(origin, direction)]
     expected_velocity = [d * expected_speed for d in direction]
@@ -316,8 +317,8 @@ def run_reference(*, gui: bool = False, view_rtf: float = 1.0, hold_gui: bool = 
         samples = [_sample(sim, robot)]
 
         def after_step(**_: object) -> None:
-            # POST_STEP observes the new pose before the core advances its counters.
-            completed_step = sim.step_count + 1
+            # POST_STEP observes the new pose and the counter of the step it completes.
+            completed_step = sim.step_count
             samples.append(_sample(sim, robot, completed_step=completed_step))
             if hold_gui and gui and completed_step * DT >= END_TIME:
                 _hold_final_gui(sim)
@@ -356,7 +357,7 @@ def run_restored(path: Path, *, gui: bool = False, view_rtf: float = 1.0, hold_g
         samples = [_sample(sim, robot)]
 
         def after_step(**_: object) -> None:
-            completed_step = sim.step_count + 1
+            completed_step = sim.step_count
             samples.append(_sample(sim, robot, completed_step=completed_step))
             if hold_gui and gui and completed_step * DT >= END_TIME:
                 _hold_final_gui(sim)

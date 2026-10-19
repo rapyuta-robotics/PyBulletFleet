@@ -437,7 +437,7 @@ class WorkcellPlugin(SimPlugin):
     def on_step(self, dt: float) -> None:
         """Check pending actions and process return-home queue."""
         self._check_pending_actions()
-        self._process_return_home()
+        self._process_return_home(self.sim_core.sim_time)
 
     def on_reset(self) -> None:
         """Clear all pending actions and return-home queue."""
@@ -698,15 +698,14 @@ class WorkcellPlugin(SimPlugin):
     # Internal — item return-home
     # ------------------------------------------------------------------
 
-    def _process_return_home(self) -> None:
-        """Teleport items back to their initial position after a delay.
+    def _process_return_home(self, sim_time: float) -> None:
+        """Teleport items whose return time has come, at simulated time ``sim_time``, back to their initial position.
 
         Mirrors Gazebo TeleportIngestor ``send_ingested_item_home()``.
         """
         if not self._return_home_queue:
             return
 
-        sim_time = self.sim_core.sim_time
         still_waiting: List[_ReturnHomeEntry] = []
 
         for entry in self._return_home_queue:

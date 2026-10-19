@@ -800,13 +800,12 @@ class TestStepOnce:
         assert sim_core.step_count == 1
 
     def test_step_advances_sim_time(self, sim_core):
-        # sim_time is computed BEFORE step_count is incremented:
-        # sim_time = step_count * dt (where step_count is the OLD value)
-        # After 2 steps: step_count=2, sim_time = 1*dt
+        # The clock advances with the step counter, so outside a step
+        # sim_time is the completed time: after 2 steps, 2*dt.
         dt = sim_core.params.timestep
         sim_core.step_once()
         sim_core.step_once()
-        assert sim_core.sim_time == pytest.approx(dt, abs=1e-9)
+        assert sim_core.sim_time == pytest.approx(2 * dt, abs=1e-9)
 
     def test_step_updates_agent(self, sim_core):
         agent = make_agent(sim_core, position=(0, 0, 0))
@@ -874,8 +873,8 @@ class TestStepOnce:
         for _ in range(n):
             sim_core.step_once()
         assert sim_core.step_count == n
-        # sim_time is computed before step_count increment, so after n steps: sim_time = (n-1) * dt
-        assert sim_core.sim_time == pytest.approx((n - 1) * dt, abs=1e-6)
+        # sim_time advances with step_count: after n steps it is n * dt.
+        assert sim_core.sim_time == pytest.approx(n * dt, abs=1e-6)
 
     def test_step_triggers_collision_check(self, sim_core):
         obj1 = make_box(sim_core, [0, 0, 0])
@@ -1365,13 +1364,14 @@ class TestReset:
 
     def test_resets_counters(self, sim_core):
         """Step count, collision count, and sim_time are zeroed."""
-        sim_core._step_count = 100
+        for _ in range(3):
+            sim_core.step_once()
         sim_core._collision_count = 50
-        sim_core.sim_time = 99.9
+        assert sim_core.step_count == 3 and sim_core.sim_time > 0.0
 
         sim_core.reset()
 
-        assert sim_core._step_count == 0
+        assert sim_core.step_count == 0
         assert sim_core._collision_count == 0
         assert sim_core.sim_time == 0.0
 
@@ -1509,12 +1509,13 @@ class TestInitializeSimulation:
 
     def test_counters_reset(self, sim_core):
         """Basic counters should all be zeroed."""
-        sim_core._step_count = 100
+        for _ in range(3):
+            sim_core.step_once()
         sim_core._collision_count = 50
-        sim_core.sim_time = 99.9
+        assert sim_core.step_count == 3 and sim_core.sim_time > 0.0
 
         sim_core.initialize_simulation()
-        assert sim_core._step_count == 0
+        assert sim_core.step_count == 0
         assert sim_core._collision_count == 0
         assert sim_core.sim_time == 0.0
 

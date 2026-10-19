@@ -16,6 +16,7 @@ from pybullet_fleet import (
     Pose,
     SimulationParams,
 )
+from pybullet_fleet.events import SimEvents
 from pybullet_fleet.sim_object import ShapeParams, SimObject
 from pybullet_fleet.types import CollisionMode, SpatialHashCellSizeMode
 
@@ -511,3 +512,28 @@ class TestSetPosesGetPosesAPI:
                 np.zeros((2, 3)),
                 np.tile([0.0, 0.0, 0.0, 1.0], (2, 1)),
             )
+
+
+class TestPendingPoseFromPreStep:
+    """A pose written from ``pre_step`` is pending until the step flushes it,
+    while the clock has already advanced."""
+
+    def test_a_pose_written_in_pre_step_stays_visible_until_flushed(self, sim):
+        """A dynamic (mass > 0) body moved from pre_step keeps its pending pose
+        after the clock advances: get_pose() must not reread the unflushed
+        PyBullet state, and the pending pose is what gets written."""
+        box = SimObject.from_mesh(
+            visual_shape=ShapeParams(shape_type="box", half_extents=[0.1, 0.1, 0.1]),
+            collision_shape=ShapeParams(shape_type="box", half_extents=[0.1, 0.1, 0.1]),
+            pose=Pose.from_xyz(0.0, 0.0, 0.5),
+            mass=1.0,
+            sim_core=sim,
+        )
+        assert not box.is_kinematic
+        seen = []
+        sim.events.on(SimEvents.PRE_STEP, lambda **_: box.set_pose(Pose.from_xyz(1.0, 0.0, 0.5)))
+        sim.register_callback(lambda sc, dt: seen.append(box.get_pose().position[0]))
+        sim.step_once()
+        assert seen == [pytest.approx(1.0)]
+        position, _ = p.getBasePositionAndOrientation(box.body_id, physicsClientId=sim.client)
+        assert position[0] == pytest.approx(1.0)

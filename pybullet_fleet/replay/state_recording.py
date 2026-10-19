@@ -315,11 +315,15 @@ class StateRecorder:
         if not _finite_tree(details):
             raise ValueError("Unsupported effective input payload")
         phase = "POST_STEP" if self.sim._in_post_step else "PRE_STEP" if self.sim._in_step else "outside_step"
+        # The step an input belongs to: the one under way inside a step (whose
+        # counter has already advanced, except while PRE_STEP is emitted), and
+        # the completed one outside.
+        step = self.sim.step_count + (1 if self.sim._in_pre_step else 0)
         self._pending_inputs.append(
             {
                 "operation": operation,
                 "details": details,
-                "step": self.sim.step_count + (phase != "outside_step"),
+                "step": step,
                 "phase": phase,
                 "order": len(self._pending_inputs),
             }

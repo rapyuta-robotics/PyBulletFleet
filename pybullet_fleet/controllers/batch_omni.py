@@ -355,7 +355,8 @@ class BatchOmniController(BatchKinematicController):
                 self._apply_phase1(dt)
             return self._moved_mask
 
-        # Match OmniController._apply_pose semantics: evaluates at sim_core.sim_time.
+        # Match OmniController._apply_pose semantics: evaluates at sim_core.sim_time,
+        # the time of the state this step computes.
         now = float(sim_core.sim_time)
 
         # ----- TRANSLATE phase -----

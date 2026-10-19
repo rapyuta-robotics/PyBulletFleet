@@ -115,7 +115,6 @@ def test_reissue_goal_from_checkpoint_pose_changes_trajectory(tmp_path):
         state = checkpoint["state"]
         robot.set_pose(proof.Pose(position=state["position"], orientation=state["orientation"]))
         sim.restore_completed_step_boundary(state["step"], state["elapsed_time"])
-        sim.sim_time = state["elapsed_time"]
         proof._issue_goal(robot)
         sim.step_once()
         assert math.dist(robot.get_pose().position, reference[proof.CHECKPOINT_STEP + 1]["position"]) > 0.01
@@ -139,7 +138,7 @@ def test_capture_rejected_inside_post_step_and_resume_requires_restore():
 
         sim.events.on(SimEvents.POST_STEP, after_step)
         sim.step_once()
-        assert errors == [0]
+        assert errors == [1]  # POST_STEP sees the counter of the step it completes
         assert sim.get_completed_step_boundary() == (1, proof.DT)
     finally:
         if p.isConnected(sim.client):

@@ -425,8 +425,8 @@ def run_policy(
             return
         step_wall += time.perf_counter() - step_started_wall
         try:
-            # POST_STEP is emitted before the core increments step_count.
-            observed_step = sim.step_count + 1
+            # POST_STEP sees the counter of the step it completes.
+            observed_step = sim.step_count
             if collect_collision_episodes:
                 _observe_collisions(
                     sim, entities, active_episodes, episodes, config.margin, active, observation_step=observed_step

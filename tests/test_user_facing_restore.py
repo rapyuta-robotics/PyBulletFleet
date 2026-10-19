@@ -212,7 +212,7 @@ out = []
 def sample(**kwargs):
     arm = s.get_unique_agent_by_name('pick-drop-arm')
     box = s.get_unique_object_by_name('pick-drop-box')
-    out.append({'step': s.step_count + 1,
+    out.append({'step': s.step_count,
                 'joints': arm.capture_kinematic_joint_execution(),
                 'box': list(box.get_pose().position),
                 'attached': box.get_kinematic_attachment_state()})
@@ -303,7 +303,7 @@ out = []
 def sample(**kwargs):
     arm = s.get_unique_agent_by_name('mobile-arm')
     box = s.get_unique_object_by_name('box')
-    out.append({'step': s.step_count + 1, 'pose': list(arm.get_pose().position),
+    out.append({'step': s.step_count, 'pose': list(arm.get_pose().position),
                 'joints': arm.capture_kinematic_joint_execution(),
                 'box': list(box.get_pose().position), 'attached': box.get_kinematic_attachment_state()})
 s.events.on(SimEvents.POST_STEP, sample)
@@ -385,7 +385,7 @@ s = load_supported_simulation(sys.argv[1], at_or_before=float(sys.argv[2]))
 out = []
 def sample(**kwargs):
     a = s.get_unique_agent_by_name('diff')
-    out.append({'step': s.step_count + 1, 'position': list(a.get_pose().position),
+    out.append({'step': s.step_count, 'position': list(a.get_pose().position),
                 'orientation': list(a.get_pose().orientation), 'moving': a.is_moving})
 s.events.on(SimEvents.POST_STEP, sample)
 s.run_simulation(duration=7.0)
