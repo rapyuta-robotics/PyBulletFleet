@@ -15,10 +15,19 @@
 # Result: code-only changes rebuild in ~5 min instead of ~25 min.
 
 
+# The Open-RMF demos base image, pinned by digest. `jazzy-rmf-latest` is rebuilt
+# nightly from upstream sources, and a rebuild can change what this image relies on:
+# the build of 2026-10-18 writes the demo worlds' models as `model://<name>` instead
+# of Fuel URLs, so download_fuel_models.py finds nothing to cache. To move to a newer
+# build, take its digest (`docker buildx imagetools inspect <tag>`), check that the
+# Fuel cache stage still finds the models, and update the value here and in the
+# other Dockerfiles that use it.
+ARG RMF_DEMOS_IMAGE=ghcr.io/open-rmf/rmf/rmf_demos:jazzy-rmf-latest@sha256:ddfb93f6f589319fcbb9e1bc8d1f2792dde41156e23fdf68e6fe8cdb8db23606
+
 # ===========================================================================
 # Stage 1: Fuel model cache (only rebuilds when download script changes)
 # ===========================================================================
-FROM ghcr.io/open-rmf/rmf/rmf_demos:jazzy-rmf-latest AS fuel-cache
+FROM ${RMF_DEMOS_IMAGE} AS fuel-cache
 
 COPY docker/download_fuel_models.py /opt/download_fuel_models.py
 RUN python3 /opt/download_fuel_models.py
@@ -27,7 +36,7 @@ RUN python3 /opt/download_fuel_models.py
 # ===========================================================================
 # Stage 2: Main bridge image
 # ===========================================================================
-FROM ghcr.io/open-rmf/rmf/rmf_demos:jazzy-rmf-latest AS bridge
+FROM ${RMF_DEMOS_IMAGE} AS bridge
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp

@@ -3,7 +3,15 @@
 # It deliberately contains no PyBulletFleet source or built ROS overlay. The
 # test runner installs the bridge and RMF packages from a mounted flat APT
 # repository and the Python core from a mounted wheel.
-FROM ghcr.io/open-rmf/rmf/rmf_demos:jazzy-rmf-latest
+# The Open-RMF demos base image, pinned by digest. `jazzy-rmf-latest` is rebuilt
+# nightly from upstream sources, and a rebuild can change what this image relies on:
+# the build of 2026-10-18 writes the demo worlds' models as `model://<name>` instead
+# of Fuel URLs, so download_fuel_models.py finds nothing to cache. To move to a newer
+# build, take its digest (`docker buildx imagetools inspect <tag>`), check that the
+# Fuel cache stage still finds the models, and update the value here and in
+# docker/Dockerfile.rmf_demos.
+ARG RMF_DEMOS_IMAGE=ghcr.io/open-rmf/rmf/rmf_demos:jazzy-rmf-latest@sha256:ddfb93f6f589319fcbb9e1bc8d1f2792dde41156e23fdf68e6fe8cdb8db23606
+FROM ${RMF_DEMOS_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
