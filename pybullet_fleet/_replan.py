@@ -91,6 +91,41 @@ def limits_along(
     )
 
 
+#: Relative margin added to the braking distance by :func:`braking_position`.
+#: A goal exactly at the braking distance has no acceleration phase, which the
+#: trajectory solver refuses as "cannot stop in time"; a hair further it is a
+#: pure deceleration in effect (the extra distance is micrometres).
+BRAKING_MARGIN_REL = 1e-6
+
+
+def braking_position(
+    params: "ControllerParams",
+    position: Sequence[float],
+    orientation: Sequence[float],
+    velocity: Sequence[float],
+) -> Optional[np.ndarray]:
+    """Where an agent moving at ``velocity`` comes to rest at its configured deceleration.
+
+    The point straight ahead along the velocity at ``|v|^2 / (2 * decel)``, the
+    deceleration being the one along that direction (see :func:`limits_along`),
+    plus :data:`BRAKING_MARGIN_REL`. A goal there is always taken by
+    :func:`replacement_rejection`: it lies on the line of motion, and the
+    trajectory from the current speed is a deceleration at exactly the
+    configured rate. Returns ``None`` at rest.
+    """
+    pos = np.asarray(position, dtype=float)
+    vel = np.asarray(velocity, dtype=float).copy()
+    if params.navigation_2d:
+        vel[2] = 0.0
+    speed = float(np.linalg.norm(vel))
+    if speed < REST_SPEED:
+        return None
+    unit = vel / speed
+    _, _, decel = limits_along(params, orientation, unit)
+    distance = speed * speed / (2.0 * decel) * (1.0 + BRAKING_MARGIN_REL)
+    return pos + unit * distance
+
+
 def replacement_rejection(
     params: "ControllerParams",
     position: Sequence[float],

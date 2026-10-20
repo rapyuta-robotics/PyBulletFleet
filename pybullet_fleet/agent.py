@@ -1159,6 +1159,62 @@ class Agent(SimObject):
         # Single goal is just a path with one waypoint
         return self.set_path([goal], direction=direction)
 
+    def brake(self) -> bool:
+        """Come to rest along the current direction of travel at the configured deceleration.
+
+        A deceleration-limited counterpart of :meth:`stop`, which zeroes the
+        velocity at once (an emergency stop). The agent keeps its heading and
+        its line of motion and stops at the braking point,
+        ``|v|^2 / (2 * decel)`` ahead, decelerating at exactly the configured
+        rate along that direction (the same projected limits a trajectory
+        uses). The remaining path and any queued waypoints are dropped; a
+        velocity command (the controller's ``set_velocity``) is ended the same way.
+
+        The action queue is left alone. A :class:`~pybullet_fleet.action.MoveAction`
+        still executing completes once the agent is at rest; to abandon it
+        instead, call :meth:`clear_actions` first. A new path in another
+        direction is refused until the agent has stopped (see
+        :meth:`set_path`), so a caller that retries temporary refusals -- as
+        ``MoveAction`` does -- simply starts once the braking ends.
+
+        Returns:
+            ``True`` when a braking trajectory was set. ``False`` at rest, for
+            a fixed-base robot, and for controllers that do not continue a
+            motion into a new path (differential drive, which restarts every
+            path from rest; see issue #78) -- use :meth:`stop` there.
+        """
+        from pybullet_fleet._replan import braking_position
+
+        if self.use_fixed_base:
+            return False
+        controller = self._batch_controller
+        if controller is not None:
+            # Hold the batch lock across reading the velocity and setting the
+            # path (it is re-entrant), so a concurrent step cannot change the
+            # motion the braking point was computed for.
+            with controller._state_lock:
+                return self._brake_with(controller, braking_position)
+        if not self._controllers:
+            return False
+        return self._brake_with(self._controllers[0], braking_position)
+
+    def _brake_with(self, controller, braking_position) -> bool:
+        velocity = controller.continuation_velocity(self)
+        if velocity is None:
+            return False
+        pose = self.get_pose()
+        # The limits the path will be judged and built with: the per-agent
+        # controller's own, or the agent's for a batch row.
+        params = self.controller_params if controller is self._batch_controller else controller.params
+        target = braking_position(params, pose.position, pose.orientation, velocity)
+        if target is None:
+            return False
+        goal = Pose(position=[float(c) for c in target], orientation=list(pose.orientation))
+        accepted = self.set_path([goal], auto_approach=False, final_orientation_align=False)
+        if accepted is False:
+            self._log.warning(f"Braking path refused: {self.path_rejection([goal])}")
+        return accepted is not False
+
     def path_rejection(self, path: List[Pose]) -> "Optional[PathRejection]":
         """Why :meth:`set_path` would refuse ``path`` right now, or ``None``.
 

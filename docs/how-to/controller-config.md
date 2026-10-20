@@ -172,6 +172,22 @@ At rest every goal is taken. `MoveAction`, `PatrolController`,
 goal on their next update; `FleetCommandDispatcher.navigate()` reports it in
 the ack's `rejected` map.
 
+### Stopping: `brake()` and `stop()`
+
+`agent.brake()` brings a moving omnidirectional agent (per-agent or batched) to
+rest at `max_linear_decel`: it keeps its line of motion and heading, drops the
+rest of its path, and stops at the braking point `|v|^2 / (2 * decel)` ahead.
+It also ends a velocity command the same way. It returns `False` when there is
+nothing to brake (at rest, fixed base) and for differential drive, which still
+restarts paths from rest. `agent.stop()` is the immediate stop: the velocity is
+zeroed at once.
+
+To change direction mid-motion, brake and then send the new goal: it is refused
+until the agent has stopped, and a caller that retries refusals (such as
+`MoveAction`) starts it as soon as the braking ends. `brake()` leaves the action
+queue alone; a `MoveAction` still executing completes once the agent is at rest,
+so call `clear_actions()` first to cancel it instead.
+
 ## Batch controllers
 
 Batch controllers use one vectorised `batch_advance()` call for all agents in

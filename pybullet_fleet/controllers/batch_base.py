@@ -253,6 +253,15 @@ class BatchKinematicController(Controller):
             agent._is_moving = True
             return True
 
+    def continuation_velocity(self, agent: "Agent") -> Optional[np.ndarray]:
+        """World-frame velocity a new path would continue from, or ``None``.
+
+        The base restarts every path from rest, so it returns ``None``; see
+        :meth:`KinematicController.continuation_velocity
+        <pybullet_fleet.controller.KinematicController.continuation_velocity>`.
+        """
+        return None
+
     def synchronized_cancel_path(self, agent: "Agent") -> None:
         """Cancel one path without racing a concurrent simulation step."""
         with self._state_lock:

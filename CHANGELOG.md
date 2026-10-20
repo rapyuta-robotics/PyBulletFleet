@@ -12,6 +12,15 @@ profiles. A declared kinematic profile supports fixed-arm and mobile-arm validat
 they do not provide general save/load for arbitrary simulations and
 are not recommended for production use yet.
 
+### Added
+
+- `Agent.brake()`: come to rest at `max_linear_decel` along the current line of
+  motion, keeping the heading and dropping the rest of the path, for
+  omnidirectional agents (per-agent and batched) under a path or a velocity
+  command. `stop()` remains the immediate stop. Differential drive, which
+  restarts paths from rest, returns `False` (see issue #78). Controllers gain
+  `continuation_velocity(agent)`, the velocity a new path continues from.
+
 ### Changed
 
 - `step_once()` advances `sim_time`, the elapsed time and `step_count` right

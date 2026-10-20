@@ -429,6 +429,15 @@ class KinematicController(Controller):
             return True
         return agent.is_moving and self._pose_phase == PosePhase.FORWARD
 
+    def continuation_velocity(self, agent: "Agent") -> Optional[np.ndarray]:
+        """World-frame velocity a new path would continue from, or ``None``.
+
+        ``None`` when the agent is not moving under this controller, or when
+        the controller does not continue motion into a new path (it restarts
+        from rest). Used by :meth:`Agent.brake`.
+        """
+        return None
+
     def set_path(
         self,
         agent: "Agent",
@@ -918,6 +927,12 @@ class OmniController(KinematicController):
 
     def __init__(self, params: Optional[ControllerParams] = None) -> None:
         super().__init__(params)
+
+    def continuation_velocity(self, agent: "Agent") -> Optional[np.ndarray]:
+        """The agent's velocity while it is under way (a translation or a velocity command), else ``None``."""
+        if not self._under_way(agent):
+            return None
+        return np.array(agent._current_velocity, dtype=float)
 
     def path_rejection(self, agent: "Agent", path: List[Pose]) -> Optional[str]:
         """Why ``path`` cannot be taken now, or ``None`` if it can.
