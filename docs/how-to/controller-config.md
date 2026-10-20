@@ -147,6 +147,31 @@ All numeric values default to `None`, which resolves to the framework default
 when used. This lets a manager provide only the fields that an agent did not
 set explicitly.
 
+### A new goal while moving
+
+An omnidirectional agent (per-agent or batched) that gets a new goal or path
+while it is moving continues its motion: the straight-line trajectory to the
+first waypoint starts from its current velocity, signed along the line. A
+goal ahead keeps the speed; a goal behind is reached by slowing, reversing and
+driving back. The goal is taken when that trajectory exists within the
+configured limits, and refused otherwise -- a goal inside the braking distance
+at `max_linear_decel`, where the agent is, or off the line of motion (a
+straight-line trajectory cannot carry the sideways velocity). A refused goal
+changes nothing: the current motion continues.
+
+```python
+if not agent.set_goal_pose(goal):  # True when taken, False when refused
+    print(agent.path_rejection([goal]))  # the reason, e.g. "goal is off the line of motion"
+```
+
+Slowing down before a reversal is the trajectory's first phase, which uses
+`max_linear_accel`.
+
+At rest every goal is taken. `MoveAction`, `PatrolController`,
+`RandomWalkController` and the behaviour tree's `NavigateTo` retry a refused
+goal on their next update; `FleetCommandDispatcher.navigate()` reports it in
+the ack's `rejected` map.
+
 ## Batch controllers
 
 Batch controllers use one vectorised `batch_advance()` call for all agents in

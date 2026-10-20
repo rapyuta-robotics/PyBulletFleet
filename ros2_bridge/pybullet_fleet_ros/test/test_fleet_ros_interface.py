@@ -71,6 +71,9 @@ class FakeAgent:
     def set_goal_pose(self, pose):
         self.goal_calls.append(pose)
 
+    def path_rejection(self, path):
+        return None  # at rest: every path is taken
+
     def set_joints_targets_by_name(self, positions):
         self.joint_calls.append(dict(positions))
 

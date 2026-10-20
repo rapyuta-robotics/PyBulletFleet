@@ -225,7 +225,7 @@ def validate_checkpoint(checkpoint: object) -> dict:
         raise ValueError("Checkpoint path differs from the supported straight profile")
     forward = _keys(
         controller["forward"],
-        {"origin", "t0", "vmax", "accel", "decel", "orientation_after_rotation"},
+        {"origin", "t0", "vmax", "accel", "decel", "v0", "orientation_after_rotation"},
         "forward trajectory",
     )
     origin = _vector(forward["origin"], 3, "origin")
@@ -247,6 +247,7 @@ def validate_checkpoint(checkpoint: object) -> dict:
         or controller["final_target_orientation"] is not None
         or controller["final_alignment_in_progress"] is not False
         or forward["orientation_after_rotation"] is not None
+        or forward["v0"] != 0.0
     ):
         raise ValueError("Checkpoint trajectory differs from the supported profile")
     # A completed step's pose is its trajectory at the step's end, k*dt: the

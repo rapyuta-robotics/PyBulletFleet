@@ -6,6 +6,7 @@ from typing import cast
 import numpy as np
 import pytest
 
+from pybullet_fleet._replan import PathRejection
 from pybullet_fleet.events import EventBus
 from pybullet_fleet.fleet_api import (
     FLEET_COMMAND_EVENT,
@@ -54,6 +55,9 @@ class FakeAgent:
 
     def set_goal_pose(self, pose: Pose) -> None:
         self.goal_calls.append(pose)
+
+    def path_rejection(self, path):
+        return None  # at rest: every path is taken
 
     def stop(self) -> None:
         self.stop_calls += 1
@@ -413,3 +417,76 @@ def test_named_joint_command_positions_are_immutable():
     assert command.positions == {"joint": 1.5}
     with pytest.raises(TypeError):
         cast(dict[str, float], command.positions)["other"] = 0.1
+
+
+def test_a_planar_goal_without_z_keeps_the_robots_height():
+    robot0 = FakeAgent("robot0", 1, pose=Pose.from_xyz(0.0, 0.0, 0.3))
+    robot1 = FakeAgent("robot1", 2, pose=Pose.from_xyz(0.0, 0.0, 0.3))
+    dispatcher = FleetCommandDispatcher(FakeSim([robot0, robot1]))
+    ack = dispatcher.navigate(
+        [RobotGoalCommand2D("robot0", position=(1.0, 0.0)), RobotGoalCommand2D("robot1", position=(1.0, 0.0), z=0.0)]
+    )
+
+    assert ack.ok
+    assert robot0.goal_calls[0].position[2] == pytest.approx(0.3)
+    assert robot1.goal_calls[0].position[2] == 0.0  # an explicit height is kept
+
+
+def test_dispatcher_reports_a_goal_the_robot_cannot_take_as_rejected():
+    """A moving robot refuses a goal it cannot reach within its limits; the
+    ack says so and the robot is not touched."""
+
+    class MovingAgent(FakeAgent):
+        def path_rejection(self, path):
+            return PathRejection("goal is behind the motion", temporary=True)
+
+    robot0 = MovingAgent("robot0", 1)
+    robot1 = FakeAgent("robot1", 2)
+    dispatcher = FleetCommandDispatcher(FakeSim([robot0, robot1]))
+    ack = dispatcher.navigate(
+        [RobotGoalCommand2D("robot0", position=(1.0, 0.0)), RobotGoalCommand2D("robot1", position=(2.0, 0.0))]
+    )
+
+    assert ack.accepted_names == ("robot1",)
+    assert ack.rejected == {"robot0": "goal is behind the motion"}
+    assert robot0.goal_calls == []
+    assert len(robot1.goal_calls) == 1
+
+
+def test_a_goal_refused_after_the_command_event_is_not_acknowledged():
+    """The command event is emitted before the goals are applied. If a handler
+    of it changes a robot so that it refuses its goal, the returned ack and the
+    recorded input must not claim the goal was taken."""
+
+    class RefusingAgent(FakeAgent):
+        refuse = False
+
+        def set_goal_pose(self, pose):
+            if self.refuse:
+                return False
+            return super().set_goal_pose(pose)
+
+        def path_rejection(self, path):
+            return PathRejection("goal is behind the motion", temporary=True) if self.refuse else None
+
+    robot0 = RefusingAgent("robot0", 1)
+    robot1 = FakeAgent("robot1", 2)
+    sim = FakeSim([robot0, robot1])
+    recorded = []
+    sim._record_state_input = lambda operation, details: recorded.append(details)
+    announced = []
+
+    def on_command(command_event):
+        announced.append(command_event.accepted_names)
+        robot0.refuse = True  # e.g. a handler that sends robot0 elsewhere
+
+    sim.events.on(FLEET_COMMAND_EVENT, on_command)
+    ack = FleetCommandDispatcher(sim).navigate(
+        [RobotGoalCommand2D("robot0", position=(1.0, 0.0)), RobotGoalCommand2D("robot1", position=(2.0, 0.0))]
+    )
+
+    assert announced == [("robot0", "robot1")]
+    assert ack.accepted_names == ("robot1",)
+    assert ack.rejected == {"robot0": "goal is behind the motion"}
+    assert set(recorded[0]["accepted"]) == {"robot1"}
+    assert recorded[0]["rejected"] == {"robot0": "goal is behind the motion"}

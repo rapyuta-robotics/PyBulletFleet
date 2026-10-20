@@ -19,6 +19,7 @@ import logging
 import numpy as np
 import pybullet as p
 
+from ._replan import refused_until_stopped
 from .geometry import Pose, Path
 from .types import ActionStatus, MovementDirection
 from . import tools
@@ -273,12 +274,20 @@ class MoveAction(Action):
 
             # Use agent's existing path following system
             # Path visualization is handled by agent based on agent.path_visualize setting
-            agent.set_path(
+            accepted = agent.set_path(
                 self.path,
                 auto_approach=self.auto_approach,
                 final_orientation_align=self.final_orientation_align,
                 direction=self.direction,  # Pass direction parameter (enum or string)
             )
+            if accepted is False and refused_until_stopped(agent, self.path):
+                # The agent is still moving and cannot take this path from
+                # where it is (see Agent.set_path); the motion it has runs on.
+                # Start again on the next update -- once that motion ends, the
+                # path is taken. A permanent refusal (fixed base, empty path)
+                # falls through and completes as before.
+                self.status = ActionStatus.NOT_STARTED
+                return False
 
         # Check if agent has completed the path
         # Path is complete when agent is not moving and path queue is empty

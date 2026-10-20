@@ -142,6 +142,8 @@ in the step, or outside it, moves from the next step. With `Agent.set_path()`'s
 default `auto_approach=True` (which `set_goal_pose()` uses), a goal more than
 0.5 m away gets the current pose as a zero-length first waypoint, and that
 waypoint takes the first step.
+A goal replaced mid-motion continues from the speed of the pose in effect at
+`sim_time`.
 
 ### Frequency-limited handlers
 

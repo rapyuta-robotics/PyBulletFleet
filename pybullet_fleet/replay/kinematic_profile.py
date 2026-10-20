@@ -115,7 +115,8 @@ def capture_agent_state(agent: Agent) -> dict:
         "velocity": agent.get_velocity().tolist(),
         "angular_velocity": float(agent.angular_velocity),
         "moving": agent.is_moving,
-        "controller": {"type": spec["type"], "version": 1, "state": navigation},
+        # Version 2: the forward trajectory records its initial speed ``v0``.
+        "controller": {"type": spec["type"], "version": 2, "state": navigation},
         "joints": joints,
     }
 
@@ -258,7 +259,7 @@ def _validate_agent(name: str, construction: dict, entry: dict) -> None:
         raise ValueError("Invalid Agent movement state")
     controller = _keys(value["controller"], {"type", "version", "state"}, "controller")
     if (
-        controller["version"] != 1
+        controller["version"] != 2
         or controller["type"] != construction["controller"]["type"]
         or controller["type"] not in _SUPPORTED_CONTROLLER_NAMES
         or value["moving"] != (controller["state"] is not None)
@@ -372,8 +373,15 @@ def _validate_navigation(value: dict, *, differential: bool) -> None:
         if navigation["rotation"] is not None:
             raise ValueError("Forward phase has rotation state")
         trajectory = _keys(
-            navigation["forward"], {"origin", "t0", "vmax", "accel", "decel", "orientation_after_rotation"}, "forward"
+            navigation["forward"],
+            {"origin", "t0", "vmax", "accel", "decel", "v0", "orientation_after_rotation"},
+            "forward",
         )
+        v0 = trajectory["v0"]
+        # Signed: a trajectory started moving away from its goal records a
+        # negative initial speed.
+        if isinstance(v0, bool) or not isinstance(v0, (int, float)) or not math.isfinite(v0):
+            raise ValueError("Invalid navigation initial speed")
         if trajectory["origin"] is not None:
             _vector(trajectory["origin"], 3, "forward origin")
         elif not final:

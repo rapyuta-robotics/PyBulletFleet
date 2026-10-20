@@ -118,6 +118,34 @@ def test_agent_tree_uses_navigation_adapter_lifecycle():
     assert tree._navigate_to(node) is TickResult.SUCCESS
 
 
+def test_agent_tree_retries_a_goal_the_agent_refused():
+    """start_navigation() returning False (the agent refused the goal while
+    moving) keeps the action running and asks again on the next tick."""
+
+    class _RefusingOnce(_NavigationAdapter):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        def start_navigation(self, goal):
+            self.calls += 1
+            if self.calls == 1:
+                return False
+            self.goal = goal
+            return True
+
+    adapter = _RefusingOnce()
+    node = ElementTree.fromstring('<Action ID="NavigateTo" goal="{goal}" />')
+    tree = AgentBehaviorTree(root=node, agent=_Agent(), blackboard={"goal": (1.0, 2.0, 0.0)}, navigation_adapter=adapter)
+
+    assert tree._navigate_to(node) is TickResult.RUNNING
+    assert adapter.goal is None
+    assert tree._navigate_to(node) is TickResult.RUNNING
+    assert adapter.calls == 2 and adapter.goal == (1.0, 2.0, 0.0)
+    adapter.status = NavigationStatus.SUCCEEDED
+    assert tree._navigate_to(node) is TickResult.SUCCESS
+
+
 def test_behavior_tree_registration_keeps_runtime_tick_contract():
     sim = MultiRobotSimulationCore(SimulationParams(gui=False, monitor=False, enable_floor=False))
     tree = _TickOnlyTree()

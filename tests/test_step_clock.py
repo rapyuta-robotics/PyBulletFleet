@@ -6,9 +6,12 @@ collision check, ``post_step`` -- and outside a step, ``sim_time`` and
 ``step_count`` are those of the state being computed or observed. A
 ``pre_step`` subscriber is the one place that sees the previous step. Position
 controllers evaluate their trajectories at ``sim_time``, so the pose a step ends
-with is the trajectory at the end of the step.
+with is the trajectory at the end of the step. A goal replaced mid-motion is
+judged on the speed of the pose in effect when it is set, in every phase, and
+the per-agent and batched controllers agree on it.
 
-Uses 0.05 s steps and 4 m/s^2 acceleration and deceleration.
+Uses the motion limits of the goal-replacement tests: 0.05 s steps,
+4 m/s^2 acceleration and deceleration.
 """
 
 from __future__ import annotations
@@ -72,7 +75,7 @@ FAR = 10.0
 
 
 def _start(sim, agent):
-    agent.set_path([_goal(FAR)], final_orientation_align=False, auto_approach=False)
+    assert agent.set_path([_goal(FAR)], final_orientation_align=False, auto_approach=False)
 
 
 @pytest.mark.parametrize("batch", [False, True], ids=["per-agent", "batch"])
@@ -203,3 +206,77 @@ def test_sim_time_is_the_clock_everywhere(sim):
         assert pre[1:] == (pytest.approx((k - 1) * DT), k - 1)
         assert callback[1:] == (pytest.approx(k * DT), k)
         assert post[1:] == (pytest.approx(k * DT), k)
+
+
+def _phase_hooks(sim, phase, action):
+    """Run ``action()`` once, from ``phase``, during the next step (or right now)."""
+    if phase == "outside":
+        action()
+        return
+    fired = []
+
+    def once(*_args, **_kwargs):
+        if not fired:
+            fired.append(True)
+            action()
+
+    if phase == "pre_step":
+        sim.events.on(SimEvents.PRE_STEP, once)
+    elif phase == "post_step_event":
+        sim.events.on(SimEvents.POST_STEP, once)
+    elif phase == "callback":
+        sim.register_callback(once, frequency=None)
+    elif phase == "post_step_callback":
+        sim.register_callback(once, frequency=None, phase="post_step")
+    sim.step_once()
+
+
+PHASES = ["outside", "pre_step", "callback", "post_step_event", "post_step_callback"]
+
+
+@pytest.mark.parametrize("phase", PHASES)
+@pytest.mark.parametrize("margin, accepted", [(0.9, False), (1.1, True)], ids=["inside-braking", "beyond-braking"])
+def test_a_replaced_goal_is_judged_on_the_pose_in_effect(sim, phase, margin, accepted):
+    """The braking distance is that of the speed at sim_time when the goal
+    is set, per-agent and batched alike. In PRE_STEP that is still the previous
+    step's end: a batch row must not use the speed of the step about to run."""
+    agents = {name: _agent(sim, batch=(name == "batch")) for name in ("per-agent", "batch")}
+    for agent in agents.values():
+        _start(sim, agent)
+    for _ in range(5):
+        sim.step_once()
+
+    results = {}
+
+    def replace():
+        speed = ACCEL * sim.sim_time  # from rest at t0 = 0
+        braking = speed**2 / (2 * DECEL)
+        for name, agent in agents.items():
+            ahead = agent.get_pose().position[0] + margin * braking
+            results[name] = agent.set_path([_goal(ahead)], final_orientation_align=False, auto_approach=False)
+
+    _phase_hooks(sim, phase, replace)
+    assert results == {"per-agent": accepted, "batch": accepted}
+
+
+@pytest.mark.parametrize("ahead, expected", [(0.1, False), (0.13, True)])
+def test_the_reported_pre_step_case(sim, ahead, expected):
+    """After five steps a PRE_STEP goal 0.1 m ahead: the pose in effect is the
+    one at 0.25 s, at 1.0 m/s, which needs 0.125 m to stop -- both refuse it,
+    and both take one 0.13 m ahead."""
+    agents = [_agent(sim), _agent(sim, batch=True)]
+    for agent in agents:
+        _start(sim, agent)
+    for _ in range(5):
+        sim.step_once()
+    assert sim.sim_time == pytest.approx(5 * DT)
+    decided = []
+
+    def replace():
+        decided.extend(
+            a.set_path([_goal(a.get_pose().position[0] + ahead)], final_orientation_align=False, auto_approach=False)
+            for a in agents
+        )
+
+    _phase_hooks(sim, "pre_step", replace)
+    assert decided == [expected, expected]

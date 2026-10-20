@@ -19,17 +19,27 @@ Quat = tuple[float, float, float, float]
 
 @dataclass(frozen=True)
 class RobotGoalCommand2D:
-    """Planar navigation command for one robot."""
+    """Planar navigation command for one robot.
+
+    ``z`` is the goal's height. ``None`` (the default) keeps the robot's
+    present height, so a planar goal never moves it up or down; a goal at
+    another height is a 3D move, which a moving robot can only continue into
+    along its line of motion (see :meth:`Agent.set_path`).
+    """
 
     name: str
     position: Vec2
     yaw: float = 0.0
-    z: float = 0.0
+    z: float | None = None
     command_id: str | None = None
 
-    def to_pose(self) -> Pose:
-        """Convert this command to a simulation ``Pose``."""
-        return Pose.from_yaw(self.position[0], self.position[1], self.z, self.yaw)
+    def to_pose(self, current_z: float = 0.0) -> Pose:
+        """Convert this command to a simulation ``Pose``.
+
+        ``current_z`` is the robot's present height, used when ``z`` is ``None``.
+        """
+        z = current_z if self.z is None else self.z
+        return Pose.from_yaw(self.position[0], self.position[1], z, self.yaw)
 
 
 @dataclass(frozen=True)
@@ -41,8 +51,12 @@ class RobotGoalCommand3D:
     orientation: Quat = (0.0, 0.0, 0.0, 1.0)
     command_id: str | None = None
 
-    def to_pose(self) -> Pose:
-        """Convert this command to a simulation ``Pose``."""
+    def to_pose(self, current_z: float = 0.0) -> Pose:
+        """Convert this command to a simulation ``Pose``.
+
+        ``current_z`` is accepted for symmetry with
+        :meth:`RobotGoalCommand2D.to_pose` and unused: a 3D goal names its height.
+        """
         return Pose(position=list(self.position), orientation=list(self.orientation))
 
 

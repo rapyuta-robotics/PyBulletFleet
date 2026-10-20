@@ -231,7 +231,7 @@ class BatchKinematicController(Controller):
     # Phase 1 entry point (called by core_simulation.step_once)
     # ------------------------------------------------------------------ #
 
-    def synchronized_set_path(self, agent: "Agent", path, **kwargs) -> None:
+    def synchronized_set_path(self, agent: "Agent", path, **kwargs) -> bool:
         """Set one path without racing a concurrent simulation step.
 
         ``_is_moving`` is set here, inside the lock, rather than by the caller
@@ -242,10 +242,16 @@ class BatchKinematicController(Controller):
         ``is_moving``. Setting it before ``set_path()`` is equally wrong --
         that is the half-committed state this guard exists to prevent -- so it
         goes after the call and still under the lock.
+
+        Returns ``False`` when the controller refuses the path (see
+        ``path_rejection``); the row and ``_is_moving`` are then untouched.
         """
         with self._state_lock:
-            getattr(self, "set_path")(agent, path, **kwargs)
+            accepted = getattr(self, "set_path")(agent, path, **kwargs)
+            if accepted is False:
+                return False
             agent._is_moving = True
+            return True
 
     def synchronized_cancel_path(self, agent: "Agent") -> None:
         """Cancel one path without racing a concurrent simulation step."""

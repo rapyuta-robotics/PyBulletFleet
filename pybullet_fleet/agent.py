@@ -16,7 +16,7 @@ import pybullet as p
 from .geometry import Pose, as_axes
 from .sim_object import ShapeParams, SimObject, SimObjectSpawnParams, load_urdf_body
 from .action import Action
-from .types import MotionMode, MovementDirection, ActionStatus, CollisionMode
+from .types import ControllerMode, MotionMode, MovementDirection, ActionStatus, CollisionMode
 from .tools import normalize_vector_param  # noqa: F401  (re-exported for legacy callers)
 from pybullet_fleet._tpi import try_build_tpi
 from pybullet_fleet.joint import KinematicJoint
@@ -28,6 +28,7 @@ from pybullet_fleet.config_utils import forward_spawn_params as _forward_spawn_p
 from pybullet_fleet.agent_plugin import AgentPlugin
 
 if TYPE_CHECKING:
+    from pybullet_fleet._replan import PathRejection
     from pybullet_fleet.controller import Controller
     from pybullet_fleet.controller_params import ControllerParams
 
@@ -1141,7 +1142,7 @@ class Agent(SimObject):
         self,
         goal: Pose,
         direction: Union[MovementDirection, str, None] = None,
-    ):
+    ) -> bool:
         """
         Set goal pose for the robot to move to.
 
@@ -1151,9 +1152,46 @@ class Agent(SimObject):
             goal: Target Pose (compatible with ROS2 geometry_msgs/Pose)
             direction: Movement direction override, or ``None`` to use
                 the controller's ``default_direction``.
+
+        Returns:
+            Whether the goal was taken; see :meth:`set_path`.
         """
         # Single goal is just a path with one waypoint
-        self.set_path([goal], direction=direction)
+        return self.set_path([goal], direction=direction)
+
+    def path_rejection(self, path: List[Pose]) -> "Optional[PathRejection]":
+        """Why :meth:`set_path` would refuse ``path`` right now, or ``None``.
+
+        A :class:`~pybullet_fleet._replan.PathRejection`: ``reason`` says why,
+        ``temporary`` whether it lasts only until the current motion ends (a
+        fixed-base robot and an empty path are permanent).
+
+        A moving omni agent continues its motion into a new path, so it can
+        only take one whose straight-line trajectory from its current
+        velocity exists within its configured limits; at rest every path is
+        taken. Asking first lets a caller report a refusal before acting.
+        """
+        from pybullet_fleet._replan import PathRejection
+
+        permanent = self._permanent_path_rejection(path)
+        if permanent is not None:
+            return permanent
+        reason = None
+        if self._batch_controller is not None:
+            reason = self._batch_controller.path_rejection(self, path)
+        elif self._controllers:
+            reason = self._controllers[0].path_rejection(self, path)
+        return PathRejection(reason, temporary=True) if reason is not None else None
+
+    def _permanent_path_rejection(self, path: List[Pose]) -> "Optional[PathRejection]":
+        """The refusals that do not depend on the motion: a fixed base, an empty path."""
+        from pybullet_fleet._replan import PathRejection
+
+        if self.use_fixed_base:
+            return PathRejection("fixed-base robot", temporary=False)
+        if len(path) == 0:
+            return PathRejection("empty path", temporary=False)
+        return None
 
     def _make_default_controller(self):
         """Build the default Omni/Diff controller from ``self._motion_mode``.
@@ -1347,9 +1385,19 @@ class Agent(SimObject):
         auto_approach: bool = True,
         final_orientation_align: bool = True,
         direction: Union[MovementDirection, str, None] = None,
-    ):
+    ) -> bool:
         """
         Set a path (list of waypoints) for the robot to follow.
+
+        A path set while an omnidirectional agent is moving continues the
+        motion: the straight-line trajectory to the first waypoint starts from
+        the agent's current velocity (signed along the line, so a goal behind
+        is reached by slowing and reversing). When no such trajectory exists
+        within the configured limits -- a goal inside the braking distance,
+        where the agent is, or off the line of motion -- the path is refused:
+        nothing changes, the current motion continues, and this returns
+        ``False`` (the reason is logged and available from
+        :meth:`path_rejection`). At rest every path is taken.
 
         Args:
             path: List of Pose waypoints to follow in sequence
@@ -1362,14 +1410,15 @@ class Agent(SimObject):
                       ("auto", "forward", "backward").
                       Only used in differential drive mode (MotionMode.DIFFERENTIAL).
                       In omnidirectional mode, this parameter is ignored.
-        """
-        if self.use_fixed_base:
-            self._log.warning("Cannot set path for fixed-base robot")
-            return
 
-        if len(path) == 0:
-            self._log.warning("Empty path provided")
-            return
+        Returns:
+            ``True`` when the path was taken; ``False`` for a fixed-base robot,
+            an empty path, or a path the controller refused.
+        """
+        permanent = self._permanent_path_rejection(path)
+        if permanent is not None:
+            self._log.warning(f"Path refused: {permanent.reason}")
+            return False
 
         # Normalize direction string → enum (None passes through to controller)
         if isinstance(direction, str):
@@ -1386,8 +1435,23 @@ class Agent(SimObject):
 
         final_path = []
 
-        # Add approach waypoint if needed
-        if auto_approach and distance_to_first > approach_threshold:
+        # Add approach waypoint if needed. Not while the agent is under way: it
+        # is the current pose, a zero-length first segment, and would stop the
+        # agent dead before the new path -- a new goal mid-motion continues the
+        # motion instead. Under way is a path in progress (navigation state, not
+        # the reported velocity: a batch controller reports the arrival step's
+        # average speed until its next flush, after the agent has stopped) or a
+        # velocity command still moving it.
+        from pybullet_fleet.controller import KinematicController
+
+        base = self._controllers[0] if self._batch_controller is None and self._controllers else None
+        under_velocity_command = (
+            isinstance(base, KinematicController)
+            and base.mode is ControllerMode.VELOCITY
+            and bool(np.any(self._current_velocity))
+        )
+        under_way = self.is_moving or under_velocity_command
+        if auto_approach and distance_to_first > approach_threshold and not under_way:
             # Add current position as approach waypoint
             # This creates a path: current_pose -> path[0] -> path[1] -> ...
             final_path.append(current_pose)
@@ -1409,24 +1473,28 @@ class Agent(SimObject):
             # lock as the array writes. Setting it here instead would race a
             # concurrent step_once() that completes a zero-distance path and
             # clears the flag between the lock releasing and this line.
-            self._batch_controller.synchronized_set_path(
+            accepted = self._batch_controller.synchronized_set_path(
                 self,
                 final_path,
                 final_orientation_align=final_orientation_align,
                 direction=direction,
             )
         else:
-            self._controllers[0].set_path(
+            accepted = self._controllers[0].set_path(
                 self,
                 final_path,
                 final_orientation_align=final_orientation_align,
                 direction=direction,
             )
-            self._is_moving = True
+            if accepted is not False:
+                self._is_moving = True
+        if accepted is False:
+            return False
 
         # Clear previous path visualization and visualize new path
         self._clear_path_visualization()
         self._visualize_path(final_path)
+        return True
 
     def _reset_pybullet_velocity(self) -> None:
         """Zero residual physics velocity (prevents drift in kinematic mode)."""

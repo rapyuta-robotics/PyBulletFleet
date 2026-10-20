@@ -57,7 +57,8 @@ from pybullet_fleet.types import ControllerMode, MovementDirection, PosePhase
 
 from two_point_interpolation import TwoPointInterpolation
 
-from pybullet_fleet._tpi import build_tpi, extract_phase_params
+from pybullet_fleet._tpi import build_tpi, build_tpi_from_speed, extract_phase_params
+from pybullet_fleet._replan import replacement_rejection
 from pybullet_fleet._tpi_state import capture_tpi_state, restore_tpi_state
 from pybullet_fleet._motion_planning import align_x_axis_quat
 from pybullet_fleet.controller_params import ControllerParams
@@ -155,6 +156,15 @@ class Controller(ABC):
         from pybullet_fleet.controller_params import ControllerParams
 
         self.params: ControllerParams = params if params is not None else ControllerParams()
+
+    def path_rejection(self, agent: "Agent", path: List[Pose]) -> Optional[str]:
+        """Why ``path`` cannot be taken now, or ``None`` if it can.
+
+        The default accepts every path. A controller that continues the
+        current motion into the new path (``OmniController``) refuses one it
+        cannot reach within its limits.
+        """
+        return None
 
     def _construction_config(self) -> Optional[dict]:
         """Registered type and shared settings, separate from execution state.
@@ -408,14 +418,28 @@ class KinematicController(Controller):
         self._forward_direction_unit_body = None
         self._forward_total_distance_3d = 0.0
 
+    def _under_way(self, agent: "Agent") -> bool:
+        """Whether the agent is moving under this controller.
+
+        A translation in progress or a velocity command -- not the reported
+        velocity alone: on the arrival step it still holds that step's motion
+        although the agent has stopped.
+        """
+        if self._mode == ControllerMode.VELOCITY:
+            return True
+        return agent.is_moving and self._pose_phase == PosePhase.FORWARD
+
     def set_path(
         self,
         agent: "Agent",
         path: List[Pose],
         final_orientation_align: bool = True,
         direction: Optional[MovementDirection] = None,
-    ) -> None:
+    ) -> bool:
         """Set a waypoint path for the agent to follow.
+
+        Returns ``False``, leaving the current motion and path untouched, when
+        :meth:`path_rejection` refuses the path; ``True`` once it is set.
 
         The controller owns all path-navigation state: waypoint index, movement
         direction, final-orientation alignment.  ``Agent.set_path()`` handles
@@ -429,6 +453,10 @@ class KinematicController(Controller):
             direction: ``None`` (use ``default_direction``), ``FORWARD``, ``AUTO``,
                 or ``BACKWARD`` (differential only).
         """
+        reason = self.path_rejection(agent, path)
+        if reason is not None:
+            logger.debug(f"Path rejected for {agent.name or agent.object_id}: {reason}")
+            return False
         effective_direction = direction if direction is not None else self.params.default_direction
         self._path = list(path)
         self._current_waypoint_index = 0
@@ -444,13 +472,17 @@ class KinematicController(Controller):
             self._final_target_orientation = None
             self._align_final_orientation = False
 
-        # Start trajectory for first waypoint
+        # Start trajectory for first waypoint. The agent's velocity is read
+        # before anything zeroes it: a controller that can continue the motion
+        # (OmniController) starts the new trajectory from it.
+        initial_velocity = np.array(agent._current_velocity, dtype=float) if self._under_way(agent) else None
         if self._mode == ControllerMode.VELOCITY:
             self._zero_velocity()
         self._mode = ControllerMode.POSE
-        self._init_pose_trajectory(agent, path[0], direction=effective_direction)
+        self._init_pose_trajectory(agent, path[0], direction=effective_direction, initial_velocity=initial_velocity)
+        return True
 
-    def _init_forward_trajectory(self, agent: "Agent", distance: float) -> None:
+    def _init_forward_trajectory(self, agent: "Agent", distance: float, v0: float = 0.0) -> None:
         """Initialize a single distance TPI for straight-line forward motion.
 
         Uses direction-projected scalar limits derived from
@@ -462,6 +494,10 @@ class KinematicController(Controller):
         the body-frame direction, not the world-frame travel direction.
         After calling this, ``_apply_forward()`` can interpolate position
         along the cached world-frame direction vector.
+
+        ``v0`` is the speed the agent already has along the direction (see
+        :func:`~pybullet_fleet._tpi.build_tpi_from_speed`); ``0`` starts from
+        rest.
         """
         t0 = agent.sim_core.sim_time if agent.sim_core is not None else 0.0
 
@@ -477,7 +513,7 @@ class KinematicController(Controller):
             amax = self.params.linear_accel_along_direction(direction_unit_body)
             dmax = self.params.linear_decel_along_direction(direction_unit_body)
 
-        self._tpi_forward = build_tpi(p0=0.0, pe=distance, vmax=vmax, accel=amax, t0=t0, decel=dmax)
+        self._tpi_forward = build_tpi_from_speed(p0=0.0, pe=distance, vmax=vmax, accel=amax, t0=t0, v0=v0, decel=dmax)
 
     def _init_rotation_tpi(
         self,
@@ -751,6 +787,8 @@ class KinematicController(Controller):
                 "vmax": forward_tpi["vmax"],
                 "accel": forward_tpi["accel"],
                 "decel": forward_tpi["decel"],
+                # Non-zero when a goal replaced mid-motion continued from speed.
+                "v0": forward_tpi["v0"],
                 "orientation_after_rotation": (
                     self._rotation_target_quat.tolist() if self._rotation_target_quat is not None else None
                 ),
@@ -826,7 +864,7 @@ class KinematicController(Controller):
                 {
                     "p0": 0.0,
                     "pe": distance,
-                    "v0": 0.0,
+                    "v0": forward["v0"],
                     "ve": 0.0,
                     "vmax": forward["vmax"],
                     "accel": forward["accel"],
@@ -880,6 +918,27 @@ class OmniController(KinematicController):
 
     def __init__(self, params: Optional[ControllerParams] = None) -> None:
         super().__init__(params)
+
+    def path_rejection(self, agent: "Agent", path: List[Pose]) -> Optional[str]:
+        """Why ``path`` cannot be taken now, or ``None`` if it can.
+
+        A path set while the agent is moving continues the motion: the
+        straight-line trajectory to the first waypoint starts from the agent's
+        current velocity (its signed component along the line, so a goal
+        behind is reached by reversing). The path is refused when no such
+        trajectory exists within the configured limits -- a goal inside the
+        braking distance, where the agent is, or off the line of motion. At
+        rest every path is accepted. See :mod:`pybullet_fleet._replan`.
+        """
+        if not path:
+            return None
+        if not self._under_way(agent):
+            return None
+        pose = agent.get_pose()
+        t0 = agent.sim_core.sim_time if agent.sim_core is not None else 0.0
+        return replacement_rejection(
+            self.params, pose.position, pose.orientation, agent._current_velocity, path[0].position, t0
+        )
 
     # -- Velocity kinematics -------------------------------------------
 
@@ -980,7 +1039,19 @@ class OmniController(KinematicController):
             self._forward_direction_unit = np.zeros(3)
             self._forward_direction_unit_body = np.zeros(3)
 
-        self._init_forward_trajectory(agent, total_dist)
+        # A goal set while moving continues the motion: start from the speed
+        # the agent already has toward the new goal. set_path() only lets a
+        # goal through here when that is possible at the configured
+        # deceleration and the motion is along the line to it (see
+        # path_rejection); whatever is left across that line is numerical noise
+        # (see _replan.CROSS_SPEED_*).
+        v0 = 0.0
+        initial_velocity = kwargs.get("initial_velocity")
+        if initial_velocity is not None and total_dist > 1e-9:
+            # Signed: negative is moving away from the goal, which the
+            # trajectory turns around (see build_tpi_from_speed).
+            v0 = float(np.dot(initial_velocity, self._forward_direction_unit))
+        self._init_forward_trajectory(agent, total_dist, v0=v0)
 
     def _init_final_orientation_trajectory(self, agent: "Agent", goal: Pose) -> None:
         """Rotation-only final alignment (no position movement)."""

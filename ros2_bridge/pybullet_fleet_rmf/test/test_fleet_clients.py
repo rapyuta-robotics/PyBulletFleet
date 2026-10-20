@@ -65,6 +65,9 @@ class _FakeAgent:
         self.goal_calls.append(pose)
         self.is_moving = True
 
+    def path_rejection(self, path):
+        return None  # at rest: every path is taken
+
     def stop(self):
         self.stop_calls += 1
         self.is_moving = False

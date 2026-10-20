@@ -176,7 +176,9 @@ class ReplayInput:
     allowed_names: tuple[str, ...] | None = None
 
     @classmethod
-    def navigate(cls, target: str, position: Iterable[float], *, yaw: float = 0.0, z: float = 0.0, **kwargs) -> ReplayInput:
+    def navigate(
+        cls, target: str, position: Iterable[float], *, yaw: float = 0.0, z: float | None = None, **kwargs
+    ) -> ReplayInput:
         return cls("navigate", {"goals": [{"name": target, "position": list(position), "yaw": yaw, "z": z}]}, **kwargs)
 
     @classmethod
@@ -198,7 +200,8 @@ class ReplayInput:
                     "name": name(goal.get("name"), "goal.name"),
                     "position": vector(goal.get("position"), 2, "goal.position"),
                     "yaw": number(goal.get("yaw", 0), "goal.yaw"),
-                    "z": number(goal.get("z", 0), "goal.z"),
+                    # None (or absent) keeps the robot's present height.
+                    "z": None if goal.get("z") is None else number(goal["z"], "goal.z"),
                 }
                 item["command_id"] = None if goal.get("command_id") is None else name(goal["command_id"], "goal.command_id")
                 goals.append(item)
