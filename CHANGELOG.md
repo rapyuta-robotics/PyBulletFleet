@@ -101,7 +101,25 @@ are not recommended for production use yet.
   checkpoint/state-discovery programs under `examples/validation/`. Their
   Python module paths and documented run commands now use those folders.
 
+- A negative or non-finite `frequency` for `register_callback()`,
+  `register_plugin()` or a plugin config now raises `ValueError`; a negative
+  one used to mean every step. `None` (and `0` for a callback) still means
+  every step.
+
+- `SimulationParams.monitor_update_interval` is read once, when the
+  simulation is created; changing `params` afterwards no longer changes the
+  DataMonitor refresh rate.
+
+- Time profiling reports `CallbackPhase.POST_STEP` callbacks as
+  `callbacks_post_step`, apart from `events_post_step`.
+
 ### Added
+
+- Add `register_callback(..., phase=CallbackPhase.POST_STEP)` (`CallbackPhase`
+  in `pybullet_fleet.types`; the string `"post_step"` works too): a callback that runs at the
+  end of the step, right after the `post_step` event, once poses are written
+  and the collision check is done, with the same `frequency` option as Phase-1
+  callbacks, scheduled on `sim_time`, the time of the state it sees.
 
 - Add `MultiRobotSimulationCore.set_collision_ignore_filter(fn)`: touching
   pairs for which `fn(obj_a, obj_b)` returns `True` are excluded from
@@ -126,8 +144,10 @@ are not recommended for production use yet.
 
 - Add `SimulationParams.monitor_update_interval`: simulated seconds between
   DataMonitor refreshes, which were fixed at every step with a GUI and every
-  second without one. That remains the default (`None`); `0` is every step.
-  It is independent of `monitor_log_interval`.
+  second without one. The default (`None`) is every step while the monitor
+  window is open (`enable_monitor_gui`, or `gui` when that is unset), so a
+  monitor window on a headless run stays live too, and every second
+  otherwise; `0` is every step. It is independent of `monitor_log_interval`.
 
 - The monitor's real-time factor is measured against the newest sample older
   than its 10 s window as well, so updates sparser than the window no longer
@@ -262,6 +282,19 @@ are not recommended for production use yet.
 - Keep replay input application and result capture in `ReplaySession`, without replay-specific mutation guards in ordinary simulation and Fleet APIs. Direct core calls are outside the recorded-input contract.
 
 ### Fixed
+
+- Frequency-limited callbacks and plugins, `collision_check_frequency` and the
+  DataMonitor refresh no longer skip beats or drift. They compared the
+  accumulated (float) simulation time with the interval since their last run,
+  so a 10 Hz callback on a 0.1 s timestep ran at gaps of 0.1 s and 0.2 s, a
+  1 Hz plugin missed every other second, and an interval that is not a whole
+  number of timesteps drifted. They now run on a fixed grid, `k / frequency`
+  from the start of the run, at most once per step, with a tolerance for float
+  error, and they read the time as the step count times the timestep rather
+  than the accumulated simulation time, whose error grew past that tolerance
+  within minutes at a 1 ms timestep. A handler registered mid-run first runs
+  at the next due time. A DataMonitor with a GUI now refreshes on every step,
+  as documented.
 
 - `Agent.set_controller()` now adopts the controller's own
   `ControllerParams` as the agent's `controller_params`, matching what

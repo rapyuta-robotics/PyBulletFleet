@@ -13,6 +13,7 @@ except PackageNotFoundError:  # running from a source tree that was never instal
 # Type definitions
 from pybullet_fleet.types import (  # noqa: F401
     ActionStatus,
+    CallbackPhase,
     ControllerMode,
     DoorState,
     MotionMode,
@@ -178,6 +179,7 @@ __all__ = [
     "__version__",
     # Type definitions
     "ActionStatus",
+    "CallbackPhase",
     "MotionMode",
     "MovementDirection",
     "PosePhase",

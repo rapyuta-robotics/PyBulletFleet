@@ -83,7 +83,11 @@ def test_a_pose_is_stamped_with_its_trajectory_time(sim, batch):
     agent = _agent(sim, batch=batch)
     _start(sim, agent)
     seen = []
-    sim.events.on(SimEvents.POST_STEP, lambda **_: seen.append((sim.sim_time, agent.get_pose().position[0])))
+    sim.register_callback(
+        lambda core, dt: seen.append((core.sim_time, agent.get_pose().position[0])),
+        frequency=None,
+        phase="post_step",
+    )
     for _ in range(8):
         sim.step_once()
         # Outside the step too: the completed time is the pose's time.

@@ -109,6 +109,20 @@ class DoorState(str, Enum):
     CLOSING = "closing"
 
 
+class CallbackPhase(str, Enum):
+    """When in a simulation step a ``register_callback()`` callback runs.
+
+    Attributes:
+        STEP: After the objects have been updated, before their new poses are
+            written to PyBullet and before the collision check.
+        POST_STEP: At the end of the step, right after the ``post_step`` event,
+            once the poses are written and the step's collision check has run.
+    """
+
+    STEP = "step"
+    POST_STEP = "post_step"
+
+
 class ControllerMode(str, Enum):
     """Internal mode for KinematicController state machine.
 

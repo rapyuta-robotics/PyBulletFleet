@@ -387,7 +387,7 @@ class TestRecorderTimeBase:
         rec.start()
         # sim mode: callback registered with frequency=fps
         cb = sim_core._callbacks[-1]
-        assert cb["frequency"] == 10.0
+        assert cb["gate"].frequency == 10.0
         rec.stop()
 
     def test_real_mode_registers_every_step(self, sim_core, tmp_gif):
@@ -395,7 +395,7 @@ class TestRecorderTimeBase:
         rec.start()
         # real mode: callback registered with frequency=None (every step)
         cb = sim_core._callbacks[-1]
-        assert cb["frequency"] is None
+        assert cb["gate"].frequency is None
         rec.stop()
 
     def test_real_mode_throttles_by_wall_clock(self, sim_core, tmp_gif, monkeypatch):

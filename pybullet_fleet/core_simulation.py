@@ -43,6 +43,7 @@ import pybullet_data
 
 import yaml
 
+from pybullet_fleet._frequency import FrequencyGate
 from pybullet_fleet._platform import IS_MACOS
 from pybullet_fleet.camera_controller import CameraController
 from pybullet_fleet.collision_visualizer import CollisionVisualizer  # deprecated, unused
@@ -61,7 +62,7 @@ from pybullet_fleet.sim_object import SimObject
 from pybullet_fleet.agent import Agent
 from pybullet_fleet.agent_manager import SimObjectManager
 from pybullet_fleet.behavior_tree_core import BehaviorTree
-from pybullet_fleet.types import SpatialHashCellSizeMode, CollisionDetectionMethod, CollisionMode
+from pybullet_fleet.types import CallbackPhase, SpatialHashCellSizeMode, CollisionDetectionMethod, CollisionMode
 from pybullet_fleet._defaults import SIMULATION as _SIM_D
 
 if TYPE_CHECKING:
@@ -184,8 +185,10 @@ class SimulationParams:
     #: monitor window without the PyBullet viewer is still available.
     enable_monitor_gui: Optional[bool] = _SIM_D["enable_monitor_gui"]
     #: Simulated seconds between DataMonitor refreshes while ``monitor`` is
-    #: on. ``None`` (the default) is every step with a GUI, so the window stays
-    #: live, and every second without one. ``0`` is every step.
+    #: on. ``None`` (the default) is every step while the monitor window is
+    #: open (``enable_monitor_gui``, or ``gui`` when that is ``None``), so the
+    #: window stays live, and every second otherwise. ``0`` is every step.
+    #: Read once, when the simulation is created.
     monitor_update_interval: Optional[float] = _SIM_D["monitor_update_interval"]
     #: Wall-clock seconds between ``[MONITOR]`` lines logged at INFO -- RTF,
     #: collision totals, step count -- independent of ``monitor``, ``gui`` and
@@ -450,6 +453,8 @@ class MultiRobotSimulationCore:
         self._step_count: int = 0
         # The simulation clock: the one source of time; ``sim_time`` reads it.
         self._elapsed_sim_time: float = 0.0
+        # The step, time and timestep _schedule_time() counts whole timesteps from.
+        self._schedule_origin: Tuple[int, float, float] = (0, 0.0, params.timestep)
         self._enable_time_profiling: bool = params.enable_time_profiling
 
         # --- Fully private (no external access) ---
@@ -457,7 +462,6 @@ class MultiRobotSimulationCore:
         self._next_object_id: int = 0  # Counter for unique object IDs (read/incremented by SimObject.__init__)
         self._last_logged_collision_count: int = 0  # Track last logged collision count
         self._monitor_enabled: bool = params.monitor
-        self._last_monitor_update: float = 0
         self._last_monitor_log: Optional[float] = None  # time.monotonic() of the last INFO [MONITOR] line
         self._callbacks: List[Dict[str, Any]] = []  # List of callback functions
         self._behavior_tree_callbacks: List[Tuple[BehaviorTree, Callable]] = []
@@ -473,7 +477,7 @@ class MultiRobotSimulationCore:
         self._viewport_left_click_start: Optional[Tuple[int, int]] = None
         self._viewport_drag_entity_id: Optional[int] = None
         self._collision_check_frequency: Optional[float] = params.collision_check_frequency  # If None, check every step
-        self._last_collision_check: float = 0.0
+        self._collision_check_gate = FrequencyGate()  # follows _collision_check_frequency while enabled
         self._log_level: str = params.log_level
         self._params: SimulationParams = params
         self._collision_color: List[float] = collision_color if collision_color is not None else [0, 0, 1, 1]
@@ -515,6 +519,7 @@ class MultiRobotSimulationCore:
             "collision_check": [],
             "events_pre_step": [],
             "events_post_step": [],
+            "callbacks_post_step": [],
             "events_collision": [],
             "monitor_update": [],
             "total": [],
@@ -609,6 +614,15 @@ class MultiRobotSimulationCore:
         self._plugins: List["SimPlugin"] = []
 
         self.setup_pybullet()
+        # DataMonitor refresh: monitor_update_interval, else every step while
+        # its window is open (enable_monitor_gui, or gui when that is None) and
+        # once a second otherwise. Set after setup_pybullet(): RECORD may turn
+        # the GUI off.
+        interval = params.monitor_update_interval
+        if interval is None:
+            window = params.enable_monitor_gui if params.enable_monitor_gui is not None else params.gui
+            interval = 0.0 if window else 1.0
+        self._monitor_update_gate = FrequencyGate(1.0 / interval if interval > 0 else None)
         self.setup_monitor()
 
     def setup_monitor(self) -> None:
@@ -1006,6 +1020,20 @@ class MultiRobotSimulationCore:
         """
         return self._elapsed_sim_time
 
+    def _schedule_time(self) -> float:
+        """:attr:`sim_time` without its accumulated float error, for frequency gates.
+
+        ``sim_time`` adds one timestep per step, so its error grows with the
+        run: at a 1 ms timestep it passes a millionth of a timestep within
+        minutes, enough to move a due time by a step. This counts whole
+        timesteps from an origin that moves when the clock is restored and,
+        at the next step, when the timestep has changed -- through pacing or
+        by assigning ``params.timestep`` -- so its error stays at the rounding
+        of one product.
+        """
+        step, time_at_step, timestep = self._schedule_origin
+        return time_at_step + (self._step_count - step) * timestep
+
     def get_completed_step_boundary(self) -> tuple[int, float]:
         """Return the completed step and canonical elapsed time outside a step."""
         if self._in_step or self._in_post_step:
@@ -1071,6 +1099,7 @@ class MultiRobotSimulationCore:
             raise ValueError("Completed-step time does not match the fixed timestep")
         self._step_count = step
         self._elapsed_sim_time = elapsed_time
+        self._schedule_origin = (step, elapsed_time, self._params.timestep)
         self._resume_ready = True
 
     @property
@@ -1132,8 +1161,8 @@ class MultiRobotSimulationCore:
         else:
             raise TypeError(f"Expected SimPlugin instance or subclass, got {plugin_or_cls!r}")
 
+        plugin.frequency = frequency  # validates before the plugin is registered
         self._plugins.append(plugin)
-        plugin.frequency = frequency
         return plugin
 
     @property
@@ -1162,21 +1191,15 @@ class MultiRobotSimulationCore:
     def _step_plugins(self, dt: float) -> None:
         """Dispatch ``on_step()`` to plugins respecting frequency control."""
         for plugin in self._plugins:
-            freq = plugin.frequency
-            if freq is None:
-                try:
-                    plugin.on_step(dt)
-                except Exception:
-                    logger.error("Plugin %s.on_step() failed", type(plugin).__name__, exc_info=True)
-            else:
-                plugin._accumulator += dt
-                interval = 1.0 / freq
-                if plugin._accumulator >= interval:
-                    try:
-                        plugin.on_step(plugin._accumulator)
-                    except Exception:
-                        logger.error("Plugin %s.on_step() failed", type(plugin).__name__, exc_info=True)
-                    plugin._accumulator = 0.0
+            # The same schedule as callbacks: every step without a frequency,
+            # else the fixed grid; None when the plugin is not due this step.
+            dt_since_last_run = plugin._frequency_gate.due(self._schedule_time(), dt)
+            if dt_since_last_run is None:
+                continue
+            try:
+                plugin.on_step(dt_since_last_run)
+            except Exception:
+                logger.error("Plugin %s.on_step() failed", type(plugin).__name__, exc_info=True)
 
     def _shutdown_plugins(self) -> None:
         """Call ``on_shutdown()`` on all plugins."""
@@ -1186,15 +1209,50 @@ class MultiRobotSimulationCore:
             except Exception:
                 logger.error("Plugin %s.on_shutdown() failed", type(plugin).__name__, exc_info=True)
 
-    def register_callback(self, callback: Callable, frequency: Optional[float] = None) -> None:
+    def register_callback(
+        self,
+        callback: Callable,
+        frequency: Optional[float] = None,
+        phase: Union[CallbackPhase, str] = CallbackPhase.STEP,
+    ) -> None:
         """
         Register a callback function to be called during simulation.
 
         Args:
             callback: Function with signature callback(sim_core, dt) -> None
                      - sim_core: Reference to MultiRobotSimulationCore instance
-                     - dt: Time elapsed since last callback execution (seconds)
-            frequency: Callback frequency in Hz. If None, called every simulation step.
+                     - dt: Simulated time since this callback last ran (seconds)
+            frequency: Callback frequency in Hz. If None (or 0), called every
+                simulation step. Due times are a fixed grid of ``k / frequency``
+                seconds of simulated time, so a callback neither skips beats nor
+                drifts; it runs at most once per step, and the first time one
+                interval into the run.
+            phase: When in the step the callback runs, a :class:`CallbackPhase`
+                or its value as a string.
+
+                - ``CallbackPhase.STEP`` / ``"step"`` (default): after the objects have been updated, before
+                  their new poses are written to PyBullet and before the collision
+                  check.
+                - ``CallbackPhase.POST_STEP`` / ``"post_step"``: at the end of the step, right after the
+                  ``post_step`` event: poses are written, and when the step ran
+                  a collision check (see ``collision_check_frequency``) the
+                  active pairs are those of the new poses. Use it to publish or
+                  record the step's outcome.
+
+                In both phases ``sim_core.sim_time`` is the time of the state the
+                callback sees, the end of the step; stamp anything read from the
+                bodies with it. Both schedule their ``frequency`` on it.
+
+        Raises:
+            ValueError: ``frequency`` is negative or not finite, or ``phase`` is
+                not a :class:`CallbackPhase`.
+
+        A callback's exception is not caught (unlike a plugin's): it propagates
+        out of :meth:`step_once` with the clock already advanced, and the rest
+        of the step is skipped -- later callbacks, and for a ``STEP`` callback
+        the collision check, the ``post_step`` event and ``POST_STEP``
+        callbacks; for either phase the state recorder's completed step and the
+        DataMonitor refresh.
 
         Example::
 
@@ -1205,8 +1263,33 @@ class MultiRobotSimulationCore:
                         pass
 
             sim_core.register_callback(my_callback, frequency=10.0)  # 10 Hz
+
+            def publish(sim_core, dt):
+                stamp = sim_core.sim_time
+                ...
+
+            sim_core.register_callback(publish, frequency=10.0, phase=CallbackPhase.POST_STEP)
         """
-        self._callbacks.append({"func": callback, "frequency": frequency, "last_exec": 0.0})
+        try:
+            phase = CallbackPhase(phase)
+        except ValueError:
+            raise ValueError("phase must be one of {}, got {!r}".format([p.value for p in CallbackPhase], phase)) from None
+        self._callbacks.append({"func": callback, "phase": phase, "gate": FrequencyGate(frequency or None)})
+
+    def _run_callbacks(self, phase: CallbackPhase) -> None:
+        """Run the callbacks registered for ``phase`` that are due this step.
+
+        Both phases schedule on the time of the state they see
+        (:meth:`_schedule_time`), so a ``frequency`` handler runs when that
+        state reaches ``k / frequency``.
+        """
+        now = self._schedule_time()
+        for cbinfo in list(self._callbacks):
+            if cbinfo["phase"] != phase:
+                continue
+            dt_since_last_run = cbinfo["gate"].due(now, self._params.timestep)
+            if dt_since_last_run is not None:
+                cbinfo["func"](self, dt_since_last_run)
 
     def register_behavior_tree(self, tree: BehaviorTree) -> BehaviorTree:
         """Register a behavior tree to tick once per simulation step.
@@ -3735,9 +3818,10 @@ class MultiRobotSimulationCore:
         self._step_count = 0
         self._collision_count = 0
         self._elapsed_sim_time = 0.0
+        self._schedule_origin = (0, 0.0, self._params.timestep)
         self._resume_ready = False
-        self._last_collision_check = 0.0
-        self._last_monitor_update = 0.0
+        self._collision_check_gate.reset()
+        self._monitor_update_gate.reset()
         self._last_monitor_log = None  # a fresh run logs its first step
         self._last_logged_collision_count = 0
         self._last_monitor_frame = None
@@ -3763,9 +3847,11 @@ class MultiRobotSimulationCore:
         # Clear speed history (#2: prevents stale data in update_monitor)
         self._speed_history.clear()
 
-        # Reset callback last_exec (#3: prevents stale dt on restart)
+        # Restart callback schedules (#3: prevents stale dt on restart)
         for cbinfo in self._callbacks:
-            cbinfo["last_exec"] = 0.0
+            cbinfo["gate"].reset()
+        for plugin in self._plugins:
+            plugin._frequency_gate.reset()
 
         # Clear profiling statistics (#4: prevents mixing data across runs)
         for key in self._profiling_stats:
@@ -3810,7 +3896,7 @@ class MultiRobotSimulationCore:
 
         After calling ``reset()`` the simulation is ready for new objects to be
         spawned.  Callbacks registered via :meth:`register_callback` are **preserved**
-        (their ``last_exec`` is zeroed by ``initialize_simulation``).
+        (their schedules restart in ``initialize_simulation``).
 
         Example::
 
@@ -3859,9 +3945,9 @@ class MultiRobotSimulationCore:
             except Exception:
                 logger.error("Plugin %s.on_reset() failed", type(plugin).__name__, exc_info=True)
 
-        # Reset plugin accumulators
+        # Restart plugin schedules
         for plugin in self._plugins:
-            plugin._accumulator = 0.0
+            plugin._frequency_gate.reset()
 
         # 2. Reset PyBullet world (removes all bodies including ground plane)
         p.resetSimulation(physicsClientId=self._client)
@@ -4549,6 +4635,7 @@ class MultiRobotSimulationCore:
                     },
                     'events_pre_step': float,
                     'events_post_step': float,
+                    'callbacks_post_step': float,  # CallbackPhase.POST_STEP callbacks
                     'events_collision': float,
                     'monitor_update': float,
                     'total': float,
@@ -4628,6 +4715,9 @@ class MultiRobotSimulationCore:
             # of this step, so the clock and counter move first: sim_time is the
             # time of the state any later code sees (object update, callbacks,
             # plugins, collision check, POST_STEP, and outside the step).
+            if self._params.timestep != self._schedule_origin[2]:
+                # A new timestep: the schedule counts its steps from here.
+                self._schedule_origin = (self._step_count, self._schedule_time(), self._params.timestep)
             self._elapsed_sim_time += self._params.timestep
             self._step_count += 1
             # Poses written from pre_step are still pending (buffered).
@@ -4666,15 +4756,7 @@ class MultiRobotSimulationCore:
             if measure_timing:
                 t_cb0 = time.perf_counter()
 
-            for cbinfo in list(self._callbacks):
-                freq = cbinfo.get("frequency", None)
-                last_exec = cbinfo.get("last_exec", 0.0)
-                interval = 1.0 / freq if freq else 0.0
-                # Judge based on self.sim_time
-                if freq is None or self.sim_time - last_exec >= interval:
-                    dt = self.sim_time - last_exec if last_exec > 0 else self._params.timestep
-                    cbinfo["func"](self, dt)
-                    cbinfo["last_exec"] = self.sim_time
+            self._run_callbacks(CallbackPhase.STEP)
 
             if measure_timing:
                 t_cb1 = time.perf_counter()
@@ -4747,21 +4829,14 @@ class MultiRobotSimulationCore:
                 t_col0 = time.perf_counter()
 
             collision_breakdown = None  # per-phase breakdown (only when return_profiling=True)
-            freq = self._collision_check_frequency
-            # freq = None: check every step
-            # freq = 0: disabled (never check)
-            # freq > 0: check at specified frequency (Hz)
-            if freq is None:
-                # Check every step
-                _, collision_breakdown = self.check_collisions(return_profiling=return_profiling)
-                self._last_collision_check = self.sim_time
-            elif freq > 0:
-                # Check at specified frequency
-                interval = 1.0 / freq
-                if self.sim_time - self._last_collision_check >= interval:
+            freq = self._collision_check_frequency  # None: every step, <= 0: disabled
+            if freq is None or freq > 0:
+                self._collision_check_gate.set_frequency(freq)  # no-op unless it changed
+                if self._collision_check_gate.due(self._schedule_time(), self._params.timestep) is not None:
                     _, collision_breakdown = self.check_collisions(return_profiling=return_profiling)
-                    self._last_collision_check = self.sim_time
-            # else: freq = 0, skip collision checks entirely
+            else:
+                # Re-enabled later, even at the same rate, it starts a fresh schedule.
+                self._collision_check_gate.reset()
 
             if measure_timing:
                 t_col1 = time.perf_counter()
@@ -4778,7 +4853,11 @@ class MultiRobotSimulationCore:
                 t_ev1 = time.perf_counter()
             self.events.emit(SimEvents.POST_STEP, dt=self._params.timestep, sim_time=self.sim_time)
             if measure_timing:
-                self._profiling_stats["events_post_step"][-1] = (time.perf_counter() - t_ev1) * 1000
+                t_cb2 = time.perf_counter()
+                self._profiling_stats["events_post_step"][-1] = (t_cb2 - t_ev1) * 1000
+            self._run_callbacks(CallbackPhase.POST_STEP)
+            if measure_timing:
+                self._profiling_stats["callbacks_post_step"][-1] = (time.perf_counter() - t_cb2) * 1000
 
             self._update_selected_nameplate()
             self._in_post_step = False
@@ -4794,12 +4873,8 @@ class MultiRobotSimulationCore:
                 t_mon0 = time.perf_counter()
 
             if self._monitor_enabled:
-                interval = self._params.monitor_update_interval
-                if interval is None:
-                    interval = self._params.timestep if self._params.gui else 1.0
-                if self.sim_time - self._last_monitor_update > interval:
+                if self._monitor_update_gate.due(self._schedule_time(), self._params.timestep) is not None:
                     self.update_monitor()
-                    self._last_monitor_update = self.sim_time
 
             if self._params.monitor_log_interval > 0:
                 self._maybe_log_monitor_line()

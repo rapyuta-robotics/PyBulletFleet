@@ -46,6 +46,7 @@ step_once()
 │
 ├── check_collisions         (frequency-gated; sees up-to-date AABBs/grid)
 ├── post-step events
+├── post-step callbacks      (register_callback(..., phase="post_step"))
 └── monitor update
 ```
 
@@ -96,10 +97,16 @@ from pybullet_fleet.events import SimEvents
 sim.events.on(SimEvents.POST_STEP, on_post_step)
 ```
 
-`register_callback()` is a Phase-1 callback API; it does not create a post-step
-callback. `set_pose()` calls from a `POST_STEP` handler are immediate, but the
-step's collision check has already completed. A collision caused by such a
-write is therefore observed by the next collision-check opportunity.
+`register_callback()` runs in Phase 1 by default. Pass
+`phase=CallbackPhase.POST_STEP` (or `"post_step"`) for
+a callback that runs right after the `POST_STEP` event, with its own
+`frequency` -- for example to publish or record each step's outcome at a fixed
+rate. Its schedule runs on `sim_time`, the time of the state it sees, so a 10 Hz
+post-step callback runs when the poses reach 0.1 s, 0.2 s, ...
+
+`set_pose()` from a `POST_STEP` handler or a post-step callback writes to
+PyBullet at once, but the step's collision check has already run. A collision
+such a write causes is found by the next collision check.
 
 ### Which time a pose belongs to
 
@@ -111,7 +118,7 @@ right after the `pre_step` event, before anything computes the new state:
 |---|---|---|
 | `pre_step` subscriber (payload `sim_time` too) | previous step, `t` / `k` | the previous step's state |
 | object update, Phase-1 callbacks, plugin `on_step`, behavior trees | new step, `t + dt` / `k + 1` | being computed for `t + dt` |
-| collision check, `post_step` subscriber (payload `sim_time` too) | `t + dt` / `k + 1` | the step's result |
+| collision check, `post_step` subscriber (payload `sim_time` too), post-step callbacks | `t + dt` / `k + 1` | the step's result |
 | outside a step | completed step, `t + dt` / `k + 1` | the completed step's result |
 
 `pre_step` is the only place that still sees the previous step. Everything
@@ -135,6 +142,19 @@ in the step, or outside it, moves from the next step. With `Agent.set_path()`'s
 default `auto_approach=True` (which `set_goal_pose()` uses), a goal more than
 0.5 m away gets the current pose as a zero-length first waypoint, and that
 waypoint takes the first step.
+
+### Frequency-limited handlers
+
+Callbacks and plugins with a `frequency`, `collision_check_frequency` and the
+DataMonitor refresh run on a fixed grid of simulated time, `k / frequency`
+seconds from the start of the run: on the first step at or after each due
+time, at most once per step. A handler registered mid-run first runs at the
+next due time; missed due times never cause a burst of runs. The schedule
+reads the time as the step count times the timestep (counted again from any
+change of timestep or restore) rather than the accumulated simulation time,
+whose float error grows with the run, and tolerates the rounding left. So a
+10 Hz handler on a 0.1 s timestep runs every step, however long the run, and
+an interval that is not a whole number of timesteps does not drift.
 
 ### What Phase 1 does not promise
 

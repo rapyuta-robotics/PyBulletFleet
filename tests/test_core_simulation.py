@@ -1408,20 +1408,26 @@ class TestReset:
         assert num_bodies >= 1
 
     def test_preserves_callbacks(self, sim_core):
-        """Registered callbacks survive reset (only last_exec is zeroed)."""
+        """Registered callbacks survive reset, and their schedule restarts."""
         calls = []
 
         def cb(sc, dt):
-            calls.append(dt)
+            calls.append((round(sc.sim_time, 9), round(dt, 9)))
 
         sim_core.register_callback(cb, frequency=10.0)
-        # Fake a stale last_exec
-        sim_core._callbacks[0]["last_exec"] = 999.0
+        sim_core.initialize_simulation()
+        for _ in range(25):
+            sim_core.step_once()
+        calls.clear()
 
         sim_core.reset()
+        # The first step ends at one timestep: run exactly one interval.
+        for _ in range(int(round(0.1 / sim_core.params.timestep))):
+            sim_core.step_once()
 
         assert len(sim_core._callbacks) == 1
-        assert sim_core._callbacks[0]["last_exec"] == 0.0
+        # One interval into the new run, with a dt measured from its start.
+        assert calls == [(0.1, 0.1)]
 
     def test_step_works_after_reset(self, sim_core):
         """step_once() runs cleanly on a fresh world after reset."""
@@ -1466,19 +1472,24 @@ class TestInitializeSimulation:
         sim_core.initialize_simulation()
         assert len(sim_core._speed_history) == 0
 
-    def test_resets_callback_last_exec(self, sim_core):
-        """#3: callback last_exec must be reset to 0.0 for correct dt on restart."""
-        called_dts = []
+    def test_resets_callback_schedule(self, sim_core):
+        """#3: a restart must not carry the previous run's schedule (stale dt)."""
+        called = []
 
         def cb(sc, dt):
-            called_dts.append(dt)
+            called.append((round(sc.sim_time, 9), round(dt, 9)))
 
         sim_core.register_callback(cb, frequency=10.0)
-        # Simulate previous run leaving stale last_exec
-        sim_core._callbacks[0]["last_exec"] = 999.0
+        sim_core.initialize_simulation()
+        for _ in range(37):
+            sim_core.step_once()
+        called.clear()
 
         sim_core.initialize_simulation()
-        assert sim_core._callbacks[0]["last_exec"] == 0.0
+        # The first step ends at one timestep: run exactly one interval.
+        for _ in range(int(round(0.1 / sim_core.params.timestep))):
+            sim_core.step_once()
+        assert called == [(0.1, 0.1)]
 
     def test_clears_profiling_stats(self, sim_core):
         """#4: _profiling_stats lists must be emptied to avoid mixing runs."""

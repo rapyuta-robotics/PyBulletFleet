@@ -512,7 +512,7 @@ class KinematicProfile:
         if sim._plugins or sim._behavior_tree_callbacks or sim._registered_managers:
             raise ValueError("Plugins, BTs or managers are outside this checkpoint profile")
         allowed = {id(callback) for callback in self.allowed_callbacks}
-        if any(id(info["func"]) not in allowed or info["frequency"] is not None for info in sim._callbacks):
+        if any(id(info["func"]) not in allowed or info["gate"].frequency is not None for info in sim._callbacks):
             raise ValueError("Undeclared simulation callback is not checkpointable")
         event_allowed = {id(handler) for handler in self.allowed_event_handlers}
         if any(id(handler) not in event_allowed for handlers in sim.events._handlers.values() for _, handler in handlers):
