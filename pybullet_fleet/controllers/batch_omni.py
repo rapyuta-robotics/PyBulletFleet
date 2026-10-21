@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 
-from pybullet_fleet._replan import replacement_rejection
+from pybullet_fleet._replan import PathRequest, replacement_rejection
 from pybullet_fleet._tpi import (
     build_tpi,
     build_tpi_from_speed,
@@ -36,6 +36,7 @@ from pybullet_fleet._tpi import (
 from pybullet_fleet.controllers.batch_base import BatchKinematicController
 from pybullet_fleet.geometry import Pose, quat_angle_between, quat_slerp_batch, rotate_vector
 from pybullet_fleet.logging_utils import get_lazy_logger
+from pybullet_fleet.types import MovementDirection
 
 if TYPE_CHECKING:
     from pybullet_fleet.agent import Agent
@@ -211,9 +212,11 @@ class BatchOmniController(BatchKinematicController):
             return None
         return self._row_velocity(idx, float(self._sim_core.sim_time))
 
-    def path_rejection(self, agent: "Agent", path: List[Pose]) -> Optional[str]:
-        """Why ``path`` cannot be taken now, or ``None`` -- the same rule as
-        :meth:`OmniController.path_rejection <pybullet_fleet.controller.OmniController.path_rejection>`.
+    def _replacement_obstacle(
+        self, agent: "Agent", path: List[Pose], direction: Optional[MovementDirection] = None
+    ) -> Optional[str]:
+        """Why ``path`` cannot continue the current motion, or ``None`` -- the same rule as
+        :meth:`OmniController._replacement_obstacle <pybullet_fleet.controller.OmniController._replacement_obstacle>`.
 
         The motion is the row's own profile velocity, and only while a
         translation is under way: the agent's reported velocity is the last
@@ -243,42 +246,46 @@ class BatchOmniController(BatchKinematicController):
                 ``path[-1].orientation`` after reaching the last waypoint.
 
         Returns:
-            ``False``, with the current motion and path untouched, when
-            :meth:`path_rejection` refuses the path; ``True`` once it is set.
+            ``False`` when the path is refused (``goal_replacement="reject"``
+            only), with the current motion and path untouched; ``True`` once it
+            is set or held to start later. See
+            :meth:`KinematicController.set_path <pybullet_fleet.controller.KinematicController.set_path>`.
         """
         if self._sim_core is None:
             raise RuntimeError("BatchOmniController must be attached to a sim_core before set_path.")
         if not path:
             raise ValueError("path must be a non-empty list of Poses.")
-        idx = self._agent_index.get(id(agent))
-        if idx is None:
+        if self._agent_index.get(id(agent)) is None:
             raise KeyError(f"Agent {agent} is not registered with this batch controller.")
+        return self._replace_path(
+            agent,
+            PathRequest(path=list(path), final_orientation_align=final_orientation_align, direction=None),
+            preempt=bool(kwargs.get("preempt", False)),
+        )
 
-        reason = self.path_rejection(agent, path)
-        if reason is not None:
-            logger.debug(f"Path rejected for {agent.name or agent.object_id}: {reason}")
-            return False
-
+    def _start_row_path(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
+        idx = self._agent_index[id(agent)]
+        path = request.path
         # Continue from the agent's current motion, as OmniController does --
         # but only while a translation is under way. The speed is the row's own
         # profile speed at the time it was last evaluated, which is what
         # OmniController keeps: the agent's reported velocity here is the last
         # step's average (low while accelerating, high while braking) and,
         # right after arrival, still non-zero.
+        assert self._sim_core is not None
         now = float(self._sim_core.sim_time)
         initial_velocity = None
-        if self._phase[idx] == _PHASE_FORWARD:
+        if continue_motion and self._phase[idx] == _PHASE_FORWARD:
             initial_velocity = self._row_velocity(idx, now)
 
         self._paths[idx] = list(path)
         self._wp_index[idx] = 0
-        if final_orientation_align:
+        if request.final_orientation_align:
             self._align_final_orient[idx] = True
             self._final_orient_target_quat[idx] = np.asarray(path[-1].orientation, dtype=np.float64)
         else:
             self._align_final_orient[idx] = False
         self._begin_waypoint(idx, agent, path[0], now, initial_velocity)
-        return True
 
     def _row_velocity(self, idx: int, now: float) -> np.ndarray:
         """World-frame velocity of row ``idx``'s translation profile at ``now``."""
@@ -370,6 +377,7 @@ class BatchOmniController(BatchKinematicController):
             self._moved_mask[idx] = True
             self._phase[idx] = _PHASE_IDLE
             agent._is_moving = False
+            self._row_finished(idx)
             return
 
         dot = float(np.dot(start_quat, target_quat))
@@ -422,6 +430,7 @@ class BatchOmniController(BatchKinematicController):
                 self._paths[idx] = []
                 self._wp_index[idx] = 0
                 self._agents[idx]._is_moving = False
+                self._row_finished(idx)
 
     def _on_cancel_path(self, idx: int) -> None:
         """Reset phase to IDLE immediately (called by agent.stop())."""
@@ -537,6 +546,7 @@ class BatchOmniController(BatchKinematicController):
                 ii = int(i)
                 self._phase[ii] = _PHASE_IDLE
                 self._agents[ii]._is_moving = False
+                self._row_finished(ii)
 
         return self._moved_mask
 

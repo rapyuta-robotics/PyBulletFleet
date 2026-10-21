@@ -28,9 +28,16 @@ import math
 from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
-from pybullet_fleet._tpi import build_tpi, extract_phase_params, trapezoid_distance
+from pybullet_fleet._replan import HEADING_TOL, REST_SPEED, PathRequest, replacement_rejection
+from pybullet_fleet._motion_planning import heading_toward
+from pybullet_fleet._tpi import (
+    build_tpi,
+    build_tpi_from_speed,
+    extract_phase_params,
+    trapezoid_distance,
+    trapezoid_speed,
+)
 from pybullet_fleet.controllers.batch_base import BatchKinematicController
 from pybullet_fleet.geometry import Pose, quat_angle_between, quat_slerp_batch
 from pybullet_fleet.logging_utils import get_lazy_logger
@@ -88,6 +95,9 @@ class BatchDifferentialController(BatchKinematicController):
         self._fwd_accel: np.ndarray = np.zeros((0,), dtype=np.float64)
         #: Braking scalar for the forward phase; see BatchOmniController.
         self._fwd_decel: np.ndarray = np.zeros((0,), dtype=np.float64)
+        #: Speed each forward phase started at: a path that continues the
+        #: motion starts from it (see build_tpi_from_speed). Zero from rest.
+        self._fwd_v0: np.ndarray = np.zeros((0,), dtype=np.float64)
         self._fwd_target_quat: np.ndarray = np.zeros((0, 4), dtype=np.float64)
 
         # Per-agent direction and final-orientation state (Python lists — rare updates).
@@ -128,6 +138,7 @@ class BatchDifferentialController(BatchKinematicController):
         self._fwd_t_total = self._resize_rows(self._fwd_t_total, n)
         self._fwd_accel = self._resize_rows(self._fwd_accel, n)
         self._fwd_decel = self._resize_rows(self._fwd_decel, n)
+        self._fwd_v0 = self._resize_rows(self._fwd_v0, n)
         self._fwd_target_quat = self._resize_rows(self._fwd_target_quat, n)
         # Final-orientation
         self._align_final_orient = self._resize_rows(self._align_final_orient, n)
@@ -180,6 +191,7 @@ class BatchDifferentialController(BatchKinematicController):
             self._fwd_t_total,
             self._fwd_accel,
             self._fwd_decel,
+            self._fwd_v0,
             self._align_final_orient,
         ):
             arr[[i, j]] = arr[[j, i]]
@@ -211,7 +223,7 @@ class BatchDifferentialController(BatchKinematicController):
         direction: Optional[MovementDirection] = None,
         final_orientation_align: bool = True,
         **kwargs,
-    ) -> None:
+    ) -> bool:
         """Set a waypoint path.
 
         Args:
@@ -219,26 +231,108 @@ class BatchDifferentialController(BatchKinematicController):
             path: Non-empty list of goal poses.
             direction: ``FORWARD`` (default), ``BACKWARD``, or ``AUTO``
                 (re-evaluated per waypoint based on heading delta).
-                ``None`` defaults to ``MovementDirection.FORWARD``.
+                ``None`` uses the agent's ``controller_params.default_direction``
+                (``FORWARD`` unless configured), as the per-agent controller does.
             final_orientation_align: If ``True`` (default), rotate to match
                 ``path[-1].orientation`` after reaching the last waypoint.
+
+        Returns:
+            ``False`` when the path is refused (``goal_replacement="reject"``
+            only); ``True`` once it is set or held to start later. See
+            :meth:`KinematicController.set_path <pybullet_fleet.controller.KinematicController.set_path>`.
         """
         if self._sim_core is None:
             raise RuntimeError("BatchDifferentialController must be attached to a sim_core before set_path.")
         if not path:
             raise ValueError("path must be a non-empty list of Poses.")
-        idx = self._agent_index.get(id(agent))
-        if idx is None:
+        if self._agent_index.get(id(agent)) is None:
             raise KeyError(f"Agent {agent} is not registered with this batch controller.")
+        if isinstance(direction, str):
+            direction = MovementDirection(direction)
+        return self._replace_path(
+            agent,
+            PathRequest(path=list(path), final_orientation_align=final_orientation_align, direction=direction),
+            preempt=bool(kwargs.get("preempt", False)),
+        )
+
+    def _start_row_path(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
+        idx = self._agent_index[id(agent)]
+        path = request.path
+        assert self._sim_core is not None
+        now = float(self._sim_core.sim_time)
+        initial_velocity = None
+        if continue_motion and self._phase[idx] == _PHASE_FORWARD:
+            initial_velocity = self._row_velocity(idx, now)
         self._paths[idx] = list(path)
         self._wp_index[idx] = 0
+        # Unset means the agent's default_direction, as the per-agent
+        # controller resolves it -- not the previous path's direction.
+        direction = request.direction if request.direction is not None else agent.controller_params.default_direction
         self._original_direction[idx] = direction
-        if final_orientation_align:
+        if request.final_orientation_align:
             self._align_final_orient[idx] = True
             self._final_orient_target_quat[idx] = np.asarray(path[-1].orientation, dtype=np.float64)
         else:
             self._align_final_orient[idx] = False
-        self._begin_waypoint(idx, agent, path[0], float(self._sim_core.sim_time), direction=direction)
+        self._begin_waypoint(idx, agent, path[0], now, direction=direction, initial_velocity=initial_velocity)
+
+    def continuation_velocity(self, agent: "Agent") -> Optional[np.ndarray]:
+        """The row's forward profile velocity while it drives straight, else ``None``.
+
+        A turn in place has no linear velocity to continue. See
+        :meth:`BatchOmniController.continuation_velocity
+        <pybullet_fleet.controllers.batch_omni.BatchOmniController.continuation_velocity>`.
+        """
+        idx = self._agent_index.get(id(agent))
+        if idx is None or self._sim_core is None or self._phase[idx] != _PHASE_FORWARD:
+            return None
+        return self._row_velocity(idx, float(self._sim_core.sim_time))
+
+    def _replacement_obstacle(
+        self, agent: "Agent", path: List[Pose], direction: Optional[MovementDirection] = None
+    ) -> Optional[str]:
+        """Why ``path`` cannot continue the current motion, or ``None`` -- the same rule as
+        :meth:`DifferentialController._replacement_obstacle
+        <pybullet_fleet.controller.DifferentialController._replacement_obstacle>`.
+        """
+        idx = self._agent_index.get(id(agent))
+        if idx is None or not path or self._sim_core is None or self._phase[idx] != _PHASE_FORWARD:
+            return None
+        now = float(self._sim_core.sim_time)
+        velocity = self._row_velocity(idx, now)
+        if float(np.linalg.norm(velocity)) < REST_SPEED:
+            return None
+        # The direction the new path will use (see _start_row_path), not the
+        # current path's.
+        requested = direction if direction is not None else agent.controller_params.default_direction
+        _, target_quat, _, distance = heading_toward(
+            agent.get_pose(), path[0], requested, agent.controller_params.navigation_2d
+        )
+        current = agent.get_pose()
+        if distance > 1e-6:
+            turn = quat_angle_between(np.asarray(current.orientation, dtype=np.float64), target_quat)
+            if turn > HEADING_TOL:
+                return f"goal needs a {math.degrees(turn):.3g} degree turn in place"
+        return replacement_rejection(
+            agent.controller_params, current.position, current.orientation, velocity, path[0].position, now
+        )
+
+    def _row_velocity(self, idx: int, now: float) -> np.ndarray:
+        """World-frame velocity of row ``idx``'s forward profile at ``now``."""
+        total = float(self._fwd_total_distance[idx])
+        if total <= 1e-9:
+            return np.zeros(3)
+        row = slice(idx, idx + 1)
+        speed = trapezoid_speed(
+            np.maximum(now - self._fwd_t_start[row], 0.0),
+            self._fwd_t_accel[row],
+            self._fwd_t_const[row],
+            self._fwd_t_total[row],
+            self._fwd_accel[row],
+            decel=self._fwd_decel[row],
+            v0=self._fwd_v0[row],
+        )[0]
+        return self._fwd_displacement[idx] / total * float(speed)
 
     # ------------------------------------------------------------------ #
     # Waypoint lifecycle (per-agent, called rarely)
@@ -251,91 +345,43 @@ class BatchDifferentialController(BatchKinematicController):
         goal: Pose,
         sim_time: float,
         direction: Optional[MovementDirection] = None,
+        initial_velocity: Optional[np.ndarray] = None,
     ) -> None:
         """Initialise the ROTATE phase for a waypoint.
 
         Mirrors ``DifferentialController._init_pose_trajectory`` with
         FORWARD / BACKWARD / AUTO directions supported; navigation_2d honoured.
+        ``initial_velocity`` (a path continuing the motion) is kept as the
+        forward phase's starting speed when no turn is needed.
         """
-        current = agent.get_pose()
-        start_pos = np.asarray(current.position, dtype=np.float64)
-        goal_pos = np.asarray(goal.position, dtype=np.float64)
-        if agent.controller_params.navigation_2d:
-            goal_pos = goal_pos.copy()
-            goal_pos[2] = start_pos[2]
-
-        direction_vec = goal_pos - start_pos
-        total_distance = float(np.linalg.norm(direction_vec))
-
         # Resolve direction: explicit arg > stored original > FORWARD
         if direction is None:
             direction = self._original_direction[idx]
-        if direction is None:
-            direction = MovementDirection.FORWARD
-        if isinstance(direction, str):
-            direction = MovementDirection(direction)
-
-        # AUTO: choose FORWARD or BACKWARD based on heading delta.
-        if direction == MovementDirection.AUTO:
-            if total_distance > 1e-6:
-                goal_heading = math.atan2(direction_vec[1], direction_vec[0])
-                qx, qy, qz, qw = (
-                    float(current.orientation[0]),
-                    float(current.orientation[1]),
-                    float(current.orientation[2]),
-                    float(current.orientation[3]),
-                )
-                current_yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
-                delta = goal_heading - current_yaw
-                delta = (delta + math.pi) % (2.0 * math.pi) - math.pi
-                direction = MovementDirection.BACKWARD if abs(delta) > math.pi / 2.0 else MovementDirection.FORWARD
-            else:
-                direction = MovementDirection.FORWARD
+        direction, target_quat, direction_vec, total_distance = heading_toward(
+            agent.get_pose(), goal, direction, agent.controller_params.navigation_2d
+        )
+        current = agent.get_pose()
+        start_pos = np.asarray(current.position, dtype=np.float64)
+        start_quat = np.asarray(current.orientation, dtype=np.float64)
 
         # Cache forward state up front (will be used after ROTATE completes).
         self._fwd_p_start[idx] = start_pos
         self._fwd_displacement[idx] = direction_vec
         self._fwd_total_distance[idx] = total_distance
 
-        # Target orientation: align x-axis toward or away from goal.
-        start_quat = np.asarray(current.orientation, dtype=np.float64)
-        if total_distance > 1e-6:
-            direction_unit = direction_vec / total_distance
-            if direction == MovementDirection.BACKWARD:
-                x_axis_target = -direction_unit
-            else:
-                x_axis_target = direction_unit
-
-            goal_rot = R.from_quat(goal.orientation)
-            goal_mat = goal_rot.as_matrix()
-            x_axis_goal = goal_mat[:, 0]
-            z_axis_goal = goal_mat[:, 2]
-
-            alignment = float(np.dot(x_axis_goal, x_axis_target))
-            if alignment > 0.95:
-                target_quat = np.asarray(goal.orientation, dtype=np.float64)
-            else:
-                y_axis = np.cross(z_axis_goal, x_axis_target)
-                y_norm = float(np.linalg.norm(y_axis))
-                if y_norm < 1e-6:
-                    fallback_up = np.array([0.0, 0.0, 1.0]) if abs(x_axis_target[2]) < 0.9 else np.array([0.0, 1.0, 0.0])
-                    y_axis = np.cross(fallback_up, x_axis_target)
-                    y_axis = y_axis / np.linalg.norm(y_axis)
-                else:
-                    y_axis = y_axis / y_norm
-                z_axis_final = np.cross(x_axis_target, y_axis)
-                rot_mat = np.column_stack([x_axis_target, y_axis, z_axis_final])
-                target_quat = np.asarray(R.from_matrix(rot_mat).as_quat(), dtype=np.float64)
-        else:
-            target_quat = np.asarray(goal.orientation, dtype=np.float64)
-
         self._fwd_target_quat[idx] = target_quat
 
-        # Compute rotation angle and TPI; if negligible, snap heading and skip
-        # to FORWARD immediately (matching DifferentialController behaviour).
+        # Compute rotation angle and TPI; if negligible -- or, continuing the
+        # motion, within HEADING_TOL -- snap heading and skip to FORWARD
+        # immediately (matching DifferentialController behaviour).
         angle = quat_angle_between(start_quat, target_quat)
-        if angle <= 1e-6:
-            self._begin_forward(idx, agent, target_quat, sim_time)
+        if angle <= 1e-6 or (initial_velocity is not None and angle <= HEADING_TOL):
+            v0 = 0.0
+            if initial_velocity is not None and total_distance > 1e-6:
+                # Signed: negative is moving away from the goal, which the
+                # trajectory reverses (see build_tpi_from_speed).
+                v0 = float(np.dot(initial_velocity, direction_vec / total_distance))
+            self._begin_forward(idx, agent, target_quat, sim_time, v0=v0)
             return
 
         # Precompute slerp constants (with shortest-path correction).
@@ -370,8 +416,8 @@ class BatchDifferentialController(BatchKinematicController):
         self._rot_t_total[idx] = t_tot
         self._rot_accel[idx] = accel_eff
 
-    def _begin_forward(self, idx: int, agent: "Agent", target_quat: np.ndarray, sim_time: float) -> None:
-        """Switch to FORWARD phase: snap heading, init distance TPI."""
+    def _begin_forward(self, idx: int, agent: "Agent", target_quat: np.ndarray, sim_time: float, v0: float = 0.0) -> None:
+        """Switch to FORWARD phase: snap heading, init distance TPI from speed ``v0`` (0 from rest)."""
         self._pos_buf[idx] = self._fwd_p_start[idx]
         self._orn_buf[idx] = target_quat
 
@@ -381,7 +427,7 @@ class BatchDifferentialController(BatchKinematicController):
         vmax = agent.controller_params.scalar_max_linear_vel()
         amax = agent.controller_params.scalar_max_linear_accel()
         dmax = agent.controller_params.scalar_max_linear_decel()
-        tpi = build_tpi(p0=0.0, pe=distance, vmax=vmax, accel=amax, t0=sim_time, decel=dmax)
+        tpi = build_tpi_from_speed(p0=0.0, pe=distance, vmax=vmax, accel=amax, t0=sim_time, v0=v0, decel=dmax)
         # The forward phase is the one with a configurable braking rate.
         t_acc, t_cst, t_tot, accel_eff, decel_eff = extract_phase_params(tpi)
 
@@ -392,6 +438,7 @@ class BatchDifferentialController(BatchKinematicController):
         self._fwd_t_total[idx] = t_tot
         self._fwd_accel[idx] = accel_eff
         self._fwd_decel[idx] = decel_eff
+        self._fwd_v0[idx] = float(tpi.v0)
 
     def _begin_final_rotate(self, idx: int, sim_time: float) -> None:
         """Start in-place rotation to ``_final_orient_target_quat[idx]``, then go IDLE."""
@@ -408,6 +455,7 @@ class BatchDifferentialController(BatchKinematicController):
             self._paths[idx] = []
             self._wp_index[idx] = 0
             self._agents[idx]._is_moving = False
+            self._row_finished(idx)
             return
 
         dot = float(np.dot(start_quat, target_quat))
@@ -473,6 +521,7 @@ class BatchDifferentialController(BatchKinematicController):
                 self._paths[idx] = []
                 self._wp_index[idx] = 0
                 self._agents[idx]._is_moving = False
+                self._row_finished(idx)
 
     # ------------------------------------------------------------------ #
     # Vectorized step
@@ -547,9 +596,12 @@ class BatchDifferentialController(BatchKinematicController):
                 self._fwd_accel[fm],
                 self._fwd_total_distance[fm],
                 self._fwd_decel[fm],
+                self._fwd_v0[fm],
             )
             total_dist_safe = np.where(self._fwd_total_distance[fm] > 1e-9, self._fwd_total_distance[fm], 1.0)
-            ratio = np.clip(distance / total_dist_safe, 0.0, 1.0)
+            # No lower clip: a forward phase started moving away from its goal
+            # (negative v0) runs behind its start before turning around.
+            ratio = np.minimum(distance / total_dist_safe, 1.0)
             new_pos = self._fwd_p_start[fm] + ratio[:, None] * self._fwd_displacement[fm]
             self._pos_buf[fm] = new_pos
             self._orn_buf[fm] = self._fwd_target_quat[fm]
@@ -572,6 +624,7 @@ class BatchDifferentialController(BatchKinematicController):
                     # Final rotation done: go IDLE.
                     self._phase[ii] = _PHASE_IDLE
                     self._agents[ii]._is_moving = False
+                    self._row_finished(ii)
                 else:
                     # Normal rotation done: start FORWARD phase.
                     self._begin_forward(ii, self._agents[ii], self._rot_snap_quat[ii], now)

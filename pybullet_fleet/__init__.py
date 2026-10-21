@@ -16,6 +16,7 @@ from pybullet_fleet.types import (  # noqa: F401
     CallbackPhase,
     ControllerMode,
     DoorState,
+    GoalReplacement,
     MotionMode,
     MovementDirection,
     PosePhase,
@@ -180,6 +181,7 @@ __all__ = [
     # Type definitions
     "ActionStatus",
     "CallbackPhase",
+    "GoalReplacement",
     "MotionMode",
     "MovementDirection",
     "PosePhase",

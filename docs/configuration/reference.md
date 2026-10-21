@@ -251,7 +251,9 @@ two-phase step ordering.
 
 `pybullet_fleet/_defaults.py` holds built-in defaults. At module load time,
 `PBF_{SECTION}_{KEY}` environment variables replace non-`None` defaults; for
-example, `PBF_SIMULATION_TIMESTEP=0.05`. If `python-dotenv` is installed, a
+example, `PBF_SIMULATION_TIMESTEP=0.05`, or
+`PBF_CONTROLLER_GOAL_REPLACEMENT=reject` for how every agent without its own
+setting handles a goal it cannot reach from its current motion. If `python-dotenv` is installed, a
 `.env` file fills otherwise unset environment variables.
 
 YAML values passed to `from_yaml()` / `from_dict()` and explicit

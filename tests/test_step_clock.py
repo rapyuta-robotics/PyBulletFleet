@@ -236,6 +236,7 @@ PHASES = ["outside", "pre_step", "callback", "post_step_event", "post_step_callb
 
 @pytest.mark.parametrize("phase", PHASES)
 @pytest.mark.parametrize("margin, accepted", [(0.9, False), (1.1, True)], ids=["inside-braking", "beyond-braking"])
+@pytest.mark.usefixtures("reject_mode")
 def test_a_replaced_goal_is_judged_on_the_pose_in_effect(sim, phase, margin, accepted):
     """The braking distance is that of the speed at sim_time when the goal
     is set, per-agent and batched alike. In PRE_STEP that is still the previous
@@ -260,6 +261,7 @@ def test_a_replaced_goal_is_judged_on_the_pose_in_effect(sim, phase, margin, acc
 
 
 @pytest.mark.parametrize("ahead, expected", [(0.1, False), (0.13, True)])
+@pytest.mark.usefixtures("reject_mode")
 def test_the_reported_pre_step_case(sim, ahead, expected):
     """After five steps a PRE_STEP goal 0.1 m ahead: the pose in effect is the
     one at 0.25 s, at 1.0 m/s, which needs 0.125 m to stop -- both refuse it,

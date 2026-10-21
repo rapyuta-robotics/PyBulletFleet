@@ -1170,20 +1170,21 @@ class Agent(SimObject):
         uses). The remaining path and any queued waypoints are dropped; a
         velocity command (the controller's ``set_velocity``) is ended the same way.
 
+        A differential-drive agent brakes straight along its heading (backing
+        up, it brakes backwards). A path set while it brakes is handled like
+        any path set while moving (see :meth:`set_path`); a pending path from
+        an earlier ``brake`` or ``wait_complete`` replacement is dropped.
+
         The action queue is left alone. A :class:`~pybullet_fleet.action.MoveAction`
-        still executing completes once the agent is at rest; to abandon it
-        instead, call :meth:`clear_actions` first. A new path in another
-        direction is refused until the agent has stopped (see
-        :meth:`set_path`), so a caller that retries temporary refusals -- as
-        ``MoveAction`` does -- simply starts once the braking ends.
+        still executing ends ``CANCELLED`` once the agent is at rest, short of
+        its path's end, and the queue moves on; call :meth:`clear_actions`
+        first to drop the queued actions too.
 
         Returns:
-            ``True`` when a braking trajectory was set. ``False`` at rest, for
-            a fixed-base robot, and for controllers that do not continue a
-            motion into a new path (differential drive, which restarts every
-            path from rest; see issue #78) -- use :meth:`stop` there.
+            ``True`` when a braking trajectory was set. ``False`` at rest and
+            for a fixed-base robot.
         """
-        from pybullet_fleet._replan import braking_position
+        from pybullet_fleet._replan import braking_request
 
         if self.use_fixed_base:
             return False
@@ -1193,50 +1194,57 @@ class Agent(SimObject):
             # path (it is re-entrant), so a concurrent step cannot change the
             # motion the braking point was computed for.
             with controller._state_lock:
-                return self._brake_with(controller, braking_position)
+                return self._brake_with(controller, braking_request)
         if not self._controllers:
             return False
-        return self._brake_with(self._controllers[0], braking_position)
+        return self._brake_with(self._controllers[0], braking_request)
 
-    def _brake_with(self, controller, braking_position) -> bool:
-        velocity = controller.continuation_velocity(self)
-        if velocity is None:
-            return False
+    def _brake_with(self, controller, braking_request) -> bool:
         pose = self.get_pose()
         # The limits the path will be judged and built with: the per-agent
         # controller's own, or the agent's for a batch row.
         params = self.controller_params if controller is self._batch_controller else controller.params
-        target = braking_position(params, pose.position, pose.orientation, velocity)
-        if target is None:
+        request = braking_request(params, pose.position, pose.orientation, controller.continuation_velocity(self))
+        if request is None:
             return False
-        goal = Pose(position=[float(c) for c in target], orientation=list(pose.orientation))
-        accepted = self.set_path([goal], auto_approach=False, final_orientation_align=False)
+        accepted = self.set_path(
+            request.path,
+            auto_approach=False,
+            final_orientation_align=request.final_orientation_align,
+            direction=request.direction,
+            # Braking does not wait for the current path, whatever the mode.
+            _preempt=True,
+        )
         if accepted is False:
-            self._log.warning(f"Braking path refused: {self.path_rejection([goal])}")
+            self._log.warning(f"Braking path refused: {self.path_rejection(request.path, request.direction)}")
         return accepted is not False
 
-    def path_rejection(self, path: List[Pose]) -> "Optional[PathRejection]":
+    def path_rejection(
+        self, path: List[Pose], direction: Union[MovementDirection, str, None] = None
+    ) -> "Optional[PathRejection]":
         """Why :meth:`set_path` would refuse ``path`` right now, or ``None``.
 
         A :class:`~pybullet_fleet._replan.PathRejection`: ``reason`` says why,
         ``temporary`` whether it lasts only until the current motion ends (a
         fixed-base robot and an empty path are permanent).
 
-        A moving omni agent continues its motion into a new path, so it can
-        only take one whose straight-line trajectory from its current
-        velocity exists within its configured limits; at rest every path is
-        taken. Asking first lets a caller report a refusal before acting.
+        Only ``goal_replacement="reject"`` refuses a path that cannot
+        continue the current motion (see :meth:`set_path`); the other modes
+        take every path. Asking first lets a caller report a refusal before
+        acting. ``direction`` is the one :meth:`set_path` would be given.
         """
         from pybullet_fleet._replan import PathRejection
 
         permanent = self._permanent_path_rejection(path)
         if permanent is not None:
             return permanent
+        if isinstance(direction, str):
+            direction = MovementDirection(direction)
         reason = None
         if self._batch_controller is not None:
-            reason = self._batch_controller.path_rejection(self, path)
+            reason = self._batch_controller.path_rejection(self, path, direction)
         elif self._controllers:
-            reason = self._controllers[0].path_rejection(self, path)
+            reason = self._controllers[0].path_rejection(self, path, direction)
         return PathRejection(reason, temporary=True) if reason is not None else None
 
     def _permanent_path_rejection(self, path: List[Pose]) -> "Optional[PathRejection]":
@@ -1441,19 +1449,26 @@ class Agent(SimObject):
         auto_approach: bool = True,
         final_orientation_align: bool = True,
         direction: Union[MovementDirection, str, None] = None,
+        _preempt: bool = False,
     ) -> bool:
         """
         Set a path (list of waypoints) for the robot to follow.
 
-        A path set while an omnidirectional agent is moving continues the
-        motion: the straight-line trajectory to the first waypoint starts from
-        the agent's current velocity (signed along the line, so a goal behind
-        is reached by slowing and reversing). When no such trajectory exists
-        within the configured limits -- a goal inside the braking distance,
-        where the agent is, or off the line of motion -- the path is refused:
-        nothing changes, the current motion continues, and this returns
-        ``False`` (the reason is logged and available from
-        :meth:`path_rejection`). At rest every path is taken.
+        A path set while the agent is moving continues the motion when it can:
+        the straight-line trajectory to the first waypoint starts from the
+        agent's current velocity (signed along the line, so a goal behind is
+        reached by slowing and reversing). It cannot for a goal inside the
+        braking distance, where the agent is, off the line of motion, or --
+        differential drive -- one that needs a turn in place. Such a path is
+        handled as the controller's ``goal_replacement`` setting says
+        (:class:`~pybullet_fleet.types.GoalReplacement`): ``brake`` (the
+        default) brakes at the configured deceleration and then starts it,
+        ``wait_complete`` finishes the current path first (it holds every path
+        set while one is in progress, reachable or not), ``immediate``
+        starts it from rest at once, and ``reject`` refuses it -- nothing
+        changes, the current motion continues, and this returns ``False`` (the
+        reason is logged and available from :meth:`path_rejection`). At rest
+        every path is taken.
 
         Args:
             path: List of Pose waypoints to follow in sequence
@@ -1466,10 +1481,15 @@ class Agent(SimObject):
                       ("auto", "forward", "backward").
                       Only used in differential drive mode (MotionMode.DIFFERENTIAL).
                       In omnidirectional mode, this parameter is ignored.
+            _preempt: Internal: start without waiting for the current path
+                      under ``wait_complete`` (used by :meth:`brake`), for
+                      every kinematic controller, omnidirectional or
+                      differential, per-agent or batched.
 
         Returns:
-            ``True`` when the path was taken; ``False`` for a fixed-base robot,
-            an empty path, or a path the controller refused.
+            ``True`` when the path was taken (started or held to start later);
+            ``False`` for a fixed-base robot, an empty path, or a path refused
+            under ``goal_replacement="reject"``.
         """
         permanent = self._permanent_path_rejection(path)
         if permanent is not None:
@@ -1534,6 +1554,7 @@ class Agent(SimObject):
                 final_path,
                 final_orientation_align=final_orientation_align,
                 direction=direction,
+                preempt=_preempt,
             )
         else:
             accepted = self._controllers[0].set_path(
@@ -1541,6 +1562,7 @@ class Agent(SimObject):
                 final_path,
                 final_orientation_align=final_orientation_align,
                 direction=direction,
+                preempt=_preempt,
             )
             if accepted is not False:
                 self._is_moving = True

@@ -1,0 +1,154 @@
+"""What a new path does to the current motion: the one ``goal_replacement`` decision.
+
+Both kinematic controller families -- per-agent (``KinematicController``) and
+batched (``BatchKinematicController``) -- take a new path through
+:meth:`GoalReplacementPolicy._replace_path`, so the rules cannot drift apart
+between them. A controller supplies only where its state lives: its limits,
+whether it is following a path, how it holds, drops and starts a request, and
+its braking flag.
+
+The rules (see :class:`~pybullet_fleet.types.GoalReplacement`):
+
+- ``wait_complete`` holds every path while one is in progress.
+- A path the agent can continue its motion into (any path at rest) starts at
+  once, continuing it.
+- Otherwise ``reject`` refuses it, ``immediate`` starts it from rest, and
+  ``brake`` -- or ``wait_complete`` with nothing to wait for (a velocity
+  command, or :meth:`Agent.brake <pybullet_fleet.agent.Agent.brake>`
+  preempting) -- brakes along the motion and holds it until the agent stops.
+
+The mode is read for each request: changing it affects the paths requested
+afterwards. A held path keeps the decision made when it was held and starts
+once the agent stops (or the current path ends), whatever the mode is then.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional
+
+import numpy as np
+
+from pybullet_fleet._replan import PathRequest, braking_request
+from pybullet_fleet.logging_utils import get_lazy_logger
+from pybullet_fleet.types import GoalReplacement, MovementDirection
+
+if TYPE_CHECKING:
+    from pybullet_fleet.agent import Agent
+    from pybullet_fleet.controller_params import ControllerParams
+    from pybullet_fleet.geometry import Pose
+
+logger = get_lazy_logger(__name__)
+
+
+class GoalReplacementPolicy:
+    """Mixin carrying the ``goal_replacement`` decision for a kinematic controller.
+
+    The host controller implements the hooks below and, as both kinematic
+    controllers do, ``_replacement_obstacle`` and ``continuation_velocity``.
+    """
+
+    def _replace_path(self, agent: "Agent", request: PathRequest, preempt: bool = False) -> bool:
+        """Take ``request`` as ``goal_replacement`` says.
+
+        ``preempt`` skips the ``wait_complete`` hold. Returns ``False`` when
+        the path is refused (``reject`` only); ``True`` once it is set or held
+        to start later.
+        """
+        name = str(agent.name or agent.object_id)
+        params = self._replacement_params(agent)
+        mode = params._eff_goal_replacement()
+        if mode is GoalReplacement.WAIT_COMPLETE and not preempt and self._following_path(agent):
+            logger.info(f"Path for {name} starts once the current path is finished (wait_complete)")
+            self._hold_request(agent, request)
+            return True
+
+        obstacle = self._replacement_obstacle(agent, request.path, request.direction)
+        if obstacle is None:
+            self._drop_held(agent, "a newer path started at once")
+            self._start_request(agent, request, continue_motion=True)
+            return True
+
+        if mode is GoalReplacement.REJECT:
+            logger.debug(f"Path rejected for {name}: {obstacle}")
+            return False
+        if mode is GoalReplacement.IMMEDIATE:
+            logger.info(f"Path for {name} starts from rest at once: {obstacle}")
+            self._drop_held(agent, "a newer path started at once")
+            self._start_request(agent, request, continue_motion=False)
+            return True
+        if mode is GoalReplacement.BRAKE or mode is GoalReplacement.WAIT_COMPLETE:
+            # wait_complete gets here only with nothing to wait for (a
+            # velocity command, or brake() preempting): it brakes as brake does.
+            if not self._braking_for(agent):
+                pose = agent.get_pose()
+                braking = braking_request(params, pose.position, pose.orientation, self.continuation_velocity(agent))
+                infeasible = None if braking is None else self._replacement_obstacle(agent, braking.path, braking.direction)
+                if infeasible is not None:
+                    logger.warning(
+                        f"Braking path for {name} cannot continue the motion ({infeasible}); "
+                        "starting the new path from rest"
+                    )
+                if braking is None or infeasible is not None:
+                    # Nothing left to brake, or no way to brake along the
+                    # motion: start from rest.
+                    self._drop_held(agent, "a newer path started at once")
+                    self._start_request(agent, request, continue_motion=False)
+                    return True
+                self._start_request(agent, braking, continue_motion=True)
+                self._mark_braking(agent)
+            logger.info(f"Path for {name} starts once the agent stops (brake): {obstacle}")
+            self._hold_request(agent, request)
+            return True
+        raise ValueError(f"Unknown goal_replacement {mode!r}")
+
+    def path_rejection(
+        self, agent: "Agent", path: "list[Pose]", direction: Optional[MovementDirection] = None
+    ) -> Optional[str]:
+        """Why :meth:`_replace_path` would refuse ``path`` now, or ``None`` if it would take it.
+
+        Only ``goal_replacement="reject"`` refuses a path: one that cannot
+        continue the current motion (see ``_replacement_obstacle``). The other
+        modes take every path.
+        """
+        if not path or self._replacement_params(agent)._eff_goal_replacement() is not GoalReplacement.REJECT:
+            return None
+        return self._replacement_obstacle(agent, path, direction)
+
+    # -- hooks the controller implements ---------------------------------
+
+    def _replacement_params(self, agent: "Agent") -> "ControllerParams":
+        """The limits and ``goal_replacement`` setting that apply to ``agent``."""
+        raise NotImplementedError
+
+    def _following_path(self, agent: "Agent") -> bool:
+        """Whether ``agent`` follows a path (not a velocity command) that ``wait_complete`` waits for."""
+        raise NotImplementedError
+
+    def _hold_request(self, agent: "Agent", request: PathRequest) -> None:
+        """Make ``request`` the agent's held path, dropping (and logging) the one before."""
+        raise NotImplementedError
+
+    def _drop_held(self, agent: "Agent", reason: str) -> None:
+        """Drop the agent's held path, logging it with ``reason``, and clear its braking flag."""
+        raise NotImplementedError
+
+    def _start_request(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
+        """Make ``request`` the active path, from the current motion or (``False``) from rest."""
+        raise NotImplementedError
+
+    def _braking_for(self, agent: "Agent") -> bool:
+        """Whether ``agent`` is already braking for a held path."""
+        raise NotImplementedError
+
+    def _mark_braking(self, agent: "Agent") -> None:
+        """Record that ``agent`` is braking for a held path."""
+        raise NotImplementedError
+
+    if TYPE_CHECKING:
+        # Provided by both kinematic controllers; declared for type checking
+        # only, so they never shadow the controller's own at run time.
+        def _replacement_obstacle(
+            self, agent: "Agent", path: "list[Pose]", direction: Optional[MovementDirection] = None
+        ) -> Optional[str]: ...
+
+        def continuation_velocity(self, agent: "Agent") -> Optional[np.ndarray]: ...

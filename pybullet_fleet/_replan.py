@@ -1,34 +1,76 @@
-"""Whether a moving omni agent can take a new goal within its limits.
+"""How a moving agent takes a new goal or path.
 
-A goal or path set while the agent is moving continues the motion: the new
+A path set while the agent is moving continues the motion when it can: the new
 straight-line trajectory to the first waypoint starts from the agent's current
 velocity -- its signed component along the new direction, so a goal behind is
-reached by slowing, reversing and driving back. The goal is taken when that
-trajectory exists within the configured limits and rejected otherwise: the
-current motion then continues unchanged and the caller is told. Rejected are a
-goal closer than the braking distance at the configured deceleration, a goal
-where the agent is (it cannot stop on the spot), and a goal off the line of
-motion, whose sideways velocity a straight-line trajectory cannot represent.
-At rest any goal the trajectory solver accepts is taken.
+reached by slowing, reversing and driving back -- provided that trajectory
+exists within the configured limits. It does not exist for a goal closer than
+the braking distance at the configured deceleration, a goal where the agent is
+(it cannot stop on the spot), a goal off the line of motion (whose sideways
+velocity a straight-line trajectory cannot represent), or -- for differential
+drive -- a goal that needs a turn in place. At rest every path can be taken.
 
-:func:`replacement_rejection` is the one check both omni controllers
-(per-agent and batched) apply. It uses the same solver call as the trajectory
-itself (:func:`~pybullet_fleet._tpi.try_build_tpi`), so the check
-and the motion cannot disagree.
+When the path cannot continue the motion, the controller's
+``goal_replacement`` setting (:class:`~pybullet_fleet.types.GoalReplacement`)
+decides: brake to a stop and then start it (the default), refuse it, finish the
+current path first, or start it from rest at once.
+
+:func:`replacement_rejection` is the one feasibility check every controller
+(per-agent and batched) applies. It uses the same solver call as the
+trajectory itself (:func:`~pybullet_fleet._tpi.try_build_tpi`), so
+the check and the motion cannot disagree.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, NamedTuple, Optional, Protocol, Sequence, Tuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, List, NamedTuple, Optional, Protocol, Sequence, Tuple
+
 
 import numpy as np
 
 from pybullet_fleet._tpi import try_build_tpi
 from pybullet_fleet.geometry import rotate_vector
 
+from pybullet_fleet.types import MovementDirection
+
 if TYPE_CHECKING:
     from pybullet_fleet.controller_params import ControllerParams
     from pybullet_fleet.geometry import Pose
+
+
+@dataclass(frozen=True)
+class PathRequest:
+    """A path a controller has accepted but not started yet.
+
+    Held while the agent brakes (``GoalReplacement.BRAKE``) or finishes its
+    current path (``GoalReplacement.WAIT_COMPLETE``), and started from rest
+    once it has stopped. A newer request replaces it.
+    """
+
+    path: List[Any]
+    final_orientation_align: bool = True
+    direction: Optional[MovementDirection] = None
+
+    def to_record(self) -> dict:
+        """Plain-data form for checkpoints."""
+        return {
+            "path": [{"position": list(p.position), "orientation": list(p.orientation)} for p in self.path],
+            "final_orientation_align": self.final_orientation_align,
+            "direction": self.direction.value if self.direction is not None else None,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict) -> "PathRequest":
+        """Inverse of :meth:`to_record`."""
+        from pybullet_fleet.geometry import Pose
+
+        direction = record["direction"]
+        return cls(
+            path=[Pose(position=list(p["position"]), orientation=list(p["orientation"])) for p in record["path"]],
+            final_orientation_align=bool(record["final_orientation_align"]),
+            direction=MovementDirection(direction) if direction is not None else None,
+        )
 
 
 class PathRejection(NamedTuple):
@@ -42,6 +84,30 @@ class PathRejection(NamedTuple):
 
     reason: str
     temporary: bool
+
+
+def braking_request(
+    params: "ControllerParams",
+    position: Sequence[float],
+    orientation: Sequence[float],
+    velocity: Optional[Sequence[float]],
+) -> Optional[PathRequest]:
+    """A one-waypoint path that brings the motion to rest at the configured deceleration.
+
+    The goal is :func:`braking_position`, with the current orientation and no
+    final alignment. ``direction`` is ``AUTO`` so that a differential-drive
+    agent backing up brakes backwards instead of turning round. ``None`` at
+    rest or without a velocity.
+    """
+    from pybullet_fleet.geometry import Pose
+
+    if velocity is None:
+        return None
+    target = braking_position(params, position, orientation, velocity)
+    if target is None:
+        return None
+    goal = Pose(position=[float(c) for c in target], orientation=list(orientation))
+    return PathRequest(path=[goal], final_orientation_align=False, direction=MovementDirection.AUTO)
 
 
 class RefusesPaths(Protocol):
@@ -71,6 +137,13 @@ REST_SPEED = 1e-6
 #: of direction and is rejected.
 CROSS_SPEED_ABS = 1e-6
 CROSS_SPEED_REL = 1e-3
+
+#: Turn (rad) between a differential-drive agent's heading and the line to its
+#: new goal that still counts as straight on while it moves: the sideways speed
+#: such a heading leaves is ``speed * sin(turn)``, within the omni cross-track
+#: tolerance (:data:`CROSS_SPEED_REL`). A moving agent continues into such a
+#: goal, snapping its heading onto the line; a larger turn needs a turn in place.
+HEADING_TOL = CROSS_SPEED_REL
 
 
 def limits_along(

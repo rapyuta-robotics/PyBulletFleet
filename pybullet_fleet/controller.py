@@ -37,7 +37,6 @@ Registry
 import inspect
 import math
 from abc import ABC, abstractmethod
-from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, TypeVar
 
 import numpy as np
@@ -53,14 +52,15 @@ from pybullet_fleet.geometry import (
 )
 from pybullet_fleet.logging_utils import get_lazy_logger
 from pybullet_fleet.plugin_utils import PluginRegistry
-from pybullet_fleet.types import ControllerMode, MovementDirection, PosePhase
+from pybullet_fleet.types import ControllerMode, GoalReplacement, MovementDirection, PosePhase
 
 from two_point_interpolation import TwoPointInterpolation
 
 from pybullet_fleet._tpi import build_tpi, build_tpi_from_speed, extract_phase_params
-from pybullet_fleet._replan import replacement_rejection
+from pybullet_fleet._replacement import GoalReplacementPolicy
+from pybullet_fleet._replan import HEADING_TOL, REST_SPEED, PathRequest, replacement_rejection
 from pybullet_fleet._tpi_state import capture_tpi_state, restore_tpi_state
-from pybullet_fleet._motion_planning import align_x_axis_quat
+from pybullet_fleet._motion_planning import heading_toward
 from pybullet_fleet.controller_params import ControllerParams
 
 if TYPE_CHECKING:
@@ -157,12 +157,11 @@ class Controller(ABC):
 
         self.params: ControllerParams = params if params is not None else ControllerParams()
 
-    def path_rejection(self, agent: "Agent", path: List[Pose]) -> Optional[str]:
-        """Why ``path`` cannot be taken now, or ``None`` if it can.
+    def path_rejection(self, agent: "Agent", path: List[Pose], direction: Optional[MovementDirection] = None) -> Optional[str]:
+        """Why ``path`` would be refused now, or ``None`` if it would be taken.
 
-        The default accepts every path. A controller that continues the
-        current motion into the new path (``OmniController``) refuses one it
-        cannot reach within its limits.
+        The default takes every path. The kinematic controllers refuse one
+        only under ``goal_replacement="reject"``.
         """
         return None
 
@@ -177,11 +176,7 @@ class Controller(ABC):
         kind = type(self).__dict__.get("_registry_name")
         if kind is None or not isinstance(self.params, ControllerParams):
             return None
-        config = {"type": kind, **asdict(self.params)}
-        direction = config.get("default_direction")
-        if isinstance(direction, MovementDirection):
-            config["default_direction"] = direction.value
-        return config
+        return {"type": kind, **self.params.as_config()}
 
     @classmethod
     def from_config(cls: Type[_ControllerT], config: dict) -> "_ControllerT":
@@ -218,7 +213,13 @@ class Controller(ABC):
 # ---------------------------------------------------------------------------
 
 
-class KinematicController(Controller):
+def _log_dropped(name: str, request: PathRequest, reason: str) -> None:
+    """Log that a pending path was dropped without being started."""
+    goal = [round(float(c), 4) for c in request.path[-1].position]
+    logger.info(f"Pending path for {name} to {goal} dropped: {reason}")
+
+
+class KinematicController(GoalReplacementPolicy, Controller):
     """Unified base for kinematic controllers handling both velocity and pose.
 
     Internal mode state machine:
@@ -273,6 +274,14 @@ class KinematicController(Controller):
         # Pose phase state machine: ROTATE → FORWARD
         self._pose_phase: PosePhase = PosePhase.FORWARD
 
+        # Goal replacement (see GoalReplacement): a path accepted while the
+        # agent brakes or finishes its current path, started once it stops.
+        self._pending: Optional[PathRequest] = None
+        # Name of the agent _pending belongs to, for the log when it is dropped.
+        self._pending_owner: str = ""
+        # True while the active path is the braking path set for _pending.
+        self._braking: bool = False
+
     @property
     def default_direction(self) -> MovementDirection:
         """Default movement direction used when ``set_path`` is called without explicit direction."""
@@ -280,9 +289,7 @@ class KinematicController(Controller):
 
     @default_direction.setter
     def default_direction(self, value: MovementDirection) -> None:
-        if isinstance(value, str):
-            value = MovementDirection(value)
-        self.params.default_direction = value
+        self.params.default_direction = MovementDirection(value)
 
     @property
     def mode(self) -> ControllerMode:
@@ -331,6 +338,7 @@ class KinematicController(Controller):
         self._mode = ControllerMode.IDLE
         self._cancel_pose_internal()
         self._reset_path_state()
+        self._clear_replacement("the agent was stopped")
 
     def reset(self) -> None:
         """Reset all internal state."""
@@ -340,6 +348,7 @@ class KinematicController(Controller):
         self._velocity_ever_set = False
         self._cancel_pose_internal()
         self._reset_path_state()
+        self._clear_replacement("the controller was reset")
 
     # -- Velocity interface --------------------------------------------
 
@@ -360,6 +369,7 @@ class KinematicController(Controller):
         """Set velocity command (body frame, 6-DoF). Override in subclasses for clamping."""
         if self._mode == ControllerMode.POSE:
             self._cancel_pose_internal()
+        self._clear_replacement("a velocity command replaced it")
         self._mode = ControllerMode.VELOCITY
         self._linear_velocity[:] = [vx, vy, vz]
         self._angular_velocity[:] = [wx, wy, wz]
@@ -390,6 +400,7 @@ class KinematicController(Controller):
         """Cancel active pose navigation and switch to IDLE."""
         self._cancel_pose_internal()
         self._mode = ControllerMode.IDLE
+        self._clear_replacement("the path was cancelled")
 
     def _cancel_pose_internal(self) -> None:
         """Reset shared pose-mode TPI state (rotation + forward + phase).
@@ -432,11 +443,29 @@ class KinematicController(Controller):
     def continuation_velocity(self, agent: "Agent") -> Optional[np.ndarray]:
         """World-frame velocity a new path would continue from, or ``None``.
 
-        ``None`` when the agent is not moving under this controller, or when
-        the controller does not continue motion into a new path (it restarts
-        from rest). Used by :meth:`Agent.brake`.
+        The agent's velocity while it is under way (a translation or a
+        velocity command), else ``None``. A controller that does not continue
+        motion into a new path returns ``None``. Used by :meth:`Agent.brake`
+        and by ``GoalReplacement.BRAKE``.
+        """
+        if not self._under_way(agent):
+            return None
+        return np.array(agent._current_velocity, dtype=float)
+
+    def _replacement_obstacle(
+        self, agent: "Agent", path: List[Pose], direction: Optional[MovementDirection] = None
+    ) -> Optional[str]:
+        """Why ``path`` cannot continue the current motion, or ``None`` if it can.
+
+        ``None`` at rest. The base controller has no such limit: every path
+        starts from the motion as it is. Subclasses that continue motion
+        override this (see :mod:`pybullet_fleet._replan`).
         """
         return None
+
+    def pending_path(self) -> Optional[PathRequest]:
+        """The accepted path waiting for the agent to stop, or ``None``."""
+        return self._pending
 
     def set_path(
         self,
@@ -444,11 +473,20 @@ class KinematicController(Controller):
         path: List[Pose],
         final_orientation_align: bool = True,
         direction: Optional[MovementDirection] = None,
+        preempt: bool = False,
     ) -> bool:
         """Set a waypoint path for the agent to follow.
 
-        Returns ``False``, leaving the current motion and path untouched, when
-        :meth:`path_rejection` refuses the path; ``True`` once it is set.
+        What happens depends on ``goal_replacement`` (see
+        :class:`~pybullet_fleet.types.GoalReplacement`). ``wait_complete``
+        holds the path while the current one is in progress and starts it once
+        that one is finished. In the other modes a path that can continue the
+        current motion (or any path at rest) starts at once, from the current
+        velocity; otherwise ``brake`` brakes along the current motion and
+        starts the path once stopped, ``immediate`` starts it from rest at
+        once, and ``reject`` refuses it, leaving the current motion and path
+        untouched. Only the latest held path is kept: a newer request, a stop
+        or a cancel drops it, with a log line.
 
         The controller owns all path-navigation state: waypoint index, movement
         direction, final-orientation alignment.  ``Agent.set_path()`` handles
@@ -461,12 +499,80 @@ class KinematicController(Controller):
                 after reaching its position.
             direction: ``None`` (use ``default_direction``), ``FORWARD``, ``AUTO``,
                 or ``BACKWARD`` (differential only).
+            preempt: Do not hold the path for the current one under
+                ``wait_complete`` (:meth:`Agent.brake
+                <pybullet_fleet.agent.Agent.brake>` uses it); the other rules
+                still apply.
+
+        Returns:
+            ``False`` when the path is refused (``reject`` only); ``True`` once
+            it is set or held to start later.
         """
-        reason = self.path_rejection(agent, path)
-        if reason is not None:
-            logger.debug(f"Path rejected for {agent.name or agent.object_id}: {reason}")
-            return False
-        effective_direction = direction if direction is not None else self.params.default_direction
+        request = PathRequest(path=list(path), final_orientation_align=final_orientation_align, direction=direction)
+        return self._replace_path(agent, request, preempt)
+
+    # -- GoalReplacementPolicy hooks -------------------------------------
+
+    def _replacement_params(self, agent: "Agent") -> ControllerParams:
+        return self.params
+
+    def _following_path(self, agent: "Agent") -> bool:
+        return self._path_in_progress(agent)
+
+    def _hold_request(self, agent: "Agent", request: PathRequest) -> None:
+        self._hold(str(agent.name or agent.object_id), request)
+
+    def _drop_held(self, agent: "Agent", reason: str) -> None:
+        self._clear_replacement(reason)
+
+    def _start_request(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
+        if not continue_motion:
+            # From rest: the velocity state is rest from now on, so a
+            # replacement later in this step does not continue the old motion.
+            agent._current_velocity[:] = 0.0
+            agent._current_angular_velocity = 0.0
+        self._start_path(agent, request, continue_motion)
+
+    def _braking_for(self, agent: "Agent") -> bool:
+        return self._braking
+
+    def _mark_braking(self, agent: "Agent") -> None:
+        self._braking = True
+
+    def _path_in_progress(self, agent: "Agent") -> bool:
+        """Whether a path (not a velocity command) is being followed."""
+        return self._mode == ControllerMode.POSE and agent.is_moving
+
+    def _hold(self, name: str, request: PathRequest) -> None:
+        """Make ``request`` the pending path, dropping (and logging) the one before."""
+        if self._pending is not None:
+            _log_dropped(self._pending_owner, self._pending, "a newer path replaced it")
+        self._pending = request
+        self._pending_owner = name
+
+    def _clear_replacement(self, reason: Optional[str] = None) -> None:
+        """Drop the pending path and the braking flag, logging the drop with ``reason``.
+
+        ``reason=None`` is for a pending path being started, not dropped.
+        """
+        if self._pending is not None and reason is not None:
+            _log_dropped(self._pending_owner, self._pending, reason)
+        self._pending = None
+        self._braking = False
+
+    def _start_pending(self, agent: "Agent") -> None:
+        """Start the pending path from rest, now that the agent has stopped."""
+        request = self._pending
+        self._clear_replacement()
+        if request is None:
+            return
+        agent._is_moving = True
+        self._start_path(agent, request, continue_motion=False)
+
+    def _start_path(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
+        """Make ``request`` the active path, continuing the current motion if asked."""
+        path = request.path
+        effective_direction = request.direction if request.direction is not None else self.params.default_direction
         self._path = list(path)
         self._current_waypoint_index = 0
         self._goal_pose = path[0]
@@ -474,7 +580,7 @@ class KinematicController(Controller):
         self._original_direction = effective_direction  # Preserve for AUTO re-evaluation per waypoint
         self._is_final_orientation_aligning = False
 
-        if final_orientation_align and path:
+        if request.final_orientation_align and path:
             self._final_target_orientation = np.array(path[-1].orientation)
             self._align_final_orientation = True
         else:
@@ -483,13 +589,14 @@ class KinematicController(Controller):
 
         # Start trajectory for first waypoint. The agent's velocity is read
         # before anything zeroes it: a controller that can continue the motion
-        # (OmniController) starts the new trajectory from it.
-        initial_velocity = np.array(agent._current_velocity, dtype=float) if self._under_way(agent) else None
+        # starts the new trajectory from it.
+        initial_velocity = (
+            np.array(agent._current_velocity, dtype=float) if continue_motion and self._under_way(agent) else None
+        )
         if self._mode == ControllerMode.VELOCITY:
             self._zero_velocity()
         self._mode = ControllerMode.POSE
         self._init_pose_trajectory(agent, path[0], direction=effective_direction, initial_velocity=initial_velocity)
-        return True
 
     def _init_forward_trajectory(self, agent: "Agent", distance: float, v0: float = 0.0) -> None:
         """Initialize a single distance TPI for straight-line forward motion.
@@ -728,6 +835,7 @@ class KinematicController(Controller):
             self._mode = ControllerMode.IDLE
             agent._reset_pybullet_velocity()
             logger.info("Final orientation alignment complete")
+            self._start_pending(agent)
 
     def _start_final_orientation(self, agent: "Agent") -> None:
         """Begin rotation-in-place after reaching the last waypoint."""
@@ -765,6 +873,7 @@ class KinematicController(Controller):
         self._mode = ControllerMode.IDLE
         agent._reset_pybullet_velocity()
         logger.info("Path complete")
+        self._start_pending(agent)
 
     def _reset_path_state(self) -> None:
         """Reset path-following state to defaults."""
@@ -827,12 +936,27 @@ class KinematicController(Controller):
             "phase": self._pose_phase.value,
             "forward": forward,
             "rotation": rotation,
+            # The path held for goal_replacement, and whether the active path
+            # is the braking path set for it.
+            "replacement": {
+                "pending": self._pending.to_record() if self._pending is not None else None,
+                "braking": self._braking,
+            },
         }
 
-    def restore_navigation_state(self, state: dict, orientation: list[float]) -> None:
-        """Restore a kinematic pose path without reissuing its navigation command."""
+    def restore_navigation_state(self, state: dict, orientation: list[float], owner: str = "") -> None:
+        """Restore a kinematic pose path without reissuing its navigation command.
+
+        ``owner`` names the agent in the log line if the restored pending path
+        is later dropped.
+        """
         if self._mode is not ControllerMode.IDLE:
             raise ValueError("Navigation restore requires an idle controller")
+        replacement = state["replacement"]
+        pending = replacement["pending"]
+        self._pending = PathRequest.from_record(pending) if pending is not None else None
+        self._pending_owner = owner
+        self._braking = bool(replacement["braking"])
 
         def pose_from(value: dict) -> Pose:
             return Pose(position=list(value["position"]), orientation=list(value["orientation"]))
@@ -928,26 +1052,19 @@ class OmniController(KinematicController):
     def __init__(self, params: Optional[ControllerParams] = None) -> None:
         super().__init__(params)
 
-    def continuation_velocity(self, agent: "Agent") -> Optional[np.ndarray]:
-        """The agent's velocity while it is under way (a translation or a velocity command), else ``None``."""
-        if not self._under_way(agent):
-            return None
-        return np.array(agent._current_velocity, dtype=float)
+    def _replacement_obstacle(
+        self, agent: "Agent", path: List[Pose], direction: Optional[MovementDirection] = None
+    ) -> Optional[str]:
+        """Why ``path`` cannot continue the current motion, or ``None`` if it can.
 
-    def path_rejection(self, agent: "Agent", path: List[Pose]) -> Optional[str]:
-        """Why ``path`` cannot be taken now, or ``None`` if it can.
-
-        A path set while the agent is moving continues the motion: the
-        straight-line trajectory to the first waypoint starts from the agent's
-        current velocity (its signed component along the line, so a goal
-        behind is reached by reversing). The path is refused when no such
-        trajectory exists within the configured limits -- a goal inside the
-        braking distance, where the agent is, or off the line of motion. At
-        rest every path is accepted. See :mod:`pybullet_fleet._replan`.
+        The straight-line trajectory to the first waypoint starts from the
+        agent's current velocity (its signed component along the line, so a
+        goal behind is reached by reversing). It does not exist for a goal
+        inside the braking distance, where the agent is, or off the line of
+        motion. At rest every path can be taken. See
+        :mod:`pybullet_fleet._replan`.
         """
-        if not path:
-            return None
-        if not self._under_way(agent):
+        if not path or not self._under_way(agent):
             return None
         pose = agent.get_pose()
         t0 = agent.sim_core.sim_time if agent.sim_core is not None else 0.0
@@ -1129,9 +1246,9 @@ class DifferentialController(KinematicController):
         state["forward_origin"] = self._forward_start_pos.tolist() if self._forward_start_pos is not None else None
         return state
 
-    def restore_navigation_state(self, state: dict, orientation: list[float]) -> None:
+    def restore_navigation_state(self, state: dict, orientation: list[float], owner: str = "") -> None:
         """Restore a turn or straight segment without issuing another command."""
-        super().restore_navigation_state(state, orientation)
+        super().restore_navigation_state(state, orientation, owner)
         self._movement_direction = MovementDirection(state["movement_direction"])
         self._original_direction = MovementDirection(state["requested_direction"])
         if self._movement_direction is MovementDirection.AUTO:
@@ -1194,43 +1311,55 @@ class DifferentialController(KinematicController):
 
     # -- Pose (TPI) kinematics ----------------------------------------
 
+    def _replacement_obstacle(
+        self, agent: "Agent", path: List[Pose], direction: Optional[MovementDirection] = None
+    ) -> Optional[str]:
+        """Why ``path`` cannot continue the current motion, or ``None`` if it can.
+
+        A differential-drive agent can only continue straight along its
+        heading: a first waypoint that needs a turn in place cannot be taken
+        while moving. On the heading line, ahead or behind (``direction``
+        ``BACKWARD`` or ``AUTO`` for a goal behind), the rule is the omni one
+        (see :mod:`pybullet_fleet._replan`) with the forward-axis limits.
+        """
+        if not path or not self._under_way(agent):
+            return None
+        velocity = np.array(agent._current_velocity, dtype=float)
+        speed = float(np.linalg.norm(velocity))
+        if speed < REST_SPEED:
+            return None
+        requested = direction if direction is not None else self.params.default_direction
+        _, target_quat, _, distance = heading_toward(agent.get_pose(), path[0], requested, self.params.navigation_2d)
+        pose = agent.get_pose()
+        if distance > 1e-6:
+            turn = quat_angle_between(tuple(pose.orientation), tuple(target_quat))
+            if turn > HEADING_TOL:
+                return f"goal needs a {math.degrees(turn):.3g} degree turn in place"
+        t0 = agent.sim_core.sim_time if agent.sim_core is not None else 0.0
+        return replacement_rejection(self.params, pose.position, pose.orientation, velocity, path[0].position, t0)
+
     def _init_pose_trajectory(self, agent: "Agent", goal: Pose, **kwargs) -> None:
-        """Initialize rotation trajectory for differential drive (ROTATE phase)."""
-        self._movement_direction = kwargs.get("direction", MovementDirection.FORWARD)
-        if isinstance(self._movement_direction, str):
-            self._movement_direction = MovementDirection(self._movement_direction)
+        """Initialize rotation trajectory for differential drive (ROTATE phase).
+
+        When no turn is needed and ``initial_velocity`` is given (a path that
+        continues the current motion), the forward trajectory starts from the
+        speed along the line instead of from rest.
+        """
+        direction, target_quat, direction_vec, distance = heading_toward(
+            agent.get_pose(), goal, kwargs.get("direction", MovementDirection.FORWARD), self.params.navigation_2d
+        )
+        self._movement_direction = direction
 
         current_pose = agent.get_pose()
         current_pos = np.array(current_pose.position)
-        goal_pos = np.array(goal.position)
-        if self.params.navigation_2d:
-            goal_pos[2] = current_pos[2]
-
-        direction_vec = goal_pos - current_pos
-
-        # AUTO direction: choose FORWARD/BACKWARD based on yaw delta
-        if self._movement_direction == MovementDirection.AUTO:
-            dist_2d = float(np.linalg.norm(direction_vec[:2]))
-            if dist_2d > 1e-6:
-                goal_heading = math.atan2(direction_vec[1], direction_vec[0])
-                current_heading = current_pose.yaw
-                delta = goal_heading - current_heading
-                # Normalize to [-pi, pi]
-                delta = (delta + math.pi) % (2 * math.pi) - math.pi
-                self._movement_direction = (
-                    MovementDirection.BACKWARD if abs(delta) > math.pi / 2 else MovementDirection.FORWARD
-                )
-            else:
-                self._movement_direction = MovementDirection.FORWARD
 
         # Cache forward direction for straight-line phase
         self._forward_start_pos = current_pos.copy()
-        self._forward_total_distance_3d = float(np.linalg.norm(direction_vec))
+        self._forward_total_distance_3d = distance
 
-        if self._forward_total_distance_3d > 1e-6:
-            forward_direction_3d = goal_pos - current_pos
-            self._forward_direction_3d = forward_direction_3d
-            self._forward_direction_unit = forward_direction_3d / self._forward_total_distance_3d
+        if distance > 1e-6:
+            self._forward_direction_3d = direction_vec
+            self._forward_direction_unit = direction_vec / distance
         else:
             self._forward_direction_3d = np.zeros(3)
             self._forward_direction_unit = np.zeros(3)
@@ -1238,8 +1367,8 @@ class DifferentialController(KinematicController):
         # Differential drive always rotates to face the target before the
         # FORWARD phase, so by construction the travel direction is body +X
         # (or -X for BACKWARD). No need for a world→body rotation.
-        if self._forward_total_distance_3d > 1e-6:
-            sign = -1.0 if self._movement_direction == MovementDirection.BACKWARD else 1.0
+        if distance > 1e-6:
+            sign = -1.0 if direction == MovementDirection.BACKWARD else 1.0
             self._forward_direction_unit_body = np.array([sign, 0.0, 0.0])
         else:
             self._forward_direction_unit_body = np.zeros(3)
@@ -1249,23 +1378,23 @@ class DifferentialController(KinematicController):
         self._pose_phase = PosePhase.ROTATE
 
         start_quat = np.array(current_pose.orientation)
-
-        # Calculate target orientation via shared helper
-        if self._forward_total_distance_3d > 1e-6:
-            movement_direction_vec = direction_vec / self._forward_total_distance_3d
-            if self._movement_direction == MovementDirection.BACKWARD:
-                x_axis_target = -movement_direction_vec
-            else:
-                x_axis_target = movement_direction_vec
-            target_quat = align_x_axis_quat(start_quat, np.array(goal.orientation), x_axis_target)
-        else:
-            target_quat = np.array(goal.orientation)
-
-        if not self._init_rotation_tpi(agent, start_quat, target_quat, t0):
-            # Negligible or failed rotation — snap heading and skip to forward
+        # Continuing the motion, a turn within HEADING_TOL is straight on (see
+        # _replacement_obstacle): snap the heading rather than stop to turn.
+        straight_on = (
+            kwargs.get("initial_velocity") is not None
+            and quat_angle_between(tuple(start_quat), tuple(target_quat)) <= HEADING_TOL
+        )
+        if straight_on or not self._init_rotation_tpi(agent, start_quat, target_quat, t0):
+            # Negligible or failed rotation — snap heading and skip to forward.
+            # A path continuing the motion keeps its speed along the line
+            # (signed: negative is moving away, which the trajectory reverses).
+            v0 = 0.0
+            initial_velocity = kwargs.get("initial_velocity")
+            if initial_velocity is not None and distance > 1e-6:
+                v0 = float(np.dot(initial_velocity, self._forward_direction_unit))
             agent.set_pose_raw(current_pos.tolist(), target_quat.tolist(), preserve_velocity=False)
             self._pose_phase = PosePhase.FORWARD
-            self._init_forward_trajectory(agent, self._forward_total_distance_3d)
+            self._init_forward_trajectory(agent, distance, v0=v0)
 
 
 # ---------------------------------------------------------------------------

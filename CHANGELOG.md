@@ -16,12 +16,62 @@ are not recommended for production use yet.
 
 - `Agent.brake()`: come to rest at `max_linear_decel` along the current line of
   motion, keeping the heading and dropping the rest of the path, for
-  omnidirectional agents (per-agent and batched) under a path or a velocity
-  command. `stop()` remains the immediate stop. Differential drive, which
-  restarts paths from rest, returns `False` (see issue #78). Controllers gain
-  `continuation_velocity(agent)`, the velocity a new path continues from.
+  omnidirectional and differential-drive agents (per-agent and batched) under
+  a path or a velocity command. A differential agent brakes straight along its
+  heading, backwards when it is backing up. `stop()` remains the immediate
+  stop. Controllers gain `continuation_velocity(agent)`, the velocity a new
+  path continues from.
+
+- `ControllerParams.goal_replacement` (`GoalReplacement`): what a moving agent
+  does with a goal it cannot reach from its current motion within its limits.
+  `brake` (the default) brakes along the current motion at `max_linear_decel`
+  and starts the goal from rest; `immediate` starts it from rest at once;
+  `reject` refuses it (`set_path` returns `False`); `wait_complete` holds every
+  goal set while a path is in progress, reachable or not, and starts it once
+  that path is finished. A goal the agent can reach is taken at once,
+  continuing the motion, in every mode but `wait_complete`. Only the latest
+  held goal is kept; a newer request, `stop()`, `brake()` or a velocity
+  command drops it, with an INFO log line naming the agent, the goal and the
+  reason. The global default is `_defaults.CONTROLLER["goal_replacement"]`
+  (environment variable `PBF_CONTROLLER_GOAL_REPLACEMENT`); a manager's
+  `fleet_controller` and an agent's own `controller` settings override it.
+  Per-agent and batched, omnidirectional and differential controllers behave
+  alike. Differential agents now continue the motion into a goal that needs no
+  turn (issue #78). Checkpoints record the held goal and the braking state;
+  the kinematic profile's controller state is now version 3, and the omni
+  checkpoint proof's record version 3.
 
 ### Changed
+
+- `ControllerParams` takes either enum field -- `default_direction` and
+  `goal_replacement` -- as the enum or its string value, on construction and
+  on any later assignment, and stores the enum; an unknown value raises
+  `ValueError` there.
+  `default_direction` given as a string to the constructor used to stay a
+  string (only `from_dict()` converted it). `ControllerParams.as_config()`
+  returns the fields as plain data, enums as their string values.
+
+- A goal or path set on a moving agent that it cannot continue into within
+  its limits now brakes first by default (`goal_replacement="brake"`): the
+  agent stops along its current motion at `max_linear_decel`, then starts the
+  goal from rest. The last release started such a goal from rest at once,
+  dropping the current speed in one step; set `goal_replacement="immediate"`
+  (per agent, per manager's `fleet_controller`, or globally through
+  `PBF_CONTROLLER_GOAL_REPLACEMENT`) for that behaviour.
+
+- `MoveAction` ends `COMPLETED` only when the agent comes to rest at the
+  path's last waypoint. Stopped elsewhere -- the path was braked
+  (`Agent.brake()`) or replaced by a newer one, held goals included -- it ends
+  `CANCELLED`, and a path the agent refuses for good (a fixed base, an empty
+  path) ends `FAILED`; both used to end `COMPLETED`. The check no longer reads
+  `Agent.path`, which a batch-owned agent always reports empty.
+
+- A moving differential-drive agent takes a goal whose line is within
+  `_replan.HEADING_TOL` (1e-3 rad) of its heading as straight on: it snaps its
+  heading onto the line and continues at its speed, as an omnidirectional
+  agent does within its cross-track tolerance. A larger turn still needs a
+  turn in place (braked for under `brake`). From rest the agent still turns
+  for any heading error above 1e-6 rad.
 
 - `step_once()` advances `sim_time`, the elapsed time and `step_count` right
   after the `pre_step` event, before the object update, instead of after the
@@ -56,7 +106,8 @@ are not recommended for production use yet.
   waypoint (the current pose) in front of it while the agent moves. The speed
   is signed along the new line, so a goal behind is reached by slowing,
   reversing and driving back. A goal is taken when that trajectory exists
-  within the configured limits and refused otherwise -- inside the braking
+  within the configured limits; otherwise `goal_replacement` decides (see
+  above), and under `reject` it is refused -- inside the braking
   distance, where the agent is, or off the line of motion: the current motion
   and path continue unchanged, no limit is ever exceeded, and
   `Agent.set_path` / `set_goal_pose` return `False` (`True` when taken; the
@@ -77,8 +128,7 @@ are not recommended for production use yet.
   This needs
   `two-point-interpolation>=1.3.2`: earlier versions could return a trajectory
   that never reached its target for a body starting away from it, which a
-  reversal is. Differential agents, which turn in place first, still start
-  from rest. Navigation checkpoints record the trajectory's initial
+  reversal is. Navigation checkpoints record the trajectory's initial
   speed (`forward.v0`); the kinematic profile's controller state is now
   version 2. A refusal is logged at DEBUG. From a speed above `vmax` (lowered
   during the motion) the new trajectory first slows down to it.
@@ -332,6 +382,14 @@ are not recommended for production use yet.
 - Keep replay input application and result capture in `ReplaySession`, without replay-specific mutation guards in ordinary simulation and Fleet APIs. Direct core calls are outside the recorded-input contract.
 
 ### Fixed
+
+- `BatchDifferentialController` uses the agent's
+  `controller_params.default_direction` for a path set without a direction, as
+  the per-agent `DifferentialController` does; it always drove `FORWARD`. A
+  goal replacement on a batched differential agent is judged with the new
+  path's direction, not the previous path's: a goal set without a direction
+  while backing up under `auto` was taken and turned around at once instead of
+  being refused (`reject`) or braked to (`brake`).
 
 - Frequency-limited callbacks and plugins, `collision_check_frequency` and the
   DataMonitor refresh no longer skip beats or drift. They compared the

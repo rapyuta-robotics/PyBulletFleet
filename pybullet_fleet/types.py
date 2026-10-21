@@ -123,6 +123,39 @@ class CallbackPhase(str, Enum):
     POST_STEP = "post_step"
 
 
+class GoalReplacement(str, Enum):
+    """What a moving agent does with a new goal or path it cannot reach from its current motion.
+
+    A new path set while the agent is moving continues that motion when the
+    straight-line trajectory to its first waypoint exists from the current
+    velocity within the configured limits: the goal lies on the line of
+    motion, ahead or behind, and the agent can still stop at it. Otherwise --
+    a goal inside the braking distance, off the line of motion, or one that
+    needs a turn in place -- this setting decides. ``WAIT_COMPLETE`` alone
+    also holds a path the agent could continue into: the current path has
+    priority. Only the latest held path is kept; dropping one is logged.
+
+    Attributes:
+        BRAKE: Accept the path; brake along the current motion at the
+            configured deceleration, then start the path from rest.
+        REJECT: Refuse the path (``set_path`` returns ``False``); the current
+            motion runs on. The refusal is temporary: the same path is taken
+            once the agent is at rest.
+        WAIT_COMPLETE: Accept every path set while a path is in progress;
+            finish the current one (reach its goal and stop), then start the
+            new path from rest. With no path in progress (a velocity
+            command) it brakes like ``BRAKE``.
+        IMMEDIATE: Accept the path and start it from rest at once, dropping the
+            current velocity in a single step -- the only mode that does not
+            respect the configured deceleration.
+    """
+
+    BRAKE = "brake"
+    REJECT = "reject"
+    WAIT_COMPLETE = "wait_complete"
+    IMMEDIATE = "immediate"
+
+
 class ControllerMode(str, Enum):
     """Internal mode for KinematicController state machine.
 

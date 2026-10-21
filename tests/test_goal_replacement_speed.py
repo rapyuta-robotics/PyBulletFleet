@@ -5,9 +5,11 @@ trajectory from the agent's speed toward it, signed along the new line, so a
 goal behind is reached by slowing, reversing and driving back; no zero-length
 approach waypoint is put in front of a moving agent's path. A goal whose
 trajectory does not exist within the configured limits -- inside the braking
-distance, where the agent is, or off the line of motion -- is refused:
-set_goal_pose() returns False and the current motion continues unchanged. At
-rest every goal is taken. No case exceeds the configured limits.
+distance, where the agent is, or off the line of motion -- is refused under
+``goal_replacement="reject"``, which this module runs with: set_goal_pose()
+returns False and the current motion continues unchanged. At rest every goal
+is taken. No case exceeds the configured limits. The other modes are covered
+in test_goal_replacement_modes.py.
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ import pytest
 
 from pybullet_fleet import Agent, AgentSpawnParams, MotionMode, MultiRobotSimulationCore, Pose, SimulationParams
 from pybullet_fleet.types import CollisionMode
+
+pytestmark = pytest.mark.usefixtures("reject_mode")
 
 DT = 0.05
 VMAX = 2.0
@@ -515,7 +519,8 @@ class TestPermanentRefusalsAreNotRetried:
         rejection = moving.path_rejection([_goal(x, y + 1.0)])
         assert rejection.temporary is True and "off the line" in rejection.reason
 
-    def test_a_move_action_on_a_fixed_base_completes(self, sim):
+    def test_a_move_action_on_a_fixed_base_fails(self, sim):
+        """Refused for good: the move fails at once rather than being retried."""
         from pybullet_fleet.action import MoveAction
         from pybullet_fleet.geometry import Path
         from pybullet_fleet.types import ActionStatus
@@ -525,7 +530,7 @@ class TestPermanentRefusalsAreNotRetried:
         agent.add_action(action)
         for _ in range(3):
             sim.step_once()
-        assert action.status == ActionStatus.COMPLETED
+        assert action.status == ActionStatus.FAILED
 
     def test_navigate_to_on_a_fixed_base_counts_as_started(self, sim):
         from pybullet_fleet.agent_behavior_tree import PyBulletFleetNavigationAdapter

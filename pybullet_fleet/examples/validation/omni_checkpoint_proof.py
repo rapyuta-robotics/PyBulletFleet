@@ -28,7 +28,7 @@ from pybullet_fleet.geometry import Pose
 # not limits of a future checkpoint API: an ordinary recorder must read the
 # effective runtime configuration and received commands from PBF's boundary.
 PROFILE = "pbf.single_omni_straight_checkpoint"
-VERSION = 2
+VERSION = 3
 DT = 0.1
 CHECKPOINT_STEP = 3
 END_TIME = 1.3
@@ -215,9 +215,13 @@ def validate_checkpoint(checkpoint: object) -> dict:
             "phase",
             "forward",
             "rotation",
+            "replacement",
         },
         "controller",
     )
+    # The profile drives one path: nothing is held for goal_replacement.
+    if _keys(controller["replacement"], {"pending", "braking"}, "replacement") != {"pending": None, "braking": False}:
+        raise ValueError("Checkpoint holds a replacement path outside the supported profile")
     goal_pose = _keys(controller["goal"], {"position", "orientation"}, "goal")
     goal = _vector(goal_pose["position"], 3, "goal_position")
     goal_orientation = _vector(goal_pose["orientation"], 4, "goal_orientation")

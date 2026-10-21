@@ -45,7 +45,7 @@ def batch(request):
     return request.param
 
 
-def _agent(sim, batch=False, motion_mode=MotionMode.OMNIDIRECTIONAL, fixed=False):
+def _agent(sim, batch=False, motion_mode=MotionMode.OMNIDIRECTIONAL, fixed=False, goal_replacement=None):
     agent = Agent.from_params(
         AgentSpawnParams(
             urdf_path="robots/simple_cube.urdf",
@@ -53,14 +53,20 @@ def _agent(sim, batch=False, motion_mode=MotionMode.OMNIDIRECTIONAL, fixed=False
             motion_mode=motion_mode,
             collision_mode=CollisionMode.NORMAL_3D,
             use_fixed_base=fixed,
-            controller={"max_linear_vel": VMAX, "max_linear_accel": ACCEL, "max_linear_decel": DECEL},
+            controller={
+                "max_linear_vel": VMAX,
+                "max_linear_accel": ACCEL,
+                "max_linear_decel": DECEL,
+                "goal_replacement": goal_replacement,
+            },
         ),
         sim_core=sim,
     )
     if batch:
         from pybullet_fleet.agent_manager import AgentManager
 
-        AgentManager(sim_core=sim, fleet_controller={"type": "batch_omni"}).add_object(agent)
+        kind = "batch_differential" if motion_mode == MotionMode.DIFFERENTIAL else "batch_omni"
+        AgentManager(sim_core=sim, fleet_controller={"type": kind}).add_object(agent)
     return agent
 
 
@@ -164,14 +170,25 @@ class TestBrake:
         assert _xy(agent) == pytest.approx(before)
         assert not agent.is_moving
 
-    def test_fixed_base_and_differential_do_not_brake(self, sim):
+    def test_a_fixed_base_does_not_brake(self, sim):
         assert _agent(sim, fixed=True).brake() is False
-        diff = _agent(sim, motion_mode=MotionMode.DIFFERENTIAL)
-        diff.set_path([Pose.from_xyz(10.0, 0.0, 0.1)], auto_approach=False)
-        for _ in range(10):
+
+    @pytest.mark.parametrize("goal", [(60.0, 80.0), (-60.0, -80.0)], ids=["forward", "backing_up"])
+    def test_differential_brakes_along_its_heading(self, sim, batch, goal):
+        agent = _agent(sim, batch, motion_mode=MotionMode.DIFFERENTIAL)
+        direction = "backward" if goal[0] < 0 else "forward"
+        agent.set_path([Pose.from_xyz(goal[0], goal[1], 0.1)], auto_approach=False, direction=direction)
+        for _ in range(200):
             sim.step_once()
-        assert diff.is_moving
-        assert diff.brake() is False  # differential restarts paths from rest (issue #78)
+            controller = agent._batch_controller or agent._controllers[0]
+            velocity = controller.continuation_velocity(agent)
+            if velocity is not None and np.linalg.norm(velocity) > 0.99 * VMAX:
+                break
+        orientation = agent.get_pose().orientation
+        start, velocity, track = _brake_and_track(sim, agent, steps=80)
+        _assert_braked(start, velocity, track)
+        assert agent.get_pose().orientation == pytest.approx(orientation, abs=1e-9)
+        assert not agent.is_moving
 
     def test_drops_the_rest_of_the_path(self, sim, batch):
         agent = _agent(sim, batch)
@@ -185,34 +202,66 @@ class TestBrake:
         assert not agent.is_moving
 
 
+def _braking_point(agent):
+    """Where braking from the current motion ends."""
+    controller = agent._batch_controller or agent._controllers[0]
+    velocity = np.array(controller.continuation_velocity(agent)[:2], dtype=float)
+    speed = float(np.linalg.norm(velocity))
+    return _xy(agent) + velocity / speed * speed * speed / (2.0 * DECEL)
+
+
+def _run_move(sim, agent, action):
+    """Step until ``action`` completes; return the per-step positions."""
+    track = [_xy(agent)]
+    for _ in range(300):
+        sim.step_once()
+        track.append(_xy(agent))
+        if action.status == ActionStatus.COMPLETED:
+            break
+    assert action.status == ActionStatus.COMPLETED
+    return track
+
+
+def _assert_left_the_line_at(track, braking_point):
+    """The move started only once the agent stood at the end of the braking:
+    the last pose before it leaves the line of motion is the braking point.
+    (A batch row starts it in the arrival step itself, after the batch
+    advance; a per-agent controller in the next one.)"""
+    first_off_line = next(i for i, xy in enumerate(track) if abs(xy[1]) > 1e-9)
+    assert track[first_off_line - 1] == pytest.approx(braking_point, abs=1e-5)
+
+
 class TestAfterBraking:
-    def test_a_goal_in_another_direction_starts_once_stopped(self, sim, batch):
-        """Refused while braking, taken when at rest -- MoveAction retries."""
+    def test_a_goal_in_another_direction_is_held_until_stopped(self, sim, batch):
+        """The default mode (brake) keeps braking and takes the goal when at rest."""
         agent = _agent(sim, batch)
         _cruise(sim, agent)
+        braking_point = _braking_point(agent)
+        assert agent.brake() is True
         controller = agent._batch_controller or agent._controllers[0]
-        velocity = np.array(controller.continuation_velocity(agent)[:2], dtype=float)
-        speed = float(np.linalg.norm(velocity))
-        braking_point = _xy(agent) + velocity / speed * speed * speed / (2.0 * DECEL)
+        action = MoveAction(path=Path.from_positions([[0.0, 5.0, 0.1]]), auto_approach=False)
+        agent.add_action(action)
+        sim.step_once()
+        assert action.status == ActionStatus.IN_PROGRESS  # accepted at once, held
+        track = _run_move(sim, agent, action)
+        assert track[-1] == pytest.approx([0.0, 5.0], abs=1e-6)
+        _assert_left_the_line_at(track, braking_point)
+        pending = controller.pending_path(agent) if batch else controller.pending_path()
+        assert pending is None
+
+    def test_a_goal_in_another_direction_starts_once_stopped(self, sim, batch):
+        """Reject mode: refused while braking, taken when at rest -- MoveAction retries."""
+        agent = _agent(sim, batch, goal_replacement="reject")
+        _cruise(sim, agent)
+        braking_point = _braking_point(agent)
         assert agent.brake() is True
         action = MoveAction(path=Path.from_positions([[0.0, 5.0, 0.1]]), auto_approach=False)
         agent.add_action(action)
         sim.step_once()
         assert action.status == ActionStatus.NOT_STARTED  # off the line: refused for now
-        track = [_xy(agent)]
-        for _ in range(300):
-            sim.step_once()
-            track.append(_xy(agent))
-            if action.status == ActionStatus.COMPLETED:
-                break
-        assert action.status == ActionStatus.COMPLETED
+        track = _run_move(sim, agent, action)
         assert track[-1] == pytest.approx([0.0, 5.0], abs=1e-6)
-        # Taken only once the agent stood at the end of the braking, not on the
-        # way: the last pose before it leaves the line of motion is the braking
-        # point. (A batch row takes it in the arrival step itself, after the
-        # batch advance; a per-agent controller in the next one.)
-        first_off_line = next(i for i, xy in enumerate(track) if abs(xy[1]) > 1e-9)
-        assert track[first_off_line - 1] == pytest.approx(braking_point, abs=1e-5)
+        _assert_left_the_line_at(track, braking_point)
 
     def test_clear_actions_first_cancels_the_move(self, sim):
         agent = _agent(sim)
@@ -224,9 +273,10 @@ class TestAfterBraking:
         _assert_braked(*_brake_and_track(sim, agent))
         assert action.status == ActionStatus.CANCELLED
 
-    def test_a_move_still_running_completes_at_rest(self, sim):
-        """Documented: brake() leaves the action queue alone."""
-        agent = _agent(sim)
+    def test_a_move_still_running_is_cancelled_at_rest(self, sim, batch):
+        """Documented: brake() leaves the action queue alone; the move it cut
+        short ends CANCELLED, not COMPLETED, once the agent is at rest."""
+        agent = _agent(sim, batch)
         action = MoveAction(path=Path.from_positions([[100.0, 0.0, 0.1]]), auto_approach=False)
         agent.add_action(action)
         for _ in range(int(2 * VMAX / ACCEL / DT) + 5):
@@ -234,7 +284,7 @@ class TestAfterBraking:
         assert agent.brake() is True
         for _ in range(60):
             sim.step_once()
-        assert action.status == ActionStatus.COMPLETED
+        assert action.status == ActionStatus.CANCELLED
         assert _xy(agent)[0] < 100.0
 
 
