@@ -303,3 +303,122 @@ def test_a_checkpoint_mid_brake_restores_the_same_trajectory(sim):
     restored.restore_navigation_state(state, list(agent.get_pose().orientation))
     for t in np.linspace(sim.sim_time, sim.sim_time + 2.0, 9):
         assert restored._tpi_forward.get_point(t)[0] == pytest.approx(controller._tpi_forward.get_point(t)[0])
+
+
+class TestCustomBraking:
+    """A controller decides how its agent brakes in one place, braking_request():
+    Agent.brake() and goal_replacement="brake" both go through it."""
+
+    LONG = 2.0  # the custom controller stops this many braking distances ahead
+
+    def _with_custom_braking(self, agent, batch, factor=None):
+        """Make the agent's controller brake ``factor`` (default LONG) times as
+        far ahead as the braking point; return its calls."""
+        factor = self.LONG if factor is None else factor
+        from pybullet_fleet._replan import PathRequest
+
+        calls = []
+
+        def braking_request(original, agent_):
+            request = original(agent_)
+            calls.append(request)
+            if request is None:
+                return None
+            here = np.asarray(agent_.get_pose().position, dtype=float)
+            target = here + (np.asarray(request.path[0].position) - here) * factor
+            goal = Pose(position=[float(c) for c in target], orientation=list(request.path[0].orientation))
+            return PathRequest(path=[goal], final_orientation_align=False, direction=request.direction)
+
+        if batch:
+            controller = agent._batch_controller
+            original = controller.braking_request
+            controller.braking_request = lambda agent_: braking_request(original, agent_)
+        else:
+            from pybullet_fleet.controller import OmniController
+
+            class LongBrakingOmni(OmniController):
+                def braking_request(self, agent_):
+                    return braking_request(super().braking_request, agent_)
+
+            agent.set_controller(LongBrakingOmni(agent._controllers[0].params))
+        return calls
+
+    def _cruise(self, sim, agent):
+        agent.set_goal_pose(Pose.from_xyz(100.0, 0.0, 0.1))
+        for _ in range(int(VMAX / ACCEL / DT) + 5):
+            sim.step_once()
+        assert np.linalg.norm(agent.velocity[:2]) == pytest.approx(VMAX, rel=1e-3)
+
+    def _settle(self, sim, agent, steps=200):
+        for _ in range(steps):
+            sim.step_once()
+            if not agent.is_moving:
+                return
+        raise AssertionError("never came to rest")
+
+    def test_agent_brake_uses_the_controllers_braking_request(self, sim, batch):
+        agent = _agent(sim, batch)
+        calls = self._with_custom_braking(agent, batch)
+        self._cruise(sim, agent)
+        x0 = _xy(agent)[0]
+        assert agent.brake() is True
+        assert len(calls) == 1
+        self._settle(sim, agent)
+        braking = VMAX**2 / (2 * DECEL)
+        assert _xy(agent)[0] - x0 == pytest.approx(self.LONG * braking, rel=1e-2)
+
+    def test_the_brake_replacement_mode_uses_it_too(self, sim, batch):
+        agent = _agent(sim, batch)  # goal_replacement defaults to "brake"
+        calls = self._with_custom_braking(agent, batch)
+        self._cruise(sim, agent)
+        x0, y0 = _xy(agent)
+        assert agent.set_goal_pose(Pose.from_xyz(x0, y0 + 3.0, 0.1)) is True  # off the line: brake first
+        assert len(calls) == 1
+        xs = []
+        for _ in range(400):
+            sim.step_once()
+            xs.append(_xy(agent)[0])
+            if not agent.is_moving:
+                break
+        braking = VMAX**2 / (2 * DECEL)
+        # Stopped at the custom braking point, then drove to the goal.
+        assert max(xs) - x0 == pytest.approx(self.LONG * braking, rel=1e-2)
+        assert _xy(agent) == pytest.approx((x0, y0 + 3.0), abs=1e-6)
+
+    @pytest.mark.parametrize("via", ["brake", "replacement"])
+    def test_a_request_that_stops_short_falls_back_to_the_braking_point(self, sim, batch, via, caplog):
+        """A custom request inside the braking distance cannot continue the
+        motion: it is not started; the agent brakes at the default braking
+        point instead, with a warning naming it."""
+        import logging
+
+        agent = _agent(sim, batch)
+        agent.name = "short_braker"
+        self._with_custom_braking(agent, batch, factor=0.5)
+        self._cruise(sim, agent)
+        x0, y0 = _xy(agent)
+        with caplog.at_level(logging.WARNING):
+            if via == "brake":
+                assert agent.brake() is True
+            else:
+                assert agent.set_goal_pose(Pose.from_xyz(x0, y0 + 3.0, 0.1)) is True  # off the line: brake first
+        assert "short_braker" in caplog.text and "cannot continue the motion" in caplog.text
+        xs = []
+        for _ in range(400):
+            sim.step_once()
+            xs.append(_xy(agent)[0])
+            if not agent.is_moving:
+                break
+        braking = VMAX**2 / (2 * DECEL)
+        assert max(xs) - x0 == pytest.approx(braking, rel=1e-3)
+
+    def test_a_controller_that_cannot_brake(self, sim):
+        from pybullet_fleet.controller import Controller
+
+        class Idle(Controller):
+            def compute(self, agent, dt):
+                return False
+
+        agent = _agent(sim)
+        agent.set_controller(Idle())
+        assert agent.brake() is False

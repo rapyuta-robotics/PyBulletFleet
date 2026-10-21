@@ -241,6 +241,36 @@ alone; a `MoveAction` still executing ends `CANCELLED` once the agent is at
 rest, short of its path's end, and the queue moves on to the next action, so
 call `clear_actions()` first to drop the queued actions too.
 
+#### Custom braking
+
+The controller does the braking: `agent.brake()` calls the controller's
+`brake(agent)`, and the `brake` replacement mode runs the same braking before
+the held goal. Both use one method, `braking_request(agent)`, which returns the
+path request that brings the agent to rest (`None` at rest). Override it in a
+`KinematicController` subclass (or a batch controller) to brake differently,
+for example to stop at a set point further ahead:
+
+```python
+from pybullet_fleet.controller import OmniController
+
+
+class CarefulOmni(OmniController):
+    def braking_request(self, agent):
+        request = super().braking_request(agent)  # stop |v|^2 / (2 * decel) ahead
+        ...  # adjust or replace request.path
+        return request
+
+
+agent.set_controller(CarefulOmni(params))
+```
+
+The request starts from the current motion, so it must continue it: on its
+line, no closer than the braking distance. One that does not is not started;
+the controller logs a warning naming the agent and brakes at the default
+braking point instead. A
+controller that does not override `brake()` from the base `Controller` cannot
+brake, and `agent.brake()` returns `False`.
+
 ## Batch controllers
 
 Batch controllers use one vectorised `batch_advance()` call for all agents in

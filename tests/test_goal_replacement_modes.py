@@ -184,7 +184,7 @@ class TestModes:
         """A braking path that cannot continue the motion (it stops short of
         the braking distance) is not started blindly: a warning, then the new
         goal from rest at once."""
-        from pybullet_fleet import _replacement
+        import pybullet_fleet._replan as replan
         from pybullet_fleet._replan import PathRequest
         from pybullet_fleet.types import MovementDirection
 
@@ -193,7 +193,7 @@ class TestModes:
             goal = Pose(position=ahead.tolist(), orientation=list(orientation))
             return PathRequest(path=[goal], final_orientation_align=False, direction=MovementDirection.AUTO)
 
-        monkeypatch.setattr(_replacement, "braking_request", short_stop)  # one decision for both families
+        monkeypatch.setattr(replan, "braking_request", short_stop)
         with caplog.at_level(logging.WARNING):
             agent, _, accepted = _replace(sim, batch, motion, "brake")
         assert accepted is True

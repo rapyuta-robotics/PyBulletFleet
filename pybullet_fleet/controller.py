@@ -58,7 +58,8 @@ from pybullet_fleet.types import ControllerMode, GoalReplacement, MovementDirect
 from two_point_interpolation import TwoPointInterpolation
 
 from pybullet_fleet._tpi import build_tpi, build_tpi_from_speed, extract_phase_params
-from pybullet_fleet._replacement import GoalReplacementPolicy
+from pybullet_fleet._replacement import GoalReplacementPolicy, _checked_braking_request
+import pybullet_fleet._replan as _replan
 from pybullet_fleet._replan import HEADING_TOL, PathRequest
 from pybullet_fleet._tpi_state import capture_tpi_state, restore_tpi_state
 from pybullet_fleet._motion_planning import heading_toward
@@ -166,6 +167,17 @@ class Controller(ABC):
         """
         return None
 
+    def brake(self, agent: "Agent") -> bool:
+        """Bring ``agent`` to rest within the deceleration limits; see :meth:`Agent.brake
+        <pybullet_fleet.agent.Agent.brake>`, which delegates here.
+
+        Returns:
+            ``True`` when a braking motion was started. The default cannot
+            brake and returns ``False``; :meth:`Agent.stop
+            <pybullet_fleet.agent.Agent.stop>` is then the way to stop.
+        """
+        return False
+
     def _construction_config(self) -> Optional[dict]:
         """Registered type and shared settings, separate from execution state.
 
@@ -212,6 +224,26 @@ class Controller(ABC):
 # ---------------------------------------------------------------------------
 # KinematicController — unified ABC for velocity + pose control
 # ---------------------------------------------------------------------------
+
+
+def _set_braking_path(agent: "Agent", request: Optional[PathRequest]) -> bool:
+    """Set a braking path through ``agent.set_path``; ``False`` for ``None`` or a refusal."""
+    if request is None:
+        return False
+    accepted = agent.set_path(
+        request.path,
+        auto_approach=False,
+        final_orientation_align=request.final_orientation_align,
+        direction=request.direction,
+        # Braking does not wait for the current path, whatever the mode.
+        _preempt=True,
+    )
+    if accepted is False:
+        logger.warning(
+            f"Braking path for {agent.name or agent.object_id} refused: "
+            f"{agent.path_rejection(request.path, request.direction)}"
+        )
+    return accepted is not False
 
 
 def _log_dropped(name: str, request: PathRequest, reason: str) -> None:
@@ -539,6 +571,36 @@ class KinematicController(GoalReplacementPolicy, Controller):
 
     def _mark_braking(self, agent: "Agent") -> None:
         self._braking = True
+
+    def braking_request(self, agent: "Agent") -> Optional[PathRequest]:
+        """The path request that brings the moving ``agent`` to rest, or ``None`` at rest.
+
+        The one place that decides how this controller brakes: :meth:`brake`
+        (and so :meth:`Agent.brake <pybullet_fleet.agent.Agent.brake>`) sets
+        it, and ``goal_replacement="brake"`` runs it before a path the agent
+        cannot continue into. The default stops at the braking point,
+        ``|v|^2 / (2 * decel)`` ahead along the motion, at the configured
+        deceleration (see :func:`~pybullet_fleet._replan.braking_request`). A
+        subclass overrides it to brake differently. The request must continue
+        the current motion (the controller's ``_replacement_obstacle`` rule);
+        one that does not is not started -- a warning, and the default braking
+        point instead.
+        """
+        return self._builtin_braking_request(agent)
+
+    def _builtin_braking_request(self, agent: "Agent") -> Optional[PathRequest]:
+        """The default braking point, whatever :meth:`braking_request` is overridden with."""
+        pose = agent.get_pose()
+        return _replan.braking_request(self.params, pose.position, pose.orientation, self.continuation_velocity(agent))
+
+    def brake(self, agent: "Agent") -> bool:
+        """Set :meth:`braking_request` through :meth:`Agent.set_path
+        <pybullet_fleet.agent.Agent.set_path>`, never held for the current path.
+
+        A pending path from an earlier ``brake`` or ``wait_complete``
+        replacement is dropped. Returns ``False`` at rest.
+        """
+        return _set_braking_path(agent, _checked_braking_request(self, agent))
 
     def _path_in_progress(self, agent: "Agent") -> bool:
         """Whether a path (not a velocity command) is being followed."""

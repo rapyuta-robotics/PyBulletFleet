@@ -22,6 +22,14 @@ are not recommended for production use yet.
   stop. Controllers gain `continuation_velocity(agent)`, the velocity a new
   path continues from.
 
+- Braking is a controller method: `Agent.brake()` delegates to the
+  controller's `brake(agent)`, and both it and `goal_replacement="brake"` take
+  the braking path from `braking_request(agent)`, which a custom controller
+  overrides to brake differently. A request that cannot continue the current
+  motion is not started: a warning naming the agent, and the default braking
+  point instead. The base `Controller.brake()` returns
+  `False` (cannot brake).
+
 - `ControllerParams.goal_replacement` (`GoalReplacement`): what a moving agent
   does with a goal it cannot reach from its current motion within its limits.
   `brake` (the default) brakes along the current motion at `max_linear_decel`

@@ -1180,44 +1180,22 @@ class Agent(SimObject):
         its path's end, and the queue moves on; call :meth:`clear_actions`
         first to drop the queued actions too.
 
-        Returns:
-            ``True`` when a braking trajectory was set. ``False`` at rest and
-            for a fixed-base robot.
-        """
-        from pybullet_fleet._replan import braking_request
+        The agent's controller does the braking (its ``brake()``); a custom
+        controller changes how the agent brakes by overriding
+        :meth:`KinematicController.braking_request
+        <pybullet_fleet.controller.KinematicController.braking_request>`, which
+        ``goal_replacement="brake"`` uses too.
 
+        Returns:
+            ``True`` when a braking trajectory was set. ``False`` at rest, for
+            a fixed-base robot, and for a controller that cannot brake.
+        """
         if self.use_fixed_base:
             return False
         controller = self._batch_controller
-        if controller is not None:
-            # Hold the batch lock across reading the velocity and setting the
-            # path (it is re-entrant), so a concurrent step cannot change the
-            # motion the braking point was computed for.
-            with controller._state_lock:
-                return self._brake_with(controller, braking_request)
-        if not self._controllers:
-            return False
-        return self._brake_with(self._controllers[0], braking_request)
-
-    def _brake_with(self, controller, braking_request) -> bool:
-        pose = self.get_pose()
-        # The limits the path will be judged and built with: the per-agent
-        # controller's own, or the agent's for a batch row.
-        params = self.controller_params if controller is self._batch_controller else controller.params
-        request = braking_request(params, pose.position, pose.orientation, controller.continuation_velocity(self))
-        if request is None:
-            return False
-        accepted = self.set_path(
-            request.path,
-            auto_approach=False,
-            final_orientation_align=request.final_orientation_align,
-            direction=request.direction,
-            # Braking does not wait for the current path, whatever the mode.
-            _preempt=True,
-        )
-        if accepted is False:
-            self._log.warning(f"Braking path refused: {self.path_rejection(request.path, request.direction)}")
-        return accepted is not False
+        if controller is None:
+            controller = self._controllers[0] if self._controllers else None
+        return controller is not None and controller.brake(self)
 
     def path_rejection(
         self, path: List[Pose], direction: Union[MovementDirection, str, None] = None

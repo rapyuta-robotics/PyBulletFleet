@@ -33,9 +33,10 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Type
 
 import numpy as np
 
-from pybullet_fleet._replacement import GoalReplacementPolicy
+from pybullet_fleet._replacement import GoalReplacementPolicy, _checked_braking_request
+import pybullet_fleet._replan as _replan
 from pybullet_fleet._replan import PathRequest
-from pybullet_fleet.controller import Controller, _log_dropped
+from pybullet_fleet.controller import Controller, _log_dropped, _set_braking_path
 from pybullet_fleet.types import GoalReplacement, MovementDirection
 from pybullet_fleet.geometry import quat_angle_between, quat_slerp_batch
 from pybullet_fleet.logging_utils import get_lazy_logger
@@ -305,6 +306,34 @@ class BatchKinematicController(GoalReplacementPolicy, Controller):
     def pending_path(self, agent: "Agent") -> Optional[PathRequest]:
         """The accepted path waiting for ``agent`` to stop, or ``None``."""
         return self._pending.get(id(agent))
+
+    def braking_request(self, agent: "Agent") -> Optional[PathRequest]:
+        """The path request that brings the moving ``agent`` to rest, or ``None`` at rest.
+
+        As :meth:`KinematicController.braking_request
+        <pybullet_fleet.controller.KinematicController.braking_request>`, with the
+        agent's own limits: the one place a batched controller decides how it
+        brakes, for :meth:`brake` and ``goal_replacement="brake"``.
+        """
+        return self._builtin_braking_request(agent)
+
+    def _builtin_braking_request(self, agent: "Agent") -> Optional[PathRequest]:
+        """The default braking point, whatever :meth:`braking_request` is overridden with."""
+        pose = agent.get_pose()
+        return _replan.braking_request(
+            agent.controller_params, pose.position, pose.orientation, self.continuation_velocity(agent)
+        )
+
+    def brake(self, agent: "Agent") -> bool:
+        """Set :meth:`braking_request` for ``agent``, as :meth:`KinematicController.brake
+        <pybullet_fleet.controller.KinematicController.brake>` does.
+
+        The batch lock (re-entrant) is held across reading the motion and
+        setting the path, so a concurrent step cannot change the motion the
+        braking path was computed for.
+        """
+        with self._state_lock:
+            return _set_braking_path(agent, _checked_braking_request(self, agent))
 
     # -- GoalReplacementPolicy hooks (the decision is _replace_path) ------
 

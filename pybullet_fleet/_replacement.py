@@ -24,14 +24,14 @@ once the agent stops (or the current path ends), whatever the mode is then.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
 
 import math
 
 from pybullet_fleet._motion_planning import heading_toward
-from pybullet_fleet._replan import HEADING_TOL, REST_SPEED, PathRequest, braking_request, replacement_rejection
+from pybullet_fleet._replan import HEADING_TOL, REST_SPEED, PathRequest, replacement_rejection
 from pybullet_fleet.geometry import quat_angle_between
 from pybullet_fleet.logging_utils import get_lazy_logger
 from pybullet_fleet.types import GoalReplacement, MovementDirection
@@ -42,6 +42,31 @@ if TYPE_CHECKING:
     from pybullet_fleet.geometry import Pose
 
 logger = get_lazy_logger(__name__)
+
+
+def _checked_braking_request(controller: Any, agent: "Agent") -> Optional[PathRequest]:
+    """``controller.braking_request(agent)`` if it continues the current motion.
+
+    A braking request is started from the agent's current motion, so it must
+    be one the controller can continue into (``_replacement_obstacle``). One
+    that cannot -- a custom request stopping short of the braking distance --
+    is not started: a warning naming the agent, and the built-in braking
+    point instead (:func:`~pybullet_fleet._replan.braking_request`), or
+    ``None`` when that cannot be used either. ``None`` also at rest.
+    """
+    request = controller.braking_request(agent)
+    if request is None:
+        return None
+    obstacle = controller._replacement_obstacle(agent, request.path, request.direction)
+    if obstacle is None:
+        return request
+    builtin = controller._builtin_braking_request(agent)
+    usable = builtin is not None and controller._replacement_obstacle(agent, builtin.path, builtin.direction) is None
+    logger.warning(
+        f"Braking request for {agent.name or agent.object_id} cannot continue the motion ({obstacle}); "
+        + ("using the built-in braking point" if usable else "no braking path continues it")
+    )
+    return builtin if usable else None
 
 
 class GoalReplacementPolicy:
@@ -84,17 +109,12 @@ class GoalReplacementPolicy:
             # wait_complete gets here only with nothing to wait for (a
             # velocity command, or brake() preempting): it brakes as brake does.
             if not self._braking_for(agent):
-                pose = agent.get_pose()
-                braking = braking_request(params, pose.position, pose.orientation, self.continuation_velocity(agent))
-                infeasible = None if braking is None else self._replacement_obstacle(agent, braking.path, braking.direction)
-                if infeasible is not None:
-                    logger.warning(
-                        f"Braking path for {name} cannot continue the motion ({infeasible}); "
-                        "starting the new path from rest"
-                    )
-                if braking is None or infeasible is not None:
-                    # Nothing left to brake, or no way to brake along the
-                    # motion: start from rest.
+                # The controller's braking_request, checked: a custom one that
+                # cannot continue the motion falls back to the built-in point.
+                braking = _checked_braking_request(self, agent)
+                if braking is None:
+                    # Nothing left to brake, or no braking request that
+                    # continues the motion: start from rest.
                     self._drop_held(agent, "a newer path started at once")
                     self._start_request(agent, request, continue_motion=False)
                     return True
@@ -206,3 +226,7 @@ class GoalReplacementPolicy:
         ) -> Optional[str]: ...
 
         def continuation_velocity(self, agent: "Agent") -> Optional[np.ndarray]: ...
+
+        def braking_request(self, agent: "Agent") -> Optional[PathRequest]: ...
+
+        def _builtin_braking_request(self, agent: "Agent") -> Optional[PathRequest]: ...
