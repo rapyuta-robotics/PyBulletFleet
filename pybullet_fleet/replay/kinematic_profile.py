@@ -21,7 +21,7 @@ from pybullet_fleet.controller_params import ControllerParams
 from pybullet_fleet.core_simulation import MultiRobotSimulationCore, SimulationParams
 from pybullet_fleet.geometry import Pose
 from pybullet_fleet.sim_object import PRIMITIVE_SHAPE_TYPES, ShapeParams, SimObject, SimObjectSpawnParams
-from pybullet_fleet.types import CollisionMode, ControllerMode, MotionMode, MovementDirection
+from pybullet_fleet.types import CollisionMode, ControllerMode, GoalReplacement, MotionMode, MovementDirection
 
 from .state_recording import (
     ResultPlayback,
@@ -89,6 +89,10 @@ def _validate_controller_parameters(parameters: dict) -> None:
         direction.value for direction in MovementDirection
     }:
         raise ValueError("Invalid controller default direction")
+    if parameters["goal_replacement"] is not None and parameters["goal_replacement"] not in {
+        mode.value for mode in GoalReplacement
+    }:
+        raise ValueError("Invalid controller goal replacement")
 
 
 def _check_agent_owners(agent: Agent) -> None:
@@ -115,7 +119,9 @@ def capture_agent_state(agent: Agent) -> dict:
         "velocity": agent.get_velocity().tolist(),
         "angular_velocity": float(agent.angular_velocity),
         "moving": agent.is_moving,
-        "controller": {"type": spec["type"], "version": 1, "state": navigation},
+        # Version 3: the navigation state records the path held for
+        # goal_replacement (version 2 added the forward initial speed ``v0``).
+        "controller": {"type": spec["type"], "version": 3, "state": navigation},
         "joints": joints,
     }
 
@@ -134,7 +140,7 @@ def restore_agent_state(agent: Agent, value: dict) -> None:
     if navigation is not None:
         if type(agent.controller) not in _SUPPORTED_CONTROLLER_TYPES:
             raise ValueError("Unsupported navigation execution")
-        agent.controller.restore_navigation_state(navigation, pose.orientation)
+        agent.controller.restore_navigation_state(navigation, pose.orientation, owner=agent.name)
     elif value["moving"]:
         raise ValueError("Moving Agent lacks controller state")
 
@@ -258,7 +264,7 @@ def _validate_agent(name: str, construction: dict, entry: dict) -> None:
         raise ValueError("Invalid Agent movement state")
     controller = _keys(value["controller"], {"type", "version", "state"}, "controller")
     if (
-        controller["version"] != 1
+        controller["version"] != 3
         or controller["type"] != construction["controller"]["type"]
         or controller["type"] not in _SUPPORTED_CONTROLLER_NAMES
         or value["moving"] != (controller["state"] is not None)
@@ -316,6 +322,27 @@ def _quaternion(value: object, label: str) -> None:
         raise ValueError(f"Invalid {label} quaternion")
 
 
+def _validate_replacement(value: object) -> None:
+    """Check the path held for goal_replacement and the braking flag."""
+    replacement = _keys(value, {"pending", "braking"}, "replacement")
+    pending = replacement["pending"]
+    if type(replacement["braking"]) is not bool or (replacement["braking"] and pending is None):
+        raise ValueError("Invalid replacement braking state")
+    if pending is None:
+        return
+    request = _keys(pending, {"path", "final_orientation_align", "direction"}, "pending path")
+    if not isinstance(request["path"], list) or not request["path"]:
+        raise ValueError("Invalid pending path")
+    for pose in request["path"]:
+        _keys(pose, {"position", "orientation"}, "pending pose")
+        _vector(pose["position"], 3, "pending position")
+        _quaternion(pose["orientation"], "pending orientation")
+    if type(request["final_orientation_align"]) is not bool:
+        raise ValueError("Invalid pending orientation alignment")
+    if request["direction"] is not None and request["direction"] not in {d.value for d in MovementDirection}:
+        raise ValueError("Invalid pending direction")
+
+
 def _validate_navigation(value: dict, *, differential: bool) -> None:
     """Check the supported pose-path fields before constructing a core."""
     navigation = _keys(
@@ -330,6 +357,7 @@ def _validate_navigation(value: dict, *, differential: bool) -> None:
             "phase",
             "forward",
             "rotation",
+            "replacement",
         }
         | ({"movement_direction", "requested_direction", "forward_origin"} if differential else set()),
         "navigation",
@@ -344,6 +372,7 @@ def _validate_navigation(value: dict, *, differential: bool) -> None:
                 raise ValueError("Differential navigation origin is missing")
         else:
             _vector(navigation["forward_origin"], 3, "differential origin")
+    _validate_replacement(navigation["replacement"])
     if not isinstance(navigation["path"], list):
         raise ValueError("Invalid navigation path")
     for pose in [*navigation["path"], navigation["goal"]]:
@@ -372,8 +401,15 @@ def _validate_navigation(value: dict, *, differential: bool) -> None:
         if navigation["rotation"] is not None:
             raise ValueError("Forward phase has rotation state")
         trajectory = _keys(
-            navigation["forward"], {"origin", "t0", "vmax", "accel", "decel", "orientation_after_rotation"}, "forward"
+            navigation["forward"],
+            {"origin", "t0", "vmax", "accel", "decel", "v0", "orientation_after_rotation"},
+            "forward",
         )
+        v0 = trajectory["v0"]
+        # Signed: a trajectory started moving away from its goal records a
+        # negative initial speed.
+        if isinstance(v0, bool) or not isinstance(v0, (int, float)) or not math.isfinite(v0):
+            raise ValueError("Invalid navigation initial speed")
         if trajectory["origin"] is not None:
             _vector(trajectory["origin"], 3, "forward origin")
         elif not final:
@@ -512,7 +548,7 @@ class KinematicProfile:
         if sim._plugins or sim._behavior_tree_callbacks or sim._registered_managers:
             raise ValueError("Plugins, BTs or managers are outside this checkpoint profile")
         allowed = {id(callback) for callback in self.allowed_callbacks}
-        if any(id(info["func"]) not in allowed or info["frequency"] is not None for info in sim._callbacks):
+        if any(id(info["func"]) not in allowed or info["gate"].frequency is not None for info in sim._callbacks):
             raise ValueError("Undeclared simulation callback is not checkpointable")
         event_allowed = {id(handler) for handler in self.allowed_event_handlers}
         if any(id(handler) not in event_allowed for handlers in sim.events._handlers.values() for _, handler in handlers):

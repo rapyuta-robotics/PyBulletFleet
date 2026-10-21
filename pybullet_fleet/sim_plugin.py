@@ -47,6 +47,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type
 
+from pybullet_fleet._frequency import FrequencyGate
 from pybullet_fleet.plugin_utils import PluginRegistry, from_config_introspect
 
 if TYPE_CHECKING:
@@ -167,8 +168,19 @@ class SimPlugin:
     def __init__(self, sim_core: "MultiRobotSimulationCore") -> None:
         self.sim_core = sim_core
         self.config: Dict[str, Any] = {}
-        self.frequency: Optional[float] = None  # Step frequency in Hz (None = every step)
-        self._accumulator: float = 0.0  # Time accumulator for frequency control
+        self._frequency_gate = FrequencyGate()  # schedule for ``frequency``
+
+    @property
+    def frequency(self) -> Optional[float]:
+        """Step frequency in Hz; ``None`` calls :meth:`on_step` every step.
+
+        Changing it starts a fresh schedule on the new rate.
+        """
+        return self._frequency_gate.frequency
+
+    @frequency.setter
+    def frequency(self, frequency: Optional[float]) -> None:
+        self._frequency_gate.set_frequency(frequency)
 
     @classmethod
     def from_config(cls, sim_core: "MultiRobotSimulationCore", config: Dict[str, Any] | None = None) -> "SimPlugin":
@@ -199,9 +211,9 @@ class SimPlugin:
         this as a no-op and react via ``self.sim_core.events`` instead.
 
         Args:
-            dt: Elapsed time since last call (seconds).  When frequency
-                is set, this is the accumulated time since the last
-                invocation, not the raw simulation timestep.
+            dt: Simulated time since the last call (seconds): the step's
+                timestep when :attr:`frequency` is ``None``, otherwise the
+                time since the previous scheduled run.
         """
 
     def on_reset(self) -> None:

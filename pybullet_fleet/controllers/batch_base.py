@@ -27,20 +27,23 @@ sized with ``self._agents``.
 
 from __future__ import annotations
 
-import math
 import threading
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Dict, List, Optional, Type
 
 import numpy as np
-import pybullet as p
 
-from pybullet_fleet.controller import Controller
+from pybullet_fleet._replacement import GoalReplacementPolicy, _checked_braking_request
+import pybullet_fleet._replan as _replan
+from pybullet_fleet._replan import PathRequest
+from pybullet_fleet.controller import Controller, _log_dropped, _set_braking_path
+from pybullet_fleet.types import GoalReplacement, MovementDirection
 from pybullet_fleet.geometry import quat_angle_between, quat_slerp_batch
 from pybullet_fleet.logging_utils import get_lazy_logger
 
 if TYPE_CHECKING:
     from pybullet_fleet.agent import Agent
+    from pybullet_fleet.controller_params import ControllerParams
     from pybullet_fleet.core_simulation import MultiRobotSimulationCore
 
 logger = get_lazy_logger(__name__)
@@ -52,7 +55,7 @@ logger = get_lazy_logger(__name__)
 BATCH_CONTROLLER_REGISTRY: Dict[str, Type["BatchKinematicController"]] = {}
 
 
-class BatchKinematicController(Controller):
+class BatchKinematicController(GoalReplacementPolicy, Controller):
     """Vectorized base for kinematic controllers that drive many agents at once.
 
     Inherits from :class:`Controller` directly (not ``KinematicController``):
@@ -95,9 +98,21 @@ class BatchKinematicController(Controller):
         self._pos_buf: np.ndarray = np.zeros((0, 3), dtype=np.float64)
         self._orn_buf: np.ndarray = np.zeros((0, 4), dtype=np.float64)
         self._moved_mask: np.ndarray = np.zeros((0,), dtype=bool)
+        # The velocity of each row's profile at the step's time, as the
+        # per-agent controllers report it: world-frame linear (m/s) and yaw
+        # rate (rad/s). batch_advance fills them for the rows it moves.
+        self._lin_vel_buf: np.ndarray = np.zeros((0, 3), dtype=np.float64)
+        self._ang_vel_buf: np.ndarray = np.zeros((0,), dtype=np.float64)
         # True for rows that moved on the *previous* flush — lets _apply_phase1
         # zero an agent's reported velocity on the step it stops.
         self._was_moved: np.ndarray = np.zeros((0,), dtype=bool)
+
+        # Goal replacement (see GoalReplacement), keyed by id(agent) so row
+        # compaction does not move it: a path accepted while the agent brakes
+        # or finishes its current path, started once it stops.
+        self._pending: Dict[int, PathRequest] = {}
+        # Agents whose active path is the braking path set for their pending one.
+        self._braking: set = set()
 
     # ------------------------------------------------------------------ #
     # Lifecycle: agent registration (sim_core attachment is implicit)
@@ -158,6 +173,7 @@ class BatchKinematicController(Controller):
             raise KeyError(f"Agent {agent} is not registered with this batch controller.")
         idx = self._agent_index.pop(key)
         agent._batch_controller = None
+        self._drop_pending(agent, "the agent left the batch controller")
         last = len(self._agents) - 1
         if idx != last:
             # Swap last row into the freed slot.
@@ -185,6 +201,8 @@ class BatchKinematicController(Controller):
         self._pos_buf = self._resize_rows(self._pos_buf, n)
         self._orn_buf = self._resize_rows(self._orn_buf, n)
         self._moved_mask = self._resize_rows(self._moved_mask, n)
+        self._lin_vel_buf = self._resize_rows(self._lin_vel_buf, n)
+        self._ang_vel_buf = self._resize_rows(self._ang_vel_buf, n)
         self._was_moved = self._resize_rows(self._was_moved, n)
 
     @staticmethod
@@ -212,6 +230,8 @@ class BatchKinematicController(Controller):
         self._pos_buf[[i, j]] = self._pos_buf[[j, i]]
         self._orn_buf[[i, j]] = self._orn_buf[[j, i]]
         self._moved_mask[[i, j]] = self._moved_mask[[j, i]]
+        self._lin_vel_buf[[i, j]] = self._lin_vel_buf[[j, i]]
+        self._ang_vel_buf[[i, j]] = self._ang_vel_buf[[j, i]]
         self._was_moved[[i, j]] = self._was_moved[[j, i]]
 
     def _on_agent_registered(self, idx: int, agent: "Agent") -> None:
@@ -231,7 +251,7 @@ class BatchKinematicController(Controller):
     # Phase 1 entry point (called by core_simulation.step_once)
     # ------------------------------------------------------------------ #
 
-    def synchronized_set_path(self, agent: "Agent", path, **kwargs) -> None:
+    def synchronized_set_path(self, agent: "Agent", path, **kwargs) -> bool:
         """Set one path without racing a concurrent simulation step.
 
         ``_is_moving`` is set here, inside the lock, rather than by the caller
@@ -242,15 +262,169 @@ class BatchKinematicController(Controller):
         ``is_moving``. Setting it before ``set_path()`` is equally wrong --
         that is the half-committed state this guard exists to prevent -- so it
         goes after the call and still under the lock.
+
+        Returns ``False`` when the controller refuses the path (see
+        ``path_rejection``); the row and ``_is_moving`` are then untouched.
         """
         with self._state_lock:
-            getattr(self, "set_path")(agent, path, **kwargs)
+            accepted = getattr(self, "set_path")(agent, path, **kwargs)
+            if accepted is False:
+                return False
             agent._is_moving = True
+            return True
+
+    def _replacement_obstacle(self, agent: "Agent", path, direction: Optional[MovementDirection] = None) -> Optional[str]:
+        """Why ``path`` cannot continue the agent's current motion, or ``None``.
+
+        The base restarts every path from the motion as it is, so it has no
+        such limit. Subclasses that continue motion override this, with the
+        same rule as the per-agent controllers (see :mod:`pybullet_fleet._replan`).
+        """
+        return None
+
+    def continuation_velocity(self, agent: "Agent") -> Optional[np.ndarray]:
+        """The agent's velocity while its row translates, else ``None``.
+
+        The velocity state the batch step sets (the row's profile velocity at
+        the pose's time), as :meth:`KinematicController.continuation_velocity
+        <pybullet_fleet.controller.KinematicController.continuation_velocity>`
+        reads it; ``path_rejection`` and ``set_path`` continue from it. A turn
+        in place or a finished row has no linear velocity to continue.
+        """
+        idx = self._agent_index.get(id(agent))
+        if idx is None or not self._translating(idx):
+            return None
+        return np.array(agent._current_velocity, dtype=float)
+
+    def _translating(self, idx: int) -> bool:
+        """Whether row ``idx`` is in a translation a new path can continue.
+
+        The base never continues one; subclasses that do override this.
+        """
+        return False
+
+    def pending_path(self, agent: "Agent") -> Optional[PathRequest]:
+        """The accepted path waiting for ``agent`` to stop, or ``None``."""
+        return self._pending.get(id(agent))
+
+    def braking_request(self, agent: "Agent") -> Optional[PathRequest]:
+        """The path request that brings the moving ``agent`` to rest, or ``None`` at rest.
+
+        As :meth:`KinematicController.braking_request
+        <pybullet_fleet.controller.KinematicController.braking_request>`, with the
+        agent's own limits: the one place a batched controller decides how it
+        brakes, for :meth:`brake` and ``goal_replacement="brake"``.
+        """
+        return self._builtin_braking_request(agent)
+
+    def _builtin_braking_request(self, agent: "Agent") -> Optional[PathRequest]:
+        """The default braking point, whatever :meth:`braking_request` is overridden with."""
+        pose = agent.get_pose()
+        return _replan.braking_request(
+            agent.controller_params, pose.position, pose.orientation, self.continuation_velocity(agent)
+        )
+
+    def brake(self, agent: "Agent") -> bool:
+        """Set :meth:`braking_request` for ``agent``, as :meth:`KinematicController.brake
+        <pybullet_fleet.controller.KinematicController.brake>` does.
+
+        The batch lock (re-entrant) is held across reading the motion and
+        setting the path, so a concurrent step cannot change the motion the
+        braking path was computed for.
+        """
+        with self._state_lock:
+            return _set_braking_path(agent, _checked_braking_request(self, agent))
+
+    # -- GoalReplacementPolicy hooks (the decision is _replace_path) ------
+
+    def _replacement_params(self, agent: "Agent") -> "ControllerParams":
+        return agent.controller_params
+
+    def _following_path(self, agent: "Agent") -> bool:
+        return agent.is_moving
+
+    def _hold_request(self, agent: "Agent", request: PathRequest) -> None:
+        self._hold(agent, request)
+
+    def _drop_held(self, agent: "Agent", reason: str) -> None:
+        self._drop_pending(agent, reason)
+
+    def _start_request(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
+        self._start_row_path(agent, request, continue_motion)
+
+    def _braking_for(self, agent: "Agent") -> bool:
+        return id(agent) in self._braking
+
+    def _mark_braking(self, agent: "Agent") -> None:
+        self._braking.add(id(agent))
+
+    def _hold(self, agent: "Agent", request: PathRequest) -> None:
+        """Make ``request`` the agent's pending path, dropping (and logging) the one before."""
+        previous = self._pending.get(id(agent))
+        if previous is not None:
+            _log_dropped(str(agent.name or agent.object_id), previous, "a newer path replaced it")
+        self._pending[id(agent)] = request
+
+    def _drop_pending(self, agent: "Agent", reason: str) -> None:
+        """Drop the agent's pending path (logging it with ``reason``) and braking flag."""
+        key = id(agent)
+        self._braking.discard(key)
+        previous = self._pending.pop(key, None)
+        if previous is not None:
+            _log_dropped(str(agent.name or agent.object_id), previous, reason)
+
+    def _start_row_path(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
+        """Make ``request`` the agent's active path.
+
+        With ``continue_motion`` the new trajectory starts from the agent's
+        velocity state (:meth:`continuation_velocity`), else from rest. The
+        velocity state is then the new trajectory's start, not the motion it
+        replaced, so a replacement later in this step (``brake()``, another
+        goal) continues from the right speed.
+        """
+        if self._sim_core is None:
+            raise RuntimeError(f"{type(self).__name__} must be attached to a sim_core before set_path.")
+        idx = self._agent_index[id(agent)]
+        initial_velocity = self.continuation_velocity(agent) if continue_motion else None
+        self._begin_row_path(idx, agent, request, float(self._sim_core.sim_time), initial_velocity)
+        agent._current_velocity[:] = self._row_start_velocity(idx)
+        agent._current_angular_velocity = 0.0
+
+    def _begin_row_path(
+        self, idx: int, agent: "Agent", request: PathRequest, now: float, initial_velocity: Optional[np.ndarray]
+    ) -> None:
+        """Set row ``idx``'s path and start its first trajectory at ``now`` from
+        ``initial_velocity`` (``None``: from rest). Subclasses implement it."""
+        raise NotImplementedError
+
+    def _row_start_velocity(self, idx: int) -> np.ndarray:
+        """World-frame velocity row ``idx``'s trajectory starts with.
+
+        The base never moves a row; subclasses that do override this.
+        """
+        return np.zeros(3)
+
+    def _row_finished(self, idx: int) -> None:
+        """The row's path has ended (the agent is at rest): start its pending path, if any.
+
+        Subclasses call this right after setting a row IDLE and clearing its
+        ``_is_moving`` flag.
+        """
+        agent = self._agents[idx]
+        key = id(agent)
+        self._braking.discard(key)
+        request = self._pending.pop(key, None)
+        if request is None:
+            return
+        agent._is_moving = True
+        self._start_row_path(agent, request, continue_motion=False)
 
     def synchronized_cancel_path(self, agent: "Agent") -> None:
         """Cancel one path without racing a concurrent simulation step."""
         with self._state_lock:
-            idx = self._agent_index.get(id(agent))
+            key = id(agent)
+            self._drop_pending(agent, "the agent was stopped")
+            idx = self._agent_index.get(key)
             if idx is not None:
                 self._on_cancel_path(idx)
 
@@ -267,24 +441,27 @@ class BatchKinematicController(Controller):
 
         1. Fill ``self._pos_buf`` and ``self._orn_buf`` with new poses for all
            agents.
-        2. Fill ``self._moved_mask`` with True for agents whose pose changed.
+        2. Fill ``self._moved_mask`` with True for agents whose pose changed,
+           and ``self._lin_vel_buf`` / ``self._ang_vel_buf`` with their
+           profile velocity at the step's time.
         3. Call ``self._apply_phase1()`` to write the moved rows back to sim.
 
         Returns:
             ``self._moved_mask`` — a (N,) boolean array.
         """
 
-    def _apply_phase1(self, dt: float = 0.0) -> None:
+    def _apply_phase1(self, dt: Optional[float] = None) -> None:  # dt: unused, kept for subclass callers
         """Write the rows flagged in ``self._moved_mask`` back to sim via the
-        buffered batch API ``sim_core.set_poses``, and refresh each moved agent's
-        reported velocity.
+        buffered batch API ``sim_core.set_poses``, and set each moved agent's
+        velocity state.
 
-        Batch controllers otherwise never set ``_current_velocity`` /
-        ``_current_angular_velocity``, so ``RobotHandler`` would publish zero
-        odometry/diagnostics velocity for moving robots (unlike the per-agent
-        controllers). When ``dt > 0`` we derive linear/yaw velocity from the
-        cached pre-update pose → new pose for the moved rows, and zero the
-        velocity of agents that stopped this step.
+        The velocity is the row's profile velocity at the step's time
+        (``self._lin_vel_buf`` / ``self._ang_vel_buf``), as the per-agent
+        controllers report the trajectory's, so ``RobotHandler`` odometry and a
+        goal replaced mid-motion read the same state either way. Agents that
+        stopped this step get zero. ``dt`` is not used: the velocity comes
+        from the profile, not from the pose change over the step. The
+        parameter stays so subclasses that still pass it keep working.
 
         No-op when no agents moved (and none just stopped) or no sim_core attached.
         """
@@ -305,19 +482,10 @@ class BatchKinematicController(Controller):
         if not bool(mask.any()):
             return
 
-        # Per-agent velocity from the cached (pre-update) pose → new pose. The
-        # agent's pose cache still holds the old pose because set_poses() runs
-        # afterwards. get_pose() is cached for kinematic agents (no PyBullet call).
-        if dt > 0.0:
-            inv_dt = 1.0 / dt
-            for i in np.flatnonzero(mask):
-                ag = self._agents[i]
-                old = ag.get_pose()
-                np.subtract(self._pos_buf[i], old.position, out=ag._current_velocity)
-                ag._current_velocity *= inv_dt
-                new_yaw = p.getEulerFromQuaternion(tuple(self._orn_buf[i]))[2]
-                dyaw = (new_yaw - old.yaw + math.pi) % (2.0 * math.pi) - math.pi
-                ag._current_angular_velocity = dyaw * inv_dt
+        for i in np.flatnonzero(mask):
+            ag = self._agents[i]
+            ag._current_velocity[:] = self._lin_vel_buf[i]
+            ag._current_angular_velocity = float(self._ang_vel_buf[i])
 
         # set_poses accepts a Sequence[int] for object_ids; passing a NumPy
         # boolean-indexed view of int64 ids is cheap (no Python loop).

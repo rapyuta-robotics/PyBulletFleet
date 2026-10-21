@@ -25,8 +25,9 @@ Design rationale
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
-from typing import Any, Dict, List, Optional
+from dataclasses import asdict, dataclass, fields
+from enum import Enum
+from typing import Any, Dict, List, Optional, Type, TypeVar
 
 import numpy as np
 
@@ -38,7 +39,7 @@ from pybullet_fleet.geometry import (
     is_scalar,
     projected_axis_limit,
 )
-from pybullet_fleet.types import MovementDirection
+from pybullet_fleet.types import GoalReplacement, MovementDirection
 
 
 @dataclass
@@ -75,8 +76,16 @@ class ControllerParams:
         navigation_2d: When ``True``, pose-control trajectories preserve the
             current ``z`` coordinate (XY-plane navigation). ``None`` = not
             explicitly set (treated as ``False`` by all controllers).
-        default_direction: Default movement direction for ``set_path``.
-            Only meaningful for differential-drive controllers.
+        default_direction: Default movement direction for ``set_path``, a
+            :class:`~pybullet_fleet.types.MovementDirection` or its string
+            value. Only meaningful for differential-drive controllers.
+        goal_replacement: What a moving agent does with a new path it cannot
+            reach from its current motion within these limits -- a
+            :class:`~pybullet_fleet.types.GoalReplacement` or its string value
+            (``"brake"``, ``"reject"``, ``"wait_complete"``, ``"immediate"``).
+            ``None`` → framework default, ``"brake"`` unless changed (see
+            :data:`pybullet_fleet._defaults.CONTROLLER`, overridable with the
+            ``PBF_CONTROLLER_GOAL_REPLACEMENT`` environment variable).
     """
 
     max_linear_vel: Optional[ScalarOrAxes] = None
@@ -87,6 +96,28 @@ class ControllerParams:
     cmd_vel_timeout: Optional[float] = None
     navigation_2d: Optional[bool] = None
     default_direction: MovementDirection = MovementDirection.FORWARD
+    goal_replacement: Optional[GoalReplacement] = None
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # The enum fields take the enum or its string value on every
+        # assignment -- construction (directly, from_dict, YAML) and later,
+        # e.g. ``agent.controller_params.goal_replacement = "reject"`` -- and
+        # are stored as the enum; an unknown value fails there, not later.
+        # as_config() writes the values.
+        if name == "default_direction":
+            value = _parse_enum(MovementDirection, value, name)
+        elif name == "goal_replacement" and value is not None:
+            value = parse_goal_replacement(value)
+        super().__setattr__(name, value)
+
+    def as_config(self) -> Dict[str, Any]:
+        """The fields as plain data -- enums as their string values -- for
+        YAML, checkpoints and :meth:`from_dict`."""
+        config = asdict(self)
+        for name, value in config.items():
+            if isinstance(value, Enum):
+                config[name] = value.value
+        return config
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "ControllerParams":
@@ -94,13 +125,10 @@ class ControllerParams:
 
         Unknown keys are silently dropped so that subclass-specific extras
         (e.g. ``wheel_separation``) can coexist with shared params inside a
-        single YAML block. Strings in ``default_direction`` are coerced to
-        the :class:`MovementDirection` enum.
+        single YAML block. Enum fields take their string values.
         """
         valid = {f.name for f in fields(cls)}
         kwargs = {k: v for k, v in config.items() if k in valid}
-        if isinstance(kwargs.get("default_direction"), str):
-            kwargs["default_direction"] = MovementDirection(kwargs["default_direction"])
         return cls(**kwargs)
 
     # ------------------------------------------------------------------
@@ -123,6 +151,11 @@ class ControllerParams:
 
     def _eff_angular_accel(self) -> ScalarOrAxes:
         return self.max_angular_accel if self.max_angular_accel is not None else _CTRL_D["max_angular_accel"]
+
+    def _eff_goal_replacement(self) -> GoalReplacement:
+        if self.goal_replacement is not None:
+            return self.goal_replacement
+        return parse_goal_replacement(_CTRL_D["goal_replacement"])
 
     def _eff_cmd_vel_timeout(self) -> float:
         return self.cmd_vel_timeout if self.cmd_vel_timeout is not None else _CTRL_D["cmd_vel_timeout"]
@@ -173,4 +206,25 @@ class ControllerParams:
         return float(a) if is_scalar(a) else float(as_axes(a)[2])  # type: ignore[arg-type]
 
 
-__all__: List[str] = ["ControllerParams", "ScalarOrAxes"]
+_EnumT = TypeVar("_EnumT", bound=Enum)
+
+
+def _parse_enum(kind: Type[_EnumT], value: Any, name: str) -> _EnumT:
+    """``kind`` from itself or its string value; ``ValueError`` naming the accepted ones."""
+    try:
+        return kind(value)
+    except ValueError:
+        accepted = ", ".join(repr(member.value) for member in kind)
+        raise ValueError(f"Unknown {name} {value!r}; expected one of {accepted}") from None
+
+
+def parse_goal_replacement(value: Any) -> GoalReplacement:
+    """A :class:`~pybullet_fleet.types.GoalReplacement` from itself or its string value.
+
+    Raises:
+        ValueError: for any other value, naming the accepted ones.
+    """
+    return _parse_enum(GoalReplacement, value, "goal_replacement")
+
+
+__all__: List[str] = ["ControllerParams", "ScalarOrAxes", "parse_goal_replacement"]

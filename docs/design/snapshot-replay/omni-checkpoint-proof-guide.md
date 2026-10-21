@@ -1,5 +1,7 @@
 # Run the single-omni checkpoint proof
 
+**Note (2026-10-19):** these values were recorded with an earlier step timing; a rerun reaches each row one step earlier. The current timing is described in "Which time a pose belongs to" in [two-phase-step.md](../../architecture/two-phase-step.md).
+
 ```{warning}
 Development proof only. This checkpoint format and restore procedure validate
 one fixed scenario; they are not a supported general save/load facility and

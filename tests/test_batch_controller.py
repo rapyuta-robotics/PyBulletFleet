@@ -247,7 +247,9 @@ class TestBatchOmniEquivalence:
     @pytest.mark.parametrize("goal_xyz", [(1.5, 0.0, 0.1), (0.0, 2.0, 0.1), (1.0, 1.0, 0.1)])
     def test_per_step_position_matches_omni(self, sim, goal_xyz):
         ref = _spawn_agent(sim, x=0.0, y=0.0, max_vel=1.2)
-        ref.set_path([Pose.from_xyz(*goal_xyz)], final_orientation_align=False)
+        # The same path on both sides: bc.set_path() adds no approach waypoint,
+        # and the zero-length one Agent.set_path() inserts costs a step.
+        ref.set_path([Pose.from_xyz(*goal_xyz)], final_orientation_align=False, auto_approach=False)
 
         mgr = _make_batch_manager(sim)
         bc = mgr.batch_controller
@@ -272,8 +274,9 @@ class TestBatchOmniIntegration:
         bc.set_path(a, [Pose.from_xyz(1.0, 0.0, 0.1)])
 
         sim.step_once()
-        pb_pos, _ = p.getBasePositionAndOrientation(a.object_id, physicsClientId=sim.client)
+        pb_pos, _ = p.getBasePositionAndOrientation(a.body_id, physicsClientId=sim.client)
         cache_pos = a.get_pose().position
+        assert cache_pos[0] > 0.0  # the first step moves the row
         assert pb_pos[0] == pytest.approx(cache_pos[0], abs=1e-9)
 
     def test_inactive_agents_dont_move(self, sim):

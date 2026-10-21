@@ -284,9 +284,14 @@ class SimulationRecorder:
     # ------------------------------------------------------------------
 
     def _capture_frame(self, sim_core: "MultiRobotSimulationCore", dt: float) -> None:
-        """Callback: capture one RGB frame from the simulation."""
+        """Callback: capture one RGB frame at the simulation's current time."""
+        self._capture_at(sim_core.sim_time)
+
+    def _capture_at(self, sim_time: float) -> None:
+        """Capture one RGB frame of the scene, taken at simulated time ``sim_time``."""
         if not self._recording:
             return
+        elapsed = sim_time - self._start_sim_time
 
         if self._time_base == "real":
             now = time.monotonic()
@@ -304,13 +309,11 @@ class SimulationRecorder:
             self._last_wall_capture = now
         else:
             # Duration check (sim-time)
-            if self._duration is not None:
-                elapsed = sim_core.sim_time - self._start_sim_time
-                if elapsed >= self._duration:
-                    self.stop()
-                    return
+            if self._duration is not None and elapsed >= self._duration:
+                self.stop()
+                return
 
-        view_matrix = self._compute_view_matrix(sim_core)
+        view_matrix = self._compute_view_matrix(elapsed)
 
         if self._camera_mode == "gui":
             # GUI mode: let PyBullet use the GUI camera directly.
@@ -320,7 +323,7 @@ class SimulationRecorder:
                 self._width,
                 self._height,
                 renderer=p.ER_BULLET_HARDWARE_OPENGL,
-                physicsClientId=sim_core.client,
+                physicsClientId=self._sim_core.client,
             )
         else:
             _, _, rgba, _, _ = p.getCameraImage(
@@ -329,7 +332,7 @@ class SimulationRecorder:
                 viewMatrix=view_matrix,
                 projectionMatrix=self._proj_matrix,
                 renderer=p.ER_TINY_RENDERER,
-                physicsClientId=sim_core.client,
+                physicsClientId=self._sim_core.client,
             )
         rgb = np.array(rgba, dtype=np.uint8).reshape(self._height, self._width, 4)[:, :, :3]
         self._frames.append(rgb)
@@ -356,8 +359,8 @@ class SimulationRecorder:
         self._auto_center = [center[0], center[1], 0.3]
         self._auto_extent = max_extent
 
-    def _compute_view_matrix(self, sim_core: "MultiRobotSimulationCore") -> List[float]:
-        """Compute the view matrix based on camera_mode.
+    def _compute_view_matrix(self, elapsed: float) -> List[float]:
+        """Compute the view matrix based on camera_mode, ``elapsed`` seconds into the recording.
 
         Note: ``"gui"`` mode is handled directly in :meth:`_capture_frame`
         (skips view/projection matrices entirely).
@@ -365,7 +368,7 @@ class SimulationRecorder:
         if self._camera_mode == "manual":
             return self._compute_manual_view()
         elif self._camera_mode == "orbit":
-            return self._compute_orbit_view(sim_core)
+            return self._compute_orbit_view(elapsed)
         else:  # auto
             return self._compute_auto_view()
 
@@ -387,13 +390,12 @@ class SimulationRecorder:
             )
         )
 
-    def _compute_orbit_view(self, sim_core: "MultiRobotSimulationCore") -> List[float]:
-        """Auto camera + horizontal orbit over the recording duration."""
+    def _compute_orbit_view(self, elapsed: float) -> List[float]:
+        """Auto camera + horizontal orbit, ``elapsed`` seconds into the recording."""
         cx, cy, cz = self._auto_center
         radius = self._auto_extent * 0.9
         cam_height = self._auto_extent * 0.7
 
-        elapsed = sim_core.sim_time - self._start_sim_time
         total_duration = self._duration if self._duration else 10.0
         progress = min(elapsed / total_duration, 1.0) if total_duration > 0 else 0.0
         yaw = self._start_yaw + math.radians(self._orbit_degrees) * progress

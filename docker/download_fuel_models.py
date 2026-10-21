@@ -13,8 +13,16 @@ Usage (during Docker build)::
     python3 docker/download_fuel_models.py
 
 Environment variables:
-    GZ_FUEL_CACHE_DIR  Override cache directory (default: ``~/.gz/fuel``)
-    FUEL_MAPS_DIR      Override maps search directory
+    GZ_FUEL_CACHE_DIR      Override cache directory (default: ``~/.gz/fuel``)
+    FUEL_MAPS_DIR          Override maps search directory
+    ALLOW_NO_FUEL_MODELS   Set to ``1`` to accept worlds that reference no Fuel
+                           models (an empty cache) instead of failing. Missing
+                           world files fail regardless.
+
+The cache directory is always created, so a Dockerfile that copies it never
+fails on an empty result. Finding no world files, or worlds that name no Fuel
+models, fails the build with an explanation instead: the bridge's demo worlds
+then load without their meshes, which is not what the image is for.
 """
 
 import glob
@@ -170,14 +178,45 @@ def _symlink_textures(model_version_dir: str) -> None:
             pass  # best-effort; skip on failure
 
 
+def count_model_uris(maps_dir: str) -> int:
+    """Count ``model://<name>`` URIs in the world files: models referenced by name only."""
+    count = 0
+    for world_file in glob.glob(os.path.join(maps_dir, "**", "*.world"), recursive=True):
+        try:
+            count += sum(
+                1 for uri_el in ET.parse(world_file).iter("uri") if (uri_el.text or "").strip().startswith("model://")
+            )
+        except Exception:
+            pass
+    return count
+
+
 def main():
+    # Always leave the cache directory behind, even empty, so that copying it
+    # out of a build stage cannot fail on a missing path.
+    os.makedirs(FUEL_CACHE, exist_ok=True)
+    allow_empty = os.environ.get("ALLOW_NO_FUEL_MODELS", "") == "1"
+
     print(f"Scanning world files in {MAPS_DIR} ...")
+    worlds = glob.glob(os.path.join(MAPS_DIR, "**", "*.world"), recursive=True)
+    if not worlds:
+        # Always fatal, override or not: an image without its demo worlds is the
+        # base-image regression this check exists to catch.
+        print(f"ERROR: no .world files under {MAPS_DIR}. Has the base image moved its maps?", file=sys.stderr)
+        return 1
+
     models = find_fuel_models(MAPS_DIR)
-    print(f"Found {len(models)} unique Fuel models")
+    print(f"Found {len(models)} unique Fuel models in {len(worlds)} world files")
 
     if not models:
-        print("No Fuel models to download.")
-        return 0
+        by_name = count_model_uris(MAPS_DIR)
+        print(
+            f"ERROR: the world files name no Fuel models ({by_name} model:// URIs instead). "
+            "The base image's worlds no longer reference Fuel URLs, so there is nothing to "
+            "cache; pin a base image whose worlds do, or set ALLOW_NO_FUEL_MODELS=1.",
+            file=sys.stderr,
+        )
+        return 0 if allow_empty else 1
 
     print(f"Downloading {len(models)} models to {FUEL_CACHE} ...")
     ok, fail = 0, 0

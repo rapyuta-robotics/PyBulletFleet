@@ -210,9 +210,10 @@ class ReplaySession:
         raise ReplayError("unsupported", message)
 
     def _apply_inputs(self, step_inputs: list[dict]) -> None:
-        # Existing sim_time labels step starts. Canonical v1 time avoids accumulated
-        # rounding drift without changing time semantics for ordinary simulations.
-        self._sim.sim_time = self._expected_step * self._initial["pbf"]["timestep"]
+        # Between steps the clock is the completed step's time. Replay snaps it
+        # to the canonical step * timestep so accumulated rounding cannot drift
+        # from the recording; ordinary simulations keep their accumulated clock.
+        self._sim._elapsed_sim_time = self._expected_step * self._initial["pbf"]["timestep"]
         for order, command in enumerate(step_inputs):
             self._journal("command_intent", order=order, input=command)
             self._dispatcher.allowed_names = None if command["allowed_names"] is None else frozenset(command["allowed_names"])

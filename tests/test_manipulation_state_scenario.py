@@ -21,7 +21,7 @@ def test_manipulation_state_and_entity_lifecycle():
     samples = result["observations"]
     assert result["final_stage"] == "done"
     assert tuple(samples) == ("before_spawn", "CP1", "CP2", "CP3", "CP4", "after_delete")
-    assert [samples[name]["step"] for name in samples] == [0, 3, 16, 21, 28, 29]
+    assert [samples[name]["step"] for name in samples] == [0, 3, 15, 20, 27, 28]
     assert all(sample["sim_time"] == pytest.approx(sample["step"] * 0.1) for sample in samples.values())
 
     assert not samples["before_spawn"]["box_present"]
@@ -42,8 +42,8 @@ def test_manipulation_state_and_entity_lifecycle():
             "operation": "delete",
             "phase": "POST_STEP",
             "counter_during_callback": 28,
-            "completed_step": 29,
-            "sim_time": 2.9,
+            "completed_step": 28,
+            "sim_time": 2.8,
             "object_id": box_id,
         },
     ]

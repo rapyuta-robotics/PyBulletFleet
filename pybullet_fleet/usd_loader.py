@@ -697,8 +697,7 @@ def _expand_face_varying_uvs(
                     remapped_vertices.append(vertices[point_index])
                     uv = values[key[1]]
                     remapped_uvs.append((float(uv[0]), float(uv[1])))
-                    if remapped_normals is not None:
-                        assert normals is not None
+                    if remapped_normals is not None and normals is not None:  # set together
                         remapped_normals.append(normals[point_index])
                 remapped_triangle.append(output_index)
             remapped_triangles.append(tuple(remapped_triangle))

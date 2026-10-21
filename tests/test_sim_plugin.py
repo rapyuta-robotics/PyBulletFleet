@@ -315,7 +315,7 @@ class TestPluginConfigLoading:
         assert isinstance(plugins[0], LifecyclePlugin)
         assert plugins[0].config == {"key": "value"}
         assert plugins[0].frequency is None
-        assert plugins[0]._accumulator == 0.0
+        assert plugins[0]._frequency_gate.frequency is None
         p.disconnect(sim.client)
 
     def test_load_with_frequency(self):

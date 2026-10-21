@@ -21,14 +21,22 @@ within ~1e-6 per step.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 
-from pybullet_fleet._tpi import build_tpi, extract_phase_params, trapezoid_distance
+from pybullet_fleet._replan import PathRequest
+from pybullet_fleet._tpi import (
+    build_tpi,
+    build_tpi_from_speed,
+    extract_phase_params,
+    trapezoid_distance,
+    trapezoid_speed,
+)
 from pybullet_fleet.controllers.batch_base import BatchKinematicController
-from pybullet_fleet.geometry import Pose, quat_angle_between, quat_slerp_batch, rotate_vector
+from pybullet_fleet.geometry import Pose, quat_angle_between, quat_slerp_batch, rotate_vector, rotation_axis_z
 from pybullet_fleet.logging_utils import get_lazy_logger
+from pybullet_fleet.types import MovementDirection
 
 if TYPE_CHECKING:
     from pybullet_fleet.agent import Agent
@@ -62,6 +70,9 @@ class BatchOmniController(BatchKinematicController):
         #: Braking scalar per row, kept apart from _accel_buf so a profile
         #: that brakes at a different rate is integrated with its own value.
         self._decel_buf: np.ndarray = np.zeros((0,), dtype=np.float64)
+        #: Speed each row's translation started at: a goal set mid-motion
+        #: continues from it (see build_tpi_from_speed). Zero from rest.
+        self._v0_buf: np.ndarray = np.zeros((0,), dtype=np.float64)
         self._target_orientation: np.ndarray = np.zeros((0, 4), dtype=np.float64)
 
         # FINAL_ROTATE-phase state arrays (slerp rotation at end of path).
@@ -71,6 +82,8 @@ class BatchOmniController(BatchKinematicController):
         self._rot_snap_quat: np.ndarray = np.zeros((0, 4), dtype=np.float64)
         self._rot_dot: np.ndarray = np.zeros((0,), dtype=np.float64)
         self._rot_theta0: np.ndarray = np.zeros((0,), dtype=np.float64)
+        #: z of the rotation's world axis (+1 counter-clockwise): the yaw rate's sign.
+        self._rot_axis_z: np.ndarray = np.zeros((0,), dtype=np.float64)
         self._rot_sin_theta0: np.ndarray = np.zeros((0,), dtype=np.float64)
         self._rot_total_angle: np.ndarray = np.zeros((0,), dtype=np.float64)
         self._rot_t_accel: np.ndarray = np.zeros((0,), dtype=np.float64)
@@ -101,6 +114,7 @@ class BatchOmniController(BatchKinematicController):
         self._t_total = self._resize_rows(self._t_total, n)
         self._accel_buf = self._resize_rows(self._accel_buf, n)
         self._decel_buf = self._resize_rows(self._decel_buf, n)
+        self._v0_buf = self._resize_rows(self._v0_buf, n)
         self._p_start = self._resize_rows(self._p_start, n)
         self._displacement = self._resize_rows(self._displacement, n)
         self._target_orientation = self._resize_rows(self._target_orientation, n)
@@ -111,6 +125,7 @@ class BatchOmniController(BatchKinematicController):
         self._rot_snap_quat = self._resize_rows(self._rot_snap_quat, n)
         self._rot_dot = self._resize_rows(self._rot_dot, n)
         self._rot_theta0 = self._resize_rows(self._rot_theta0, n)
+        self._rot_axis_z = self._resize_rows(self._rot_axis_z, n)
         self._rot_sin_theta0 = self._resize_rows(self._rot_sin_theta0, n)
         self._rot_total_angle = self._resize_rows(self._rot_total_angle, n)
         self._rot_t_accel = self._resize_rows(self._rot_t_accel, n)
@@ -158,10 +173,12 @@ class BatchOmniController(BatchKinematicController):
             self._t_total,
             self._accel_buf,
             self._decel_buf,
+            self._v0_buf,
             self._align_final_orient,
             self._rot_t_start,
             self._rot_dot,
             self._rot_theta0,
+            self._rot_axis_z,
             self._rot_sin_theta0,
             self._rot_total_angle,
             self._rot_t_accel,
@@ -188,7 +205,21 @@ class BatchOmniController(BatchKinematicController):
     # Public API — set a path for an already-registered agent
     # ------------------------------------------------------------------ #
 
-    def set_path(self, agent: "Agent", path: List[Pose], final_orientation_align: bool = True, **kwargs) -> None:
+    def _translating(self, idx: int) -> bool:
+        return bool(self._phase[idx] == _PHASE_FORWARD)
+
+    def _replacement_obstacle(
+        self, agent: "Agent", path: List[Pose], direction: Optional[MovementDirection] = None
+    ) -> Optional[str]:
+        """Why ``path`` cannot continue the current motion, or ``None`` -- the same rule as
+        :meth:`OmniController._replacement_obstacle <pybullet_fleet.controller.OmniController._replacement_obstacle>`.
+
+        The motion is :meth:`continuation_velocity`: the agent's velocity
+        while a translation is under way.
+        """
+        return self._omni_obstacle(agent, path)
+
+    def set_path(self, agent: "Agent", path: List[Pose], final_orientation_align: bool = True, **kwargs) -> bool:
         """Set a waypoint path.
 
         Args:
@@ -196,26 +227,58 @@ class BatchOmniController(BatchKinematicController):
             path: Non-empty list of goal poses.
             final_orientation_align: If ``True`` (default), rotate to match
                 ``path[-1].orientation`` after reaching the last waypoint.
+
+        Returns:
+            ``False`` when the path is refused (``goal_replacement="reject"``
+            only), with the current motion and path untouched; ``True`` once it
+            is set or held to start later. See
+            :meth:`KinematicController.set_path <pybullet_fleet.controller.KinematicController.set_path>`.
         """
         if self._sim_core is None:
             raise RuntimeError("BatchOmniController must be attached to a sim_core before set_path.")
         if not path:
             raise ValueError("path must be a non-empty list of Poses.")
-        idx = self._agent_index.get(id(agent))
-        if idx is None:
+        if self._agent_index.get(id(agent)) is None:
             raise KeyError(f"Agent {agent} is not registered with this batch controller.")
+        return self._replace_path(
+            agent,
+            PathRequest(path=list(path), final_orientation_align=final_orientation_align, direction=None),
+            preempt=bool(kwargs.get("preempt", False)),
+        )
 
+    def _begin_row_path(
+        self, idx: int, agent: "Agent", request: PathRequest, now: float, initial_velocity: Optional[np.ndarray]
+    ) -> None:
+        path = request.path
         self._paths[idx] = list(path)
         self._wp_index[idx] = 0
-        if final_orientation_align:
+        if request.final_orientation_align:
             self._align_final_orient[idx] = True
             self._final_orient_target_quat[idx] = np.asarray(path[-1].orientation, dtype=np.float64)
         else:
             self._align_final_orient[idx] = False
-        self._begin_waypoint(idx, agent, path[0], float(self._sim_core.sim_time))
+        self._begin_waypoint(idx, agent, path[0], now, initial_velocity)
 
-    def _begin_waypoint(self, idx: int, agent: "Agent", goal: Pose, sim_time: float) -> None:
-        """Initialise trajectory state at row ``idx`` for a single goal pose."""
+    def _row_start_velocity(self, idx: int) -> np.ndarray:
+        total = float(self._total_distance[idx])
+        if self._phase[idx] != _PHASE_FORWARD or total <= 1e-9:
+            return np.zeros(3)
+        return self._displacement[idx] / total * float(self._v0_buf[idx])
+
+    def _begin_waypoint(
+        self,
+        idx: int,
+        agent: "Agent",
+        goal: Pose,
+        sim_time: float,
+        initial_velocity: Optional[np.ndarray] = None,
+    ) -> None:
+        """Initialise trajectory state at row ``idx`` for a single goal pose.
+
+        ``initial_velocity`` (world frame) is the agent's motion when a new
+        path replaces the current one; the translation starts from its
+        component toward the goal. ``None`` (later waypoints) starts from rest.
+        """
         current = agent.get_pose()
         start = np.asarray(current.position, dtype=np.float64)
         goal_pos = np.asarray(goal.position, dtype=np.float64)
@@ -241,7 +304,11 @@ class BatchOmniController(BatchKinematicController):
             amax = params.scalar_max_linear_accel()
             dmax = params.scalar_max_linear_decel()
 
-        tpi = build_tpi(p0=0.0, pe=total, vmax=vmax, accel=amax, t0=sim_time, decel=dmax)
+        v0 = 0.0
+        if initial_velocity is not None and total > 1e-9:
+            # Signed, as OmniController: negative is moving away from the goal.
+            v0 = float(np.dot(initial_velocity, disp / total))
+        tpi = build_tpi_from_speed(p0=0.0, pe=total, vmax=vmax, accel=amax, t0=sim_time, v0=v0, decel=dmax)
         t_accel, t_const, t_total_rel, accel_eff, decel_eff = extract_phase_params(tpi)
 
         self._phase[idx] = _PHASE_FORWARD
@@ -254,6 +321,7 @@ class BatchOmniController(BatchKinematicController):
         self._t_total[idx] = t_total_rel
         self._accel_buf[idx] = accel_eff
         self._decel_buf[idx] = decel_eff
+        self._v0_buf[idx] = float(tpi.v0)
         # Omni does not rotate during translation: hold current orientation.
         self._target_orientation[idx] = current.orientation
 
@@ -270,6 +338,7 @@ class BatchOmniController(BatchKinematicController):
             self._moved_mask[idx] = True
             self._phase[idx] = _PHASE_IDLE
             agent._is_moving = False
+            self._row_finished(idx)
             return
 
         dot = float(np.dot(start_quat, target_quat))
@@ -296,6 +365,7 @@ class BatchOmniController(BatchKinematicController):
         self._rot_snap_quat[idx] = target_quat  # un-flipped for snap
         self._rot_dot[idx] = dot
         self._rot_theta0[idx] = theta0
+        self._rot_axis_z[idx] = float(rotation_axis_z(start_quat, target_for_slerp))
         self._rot_sin_theta0[idx] = sin_theta0
         self._rot_total_angle[idx] = angle
         self._rot_t_accel[idx] = t_acc
@@ -322,6 +392,7 @@ class BatchOmniController(BatchKinematicController):
                 self._paths[idx] = []
                 self._wp_index[idx] = 0
                 self._agents[idx]._is_moving = False
+                self._row_finished(idx)
 
     def _on_cancel_path(self, idx: int) -> None:
         """Reset phase to IDLE immediately (called by agent.stop())."""
@@ -352,10 +423,11 @@ class BatchOmniController(BatchKinematicController):
             # Nothing active. Still flush once if agents moved last step, so
             # _apply_phase1 can zero the velocity of any that just stopped.
             if self._was_moved.any():
-                self._apply_phase1(dt)
+                self._apply_phase1()
             return self._moved_mask
 
-        # Match OmniController._apply_pose semantics: evaluates at sim_core.sim_time.
+        # Match OmniController._apply_pose semantics: evaluates at sim_core.sim_time,
+        # the time of the state this step computes.
         now = float(sim_core.sim_time)
 
         # ----- TRANSLATE phase -----
@@ -371,18 +443,27 @@ class BatchOmniController(BatchKinematicController):
                 self._accel_buf,
                 self._total_distance,
                 self._decel_buf,
+                self._v0_buf,
             )
             total_dist_safe = np.where(self._total_distance > 1e-9, self._total_distance, 1.0)
-            ratio = np.clip(distance / total_dist_safe, 0.0, 1.0)
+            # No lower clip: a trajectory started moving away from its goal
+            # (negative v0) runs behind its start before turning around.
+            ratio = np.minimum(distance / total_dist_safe, 1.0)
             new_pos = self._p_start + ratio[:, None] * self._displacement
 
             completed_trans = active & (tau >= self._t_total)
             if completed_trans.any():
                 new_pos[completed_trans] = self._p_start[completed_trans] + self._displacement[completed_trans]
                 completed[completed_trans] = True
+            # Zero once the profile has ended (the arrival step).
+            speed = trapezoid_speed(
+                tau, self._t_accel, self._t_const, self._t_total, self._accel_buf, self._decel_buf, self._v0_buf
+            )
 
             self._pos_buf[active] = new_pos[active]
             self._orn_buf[active] = self._target_orientation[active]
+            self._lin_vel_buf[active] = (self._displacement / total_dist_safe[:, None] * speed[:, None])[active]
+            self._ang_vel_buf[active] = 0.0
             self._moved_mask[active] = True
 
         # ----- FINAL_ROTATE phase -----
@@ -410,6 +491,11 @@ class BatchOmniController(BatchKinematicController):
             )
             self._orn_buf[rm] = new_quat
             self._pos_buf[rm] = self._rot_p_hold[rm]
+            angular_speed = trapezoid_speed(
+                tau, self._rot_t_accel[rm], self._rot_t_const[rm], self._rot_t_total[rm], self._rot_accel[rm]
+            )
+            self._lin_vel_buf[rm] = 0.0
+            self._ang_vel_buf[rm] = angular_speed * self._rot_axis_z[rm]
             self._moved_mask[rm] = True
             done = tau >= self._rot_t_total[rm]
             if done.any():
@@ -420,7 +506,7 @@ class BatchOmniController(BatchKinematicController):
                 completed_rot[done_rows] = True
 
         # Write to sim (and refresh per-agent reported velocities).
-        self._apply_phase1(dt)
+        self._apply_phase1()
 
         # Advance translate completions.
         if completed.any():
@@ -433,6 +519,7 @@ class BatchOmniController(BatchKinematicController):
                 ii = int(i)
                 self._phase[ii] = _PHASE_IDLE
                 self._agents[ii]._is_moving = False
+                self._row_finished(ii)
 
         return self._moved_mask
 

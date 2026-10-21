@@ -142,10 +142,134 @@ agent.controller_params.max_linear_decel = [3.0, 3.0, 0.0]
 | `cmd_vel_timeout` | Velocity-command watchdog in seconds; `0.0` disables it. |
 | `navigation_2d` | `True` preserves current Z for pose trajectories. `None` and `False` follow goal Z. |
 | `default_direction` | Default `set_path()` direction for differential drive. |
+| `goal_replacement` | What a moving agent does with a goal it cannot reach from its current motion: `"brake"` (default), `"immediate"`, `"reject"` or `"wait_complete"`. See [A new goal while moving](#a-new-goal-while-moving). |
 
 All numeric values default to `None`, which resolves to the framework default
 when used. This lets a manager provide only the fields that an agent did not
 set explicitly.
+
+### A new goal while moving
+
+An agent (omnidirectional or differential, per-agent or batched) that gets a
+new goal or path while it is moving continues its motion when it can: the
+straight-line trajectory to the first waypoint starts from its current
+velocity, signed along the line. A goal ahead keeps the speed; a goal behind
+is reached by slowing, reversing and driving back. Slowing down before a
+reversal is the trajectory's first phase, which uses `max_linear_accel`. A
+differential agent continues only into a goal that needs no turn: one straight
+ahead, or straight behind with `direction="auto"` or `"backward"`.
+
+The agent cannot continue into a goal inside the braking distance at
+`max_linear_decel`, where the agent is, off the line of motion (a
+straight-line trajectory cannot carry the sideways velocity), or, for
+differential drive, one that needs a turn in place. `goal_replacement`
+decides what happens then:
+
+| `goal_replacement` | A goal the agent cannot continue into | A goal it can continue into |
+|--------------------|---------------------------------------|-----------------------------|
+| `"brake"` (default) | Brakes along the current motion at `max_linear_decel`, then starts the goal from rest. | Taken at once. |
+| `"immediate"` | Starts the goal from rest at once: the velocity drops to zero in one step, ignoring `max_linear_decel`. | Taken at once. |
+| `"reject"` | Refused: `set_path()` / `set_goal_pose()` return `False` and the current motion and path continue unchanged. | Taken at once. |
+| `"wait_complete"` | Held until the current path is finished, then started from rest. | Also held: the current goal has priority. |
+
+In short: a goal the agent can continue into -- further along its line of
+motion, beyond the braking distance, such as an extended target -- is always
+taken at once and keeps the speed, whatever the mode (`reject` included); the
+mode decides only what happens to the other goals. The exception is
+`wait_complete`, which holds every goal while a path is in progress.
+
+To stop at a point further along the line, send that point as the goal: the
+agent continues into it and comes to rest there (if it is beyond the braking
+distance; a closer one is a goal it cannot continue into). To stop at points on
+the way and then go on, send them together as the waypoints of one path: every
+waypoint is reached at rest.
+
+At rest every goal is taken at once. A held goal (`brake`, `wait_complete`) is
+accepted: `set_path()` returns `True`. Only the latest one is kept; a newer
+request replaces it, and `stop()`, `brake()` or a velocity command drops it.
+Each drop is logged at INFO with the agent, the goal and the reason. Under a
+velocity command there is no path to wait for, so `wait_complete` brakes like
+`brake`.
+
+Set the mode for one agent, for every agent of a manager, or globally:
+
+```python
+from pybullet_fleet.types import GoalReplacement
+
+# One agent (the string value "reject" works too).
+agent.controller_params.goal_replacement = GoalReplacement.REJECT
+
+# Every agent of a manager that does not set its own.
+manager = AgentManager(sim_core=sim, fleet_controller={"type": "batch_omni", "goal_replacement": "wait_complete"})
+```
+
+The global default is `_defaults.CONTROLLER["goal_replacement"]`, which the
+`PBF_CONTROLLER_GOAL_REPLACEMENT` environment variable overrides (see
+[Defaults and environment overrides](../configuration/reference.md#defaults-and-environment-overrides)).
+
+The mode is read for each request, so a change applies to the paths requested
+after it, also while the agent moves. A path already held keeps the decision
+made when it was held: it starts once the agent stops (or the current path
+ends), whatever the mode is by then.
+
+Under `reject`, check the result:
+
+```python
+if not agent.set_goal_pose(goal):  # True when taken, False when refused
+    print(agent.path_rejection([goal]))  # the reason, e.g. "goal is off the line of motion"
+```
+
+`MoveAction`, `PatrolController`, `RandomWalkController` and the behaviour
+tree's `NavigateTo` retry a refused goal on their next update;
+`FleetCommandDispatcher.navigate()` reports it in the ack's `rejected` map. In
+the other modes nothing is refused, so these never retry.
+
+### Stopping: `brake()` and `stop()`
+
+`agent.brake()` brings a moving agent (per-agent or batched) to rest at
+`max_linear_decel`: it keeps its line of motion and heading, drops the rest of
+its path and any held goal, and stops at the braking point `|v|^2 / (2 * decel)`
+ahead. A differential agent brakes straight along its heading, backwards when
+it is backing up. `brake()` also ends a velocity command the same way, and it
+does not wait for the current path under `wait_complete`. It returns `False`
+when there is nothing to brake (at rest, fixed base). `agent.stop()` is the
+immediate stop: the velocity is zeroed at once.
+
+To change direction mid-motion, send the new goal: under the default `brake`
+mode the agent brakes and then heads for it. `brake()` leaves the action queue
+alone; a `MoveAction` still executing ends `CANCELLED` once the agent is at
+rest, short of its path's end, and the queue moves on to the next action, so
+call `clear_actions()` first to drop the queued actions too.
+
+#### Custom braking
+
+The controller does the braking: `agent.brake()` calls the controller's
+`brake(agent)`, and the `brake` replacement mode runs the same braking before
+the held goal. Both use one method, `braking_request(agent)`, which returns the
+path request that brings the agent to rest (`None` at rest). Override it in a
+`KinematicController` subclass (or a batch controller) to brake differently,
+for example to stop at a set point further ahead:
+
+```python
+from pybullet_fleet.controller import OmniController
+
+
+class CarefulOmni(OmniController):
+    def braking_request(self, agent):
+        request = super().braking_request(agent)  # stop |v|^2 / (2 * decel) ahead
+        ...  # adjust or replace request.path
+        return request
+
+
+agent.set_controller(CarefulOmni(params))
+```
+
+The request starts from the current motion, so it must continue it: on its
+line, no closer than the braking distance. One that does not is not started;
+the controller logs a warning naming the agent and brakes at the default
+braking point instead. A
+controller that does not override `brake()` from the base `Controller` cannot
+brake, and `agent.brake()` returns `False`.
 
 ## Batch controllers
 
