@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, List, Optional
 
 import numpy as np
 
-from pybullet_fleet._replan import PathRequest, replacement_rejection
+from pybullet_fleet._replan import PathRequest
 from pybullet_fleet._tpi import (
     build_tpi,
     build_tpi_from_speed,
@@ -34,7 +34,7 @@ from pybullet_fleet._tpi import (
     trapezoid_speed,
 )
 from pybullet_fleet.controllers.batch_base import BatchKinematicController
-from pybullet_fleet.geometry import Pose, quat_angle_between, quat_slerp_batch, rotate_vector
+from pybullet_fleet.geometry import Pose, quat_angle_between, quat_slerp_batch, rotate_vector, rotation_axis_z
 from pybullet_fleet.logging_utils import get_lazy_logger
 from pybullet_fleet.types import MovementDirection
 
@@ -82,6 +82,8 @@ class BatchOmniController(BatchKinematicController):
         self._rot_snap_quat: np.ndarray = np.zeros((0, 4), dtype=np.float64)
         self._rot_dot: np.ndarray = np.zeros((0,), dtype=np.float64)
         self._rot_theta0: np.ndarray = np.zeros((0,), dtype=np.float64)
+        #: z of the rotation's world axis (+1 counter-clockwise): the yaw rate's sign.
+        self._rot_axis_z: np.ndarray = np.zeros((0,), dtype=np.float64)
         self._rot_sin_theta0: np.ndarray = np.zeros((0,), dtype=np.float64)
         self._rot_total_angle: np.ndarray = np.zeros((0,), dtype=np.float64)
         self._rot_t_accel: np.ndarray = np.zeros((0,), dtype=np.float64)
@@ -123,6 +125,7 @@ class BatchOmniController(BatchKinematicController):
         self._rot_snap_quat = self._resize_rows(self._rot_snap_quat, n)
         self._rot_dot = self._resize_rows(self._rot_dot, n)
         self._rot_theta0 = self._resize_rows(self._rot_theta0, n)
+        self._rot_axis_z = self._resize_rows(self._rot_axis_z, n)
         self._rot_sin_theta0 = self._resize_rows(self._rot_sin_theta0, n)
         self._rot_total_angle = self._resize_rows(self._rot_total_angle, n)
         self._rot_t_accel = self._resize_rows(self._rot_t_accel, n)
@@ -175,6 +178,7 @@ class BatchOmniController(BatchKinematicController):
             self._rot_t_start,
             self._rot_dot,
             self._rot_theta0,
+            self._rot_axis_z,
             self._rot_sin_theta0,
             self._rot_total_angle,
             self._rot_t_accel,
@@ -201,16 +205,8 @@ class BatchOmniController(BatchKinematicController):
     # Public API — set a path for an already-registered agent
     # ------------------------------------------------------------------ #
 
-    def continuation_velocity(self, agent: "Agent") -> Optional[np.ndarray]:
-        """The row's profile velocity at the pose time while a translation is under way, else ``None``.
-
-        The same velocity :meth:`path_rejection` and :meth:`set_path` continue
-        from, so a goal built from it is judged on the motion it was built for.
-        """
-        idx = self._agent_index.get(id(agent))
-        if idx is None or self._sim_core is None or self._phase[idx] != _PHASE_FORWARD:
-            return None
-        return self._row_velocity(idx, float(self._sim_core.sim_time))
+    def _translating(self, idx: int) -> bool:
+        return bool(self._phase[idx] == _PHASE_FORWARD)
 
     def _replacement_obstacle(
         self, agent: "Agent", path: List[Pose], direction: Optional[MovementDirection] = None
@@ -218,23 +214,10 @@ class BatchOmniController(BatchKinematicController):
         """Why ``path`` cannot continue the current motion, or ``None`` -- the same rule as
         :meth:`OmniController._replacement_obstacle <pybullet_fleet.controller.OmniController._replacement_obstacle>`.
 
-        The motion is the row's own profile velocity, and only while a
-        translation is under way: the agent's reported velocity is the last
-        step's average and, right after arrival, still non-zero.
+        The motion is :meth:`continuation_velocity`: the agent's velocity
+        while a translation is under way.
         """
-        idx = self._agent_index.get(id(agent))
-        if idx is None or not path or self._sim_core is None or self._phase[idx] != _PHASE_FORWARD:
-            return None
-        now = float(self._sim_core.sim_time)
-        current = agent.get_pose()
-        return replacement_rejection(
-            agent.controller_params,
-            current.position,
-            current.orientation,
-            self._row_velocity(idx, now),
-            path[0].position,
-            now,
-        )
+        return self._omni_obstacle(agent, path)
 
     def set_path(self, agent: "Agent", path: List[Pose], final_orientation_align: bool = True, **kwargs) -> bool:
         """Set a waypoint path.
@@ -263,21 +246,10 @@ class BatchOmniController(BatchKinematicController):
             preempt=bool(kwargs.get("preempt", False)),
         )
 
-    def _start_row_path(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
-        idx = self._agent_index[id(agent)]
+    def _begin_row_path(
+        self, idx: int, agent: "Agent", request: PathRequest, now: float, initial_velocity: Optional[np.ndarray]
+    ) -> None:
         path = request.path
-        # Continue from the agent's current motion, as OmniController does --
-        # but only while a translation is under way. The speed is the row's own
-        # profile speed at the time it was last evaluated, which is what
-        # OmniController keeps: the agent's reported velocity here is the last
-        # step's average (low while accelerating, high while braking) and,
-        # right after arrival, still non-zero.
-        assert self._sim_core is not None
-        now = float(self._sim_core.sim_time)
-        initial_velocity = None
-        if continue_motion and self._phase[idx] == _PHASE_FORWARD:
-            initial_velocity = self._row_velocity(idx, now)
-
         self._paths[idx] = list(path)
         self._wp_index[idx] = 0
         if request.final_orientation_align:
@@ -287,22 +259,11 @@ class BatchOmniController(BatchKinematicController):
             self._align_final_orient[idx] = False
         self._begin_waypoint(idx, agent, path[0], now, initial_velocity)
 
-    def _row_velocity(self, idx: int, now: float) -> np.ndarray:
-        """World-frame velocity of row ``idx``'s translation profile at ``now``."""
+    def _row_start_velocity(self, idx: int) -> np.ndarray:
         total = float(self._total_distance[idx])
-        if total <= 1e-9:
+        if self._phase[idx] != _PHASE_FORWARD or total <= 1e-9:
             return np.zeros(3)
-        row = slice(idx, idx + 1)
-        speed = trapezoid_speed(
-            np.maximum(now - self._t_start[row], 0.0),
-            self._t_accel[row],
-            self._t_const[row],
-            self._t_total[row],
-            self._accel_buf[row],
-            decel=self._decel_buf[row],
-            v0=self._v0_buf[row],
-        )[0]
-        return self._displacement[idx] / total * float(speed)
+        return self._displacement[idx] / total * float(self._v0_buf[idx])
 
     def _begin_waypoint(
         self,
@@ -404,6 +365,7 @@ class BatchOmniController(BatchKinematicController):
         self._rot_snap_quat[idx] = target_quat  # un-flipped for snap
         self._rot_dot[idx] = dot
         self._rot_theta0[idx] = theta0
+        self._rot_axis_z[idx] = float(rotation_axis_z(start_quat, target_for_slerp))
         self._rot_sin_theta0[idx] = sin_theta0
         self._rot_total_angle[idx] = angle
         self._rot_t_accel[idx] = t_acc
@@ -461,7 +423,7 @@ class BatchOmniController(BatchKinematicController):
             # Nothing active. Still flush once if agents moved last step, so
             # _apply_phase1 can zero the velocity of any that just stopped.
             if self._was_moved.any():
-                self._apply_phase1(dt)
+                self._apply_phase1()
             return self._moved_mask
 
         # Match OmniController._apply_pose semantics: evaluates at sim_core.sim_time,
@@ -493,9 +455,15 @@ class BatchOmniController(BatchKinematicController):
             if completed_trans.any():
                 new_pos[completed_trans] = self._p_start[completed_trans] + self._displacement[completed_trans]
                 completed[completed_trans] = True
+            # Zero once the profile has ended (the arrival step).
+            speed = trapezoid_speed(
+                tau, self._t_accel, self._t_const, self._t_total, self._accel_buf, self._decel_buf, self._v0_buf
+            )
 
             self._pos_buf[active] = new_pos[active]
             self._orn_buf[active] = self._target_orientation[active]
+            self._lin_vel_buf[active] = (self._displacement / total_dist_safe[:, None] * speed[:, None])[active]
+            self._ang_vel_buf[active] = 0.0
             self._moved_mask[active] = True
 
         # ----- FINAL_ROTATE phase -----
@@ -523,6 +491,11 @@ class BatchOmniController(BatchKinematicController):
             )
             self._orn_buf[rm] = new_quat
             self._pos_buf[rm] = self._rot_p_hold[rm]
+            angular_speed = trapezoid_speed(
+                tau, self._rot_t_accel[rm], self._rot_t_const[rm], self._rot_t_total[rm], self._rot_accel[rm]
+            )
+            self._lin_vel_buf[rm] = 0.0
+            self._ang_vel_buf[rm] = angular_speed * self._rot_axis_z[rm]
             self._moved_mask[rm] = True
             done = tau >= self._rot_t_total[rm]
             if done.any():
@@ -533,7 +506,7 @@ class BatchOmniController(BatchKinematicController):
                 completed_rot[done_rows] = True
 
         # Write to sim (and refresh per-agent reported velocities).
-        self._apply_phase1(dt)
+        self._apply_phase1()
 
         # Advance translate completions.
         if completed.any():

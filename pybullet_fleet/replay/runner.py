@@ -67,6 +67,15 @@ def reexecute(
     return ReplayArtifact.open(output)
 
 
+def _either(left: dict | None, right: dict | None) -> dict:
+    """The record of a ``zip_longest`` pair that is present (at least one is)."""
+    if left is not None:
+        return left
+    if right is None:
+        raise ValueError("Both records of a compared pair are missing")
+    return right
+
+
 def _difference(left: Any, right: Any, path: str, tolerance: float) -> dict | None:
     if isinstance(left, dict) and isinstance(right, dict):
         if left.keys() != right.keys():
@@ -132,16 +141,14 @@ def compare(
         bb = None if b is None else {k: v for k, v in b.items() if k not in ("run_id", "record_seq")}
         diff = _difference(aa, bb, "journal", 0.0)
         if diff:
-            existing = a if a is not None else b
-            assert existing is not None
+            existing = _either(a, b)
             step = min(r["step"] for r in (a, b) if r is not None)
             phase = existing["phase"]
             candidates.append(((step, 0 if phase == "input" else 1), {"step": step, "phase": phase, **diff}))
             break
     for a, b in zip_longest(left.observations(), right.observations()):
         if a is None or b is None or a["state_step"] != b["state_step"]:
-            existing = a if a is not None else b
-            assert existing is not None
+            existing = _either(a, b)
             step = existing["state_step"]
             diff = {"field": "observation.state_step", "expected": a and a["state_step"], "actual": b and b["state_step"]}
         else:

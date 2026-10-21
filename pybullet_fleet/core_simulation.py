@@ -2807,7 +2807,10 @@ class MultiRobotSimulationCore:
             position = [float(value) for value in position]
 
         def positive_integer(key: str, default: int | None) -> int | None:
-            value = config.get(key, default)
+            # An explicit null takes the default too, as light_position does.
+            value = config.get(key)
+            if value is None:
+                value = default
             if value is None:
                 return None
             try:
@@ -2824,13 +2827,14 @@ class MultiRobotSimulationCore:
             positive_integer("shadow_map_resolution", 2048 if defaults else None),
         )
 
-    def _install_gui_lighting_controls(self) -> None:
-        """Create the optional built-in-panel sliders once per PyBullet world."""
+    def _install_gui_lighting_controls(self) -> Dict[str, int]:
+        """Create the optional built-in-panel sliders once per PyBullet world; return their ids."""
         if self._lighting_control_ids is not None:
-            return
+            return self._lighting_control_ids
         config = self._params.lighting_config
         position, world_size, resolution = self._validated_gui_lighting_values(config, defaults=True)
-        assert position is not None and world_size is not None and resolution is not None
+        if position is None or world_size is None or resolution is None:
+            raise ValueError("GUI lighting controls need a light position and shadow map size and resolution")
         self._lighting_control_ids = {
             "x": p.addUserDebugParameter("Light X", -30.0, 30.0, float(position[0]), physicsClientId=self._client),
             "y": p.addUserDebugParameter("Light Y", -30.0, 30.0, float(position[1]), physicsClientId=self._client),
@@ -2843,16 +2847,15 @@ class MultiRobotSimulationCore:
             ),
         }
         self._lighting_control_values = None
+        return self._lighting_control_ids
 
     def _update_gui_lighting_controls(self) -> None:
         """Apply changed native lighting sliders on the simulation thread."""
         if not self._params.gui or not self._lighting_controls_enabled:
             return
-        self._install_gui_lighting_controls()
-        assert self._lighting_control_ids is not None
+        control_ids = self._install_gui_lighting_controls()
         values = tuple(
-            p.readUserDebugParameter(control_id, physicsClientId=self._client)
-            for control_id in self._lighting_control_ids.values()
+            p.readUserDebugParameter(control_id, physicsClientId=self._client) for control_id in control_ids.values()
         )
         if values == self._lighting_control_values:
             return

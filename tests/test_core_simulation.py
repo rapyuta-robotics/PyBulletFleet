@@ -599,6 +599,13 @@ class TestSimulationParams:
         with pytest.raises(ValueError, match="light_position must be a three-element list"):
             sim_core._install_gui_lighting_controls()
 
+    def test_gui_lighting_defaults_fill_explicit_nulls(self):
+        """A null shadow setting takes the default, as a null light_position does."""
+        config = {"light_position": None, "shadow_map_world_size": None, "shadow_map_resolution": None}
+        values = MultiRobotSimulationCore._validated_gui_lighting_values(config, defaults=True)
+        assert values == ([4.0, -4.0, 8.0], 12, 2048)
+        assert MultiRobotSimulationCore._validated_gui_lighting_values(config) == (None, None, None)
+
     def test_from_yaml(self, tmp_path):
         import yaml
 

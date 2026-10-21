@@ -28,7 +28,11 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
-from pybullet_fleet._replan import PathRequest, braking_request
+import math
+
+from pybullet_fleet._motion_planning import heading_toward
+from pybullet_fleet._replan import HEADING_TOL, REST_SPEED, PathRequest, braking_request, replacement_rejection
+from pybullet_fleet.geometry import quat_angle_between
 from pybullet_fleet.logging_utils import get_lazy_logger
 from pybullet_fleet.types import GoalReplacement, MovementDirection
 
@@ -113,6 +117,56 @@ class GoalReplacementPolicy:
         if not path or self._replacement_params(agent)._eff_goal_replacement() is not GoalReplacement.REJECT:
             return None
         return self._replacement_obstacle(agent, path, direction)
+
+    # -- the continuation rules both families apply ------------------------
+
+    def _omni_obstacle(self, agent: "Agent", path: "list[Pose]") -> Optional[str]:
+        """Why ``path`` cannot continue an omnidirectional agent's motion, or ``None``.
+
+        The motion is :meth:`continuation_velocity` (``None``: nothing to
+        continue, every path can be taken). The straight-line trajectory to the
+        first waypoint starts from it, signed along the line, so a goal behind
+        is reached by reversing; it does not exist for a goal inside the
+        braking distance, where the agent is, or off the line of motion. See
+        :mod:`pybullet_fleet._replan`.
+        """
+        velocity = self.continuation_velocity(agent)
+        if velocity is None or not path:
+            return None
+        return self._line_obstacle(agent, velocity, path[0])
+
+    def _differential_obstacle(
+        self, agent: "Agent", path: "list[Pose]", direction: Optional[MovementDirection]
+    ) -> Optional[str]:
+        """Why ``path`` cannot continue a differential-drive agent's motion, or ``None``.
+
+        It can only continue straight along its heading: a first waypoint that
+        needs a turn in place beyond ``HEADING_TOL`` cannot be taken while
+        moving. On the heading line, ahead or behind (``BACKWARD``, or ``AUTO``
+        for a goal behind), the omnidirectional rule applies with the
+        forward-axis limits. ``direction`` ``None`` is the agent's
+        ``default_direction``, the one the new path will use.
+        """
+        velocity = self.continuation_velocity(agent)
+        if velocity is None or not path or float(np.linalg.norm(velocity)) < REST_SPEED:
+            return None
+        params = self._replacement_params(agent)
+        requested = direction if direction is not None else params.default_direction
+        pose = agent.get_pose()
+        _, target_quat, _, distance = heading_toward(pose, path[0], requested, params.navigation_2d)
+        if distance > 1e-6:
+            turn = quat_angle_between(np.asarray(pose.orientation, dtype=np.float64), target_quat)
+            if turn > HEADING_TOL:
+                return f"goal needs a {math.degrees(turn):.3g} degree turn in place"
+        return self._line_obstacle(agent, velocity, path[0])
+
+    def _line_obstacle(self, agent: "Agent", velocity: np.ndarray, goal: "Pose") -> Optional[str]:
+        """:func:`~pybullet_fleet._replan.replacement_rejection` for ``agent`` heading for ``goal``."""
+        pose = agent.get_pose()
+        now = agent.sim_core.sim_time if agent.sim_core is not None else 0.0
+        return replacement_rejection(
+            self._replacement_params(agent), pose.position, pose.orientation, velocity, goal.position, now
+        )
 
     # -- hooks the controller implements ---------------------------------
 

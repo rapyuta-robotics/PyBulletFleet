@@ -1514,10 +1514,8 @@ class Agent(SimObject):
         # Add approach waypoint if needed. Not while the agent is under way: it
         # is the current pose, a zero-length first segment, and would stop the
         # agent dead before the new path -- a new goal mid-motion continues the
-        # motion instead. Under way is a path in progress (navigation state, not
-        # the reported velocity: a batch controller reports the arrival step's
-        # average speed until its next flush, after the agent has stopped) or a
-        # velocity command still moving it.
+        # motion instead. Under way is a path in progress (navigation state) or
+        # a velocity command still moving it.
         from pybullet_fleet.controller import KinematicController
 
         base = self._controllers[0] if self._batch_controller is None and self._controllers else None
@@ -1862,7 +1860,8 @@ class Agent(SimObject):
         any_moved = False
         for state in self._active_joints:
             target = state.target
-            assert target is not None  # _active_joints is kept to those that have one
+            if target is None:
+                raise RuntimeError(f"Active joint {state.index} has no target; _active_joints holds only joints with one")
             diff = target - state.position
             if abs(diff) < 1e-7 and not state.speed:
                 # Already at target with nothing to wind down -- skip. A
@@ -1950,7 +1949,8 @@ class Agent(SimObject):
         """
         accel = state.max_accel
         decel = state.decel
-        assert accel is not None and decel is not None  # is_ramped, checked by the caller
+        if accel is None or decel is None:
+            raise RuntimeError(f"Joint {state.index} is not ramped; the caller checks is_ramped first")
 
         tpi = state.trajectory if state.trajectory_target == target else None
         if tpi is None:

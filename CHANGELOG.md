@@ -73,6 +73,22 @@ are not recommended for production use yet.
   turn in place (braked for under `brake`). From rest the agent still turns
   for any heading error above 1e-6 rad.
 
+- An agent's velocity is its state, set from the trajectory it follows. The
+  batched controllers (`BatchOmniController`, `BatchDifferentialController`)
+  now report each agent's profile velocity at the step's time, as the
+  per-agent controllers do, instead of the pose change averaged over the step,
+  which lagged while accelerating, led while braking and stayed non-zero on the
+  arrival step. `Agent.velocity`, `angular_velocity` and the odometry built
+  from them therefore change for batched agents: the twist is the
+  instantaneous velocity at the end of the step, so integrating it while the
+  agent accelerates or brakes no longer reproduces the pose change exactly
+  (the pose itself is unchanged). A goal replaced mid-motion
+  continues from that velocity state in every controller (the batched ones
+  re-derived it from their trajectory arrays), so a restored velocity is what a
+  new goal continues from. The yaw rate reported during a turn in place now
+  carries the turn's sense (negative clockwise) in the per-agent controllers
+  too; it was the unsigned angular speed.
+
 - `step_once()` advances `sim_time`, the elapsed time and `step_count` right
   after the `pre_step` event, before the object update, instead of after the
   `post_step` event. `sim_time` is now the time of the state you see everywhere
@@ -390,6 +406,12 @@ are not recommended for production use yet.
   path's direction, not the previous path's: a goal set without a direction
   while backing up under `auto` was taken and turned around at once instead of
   being refused (`reject`) or braked to (`brake`).
+
+- A null `shadow_map_world_size` or `shadow_map_resolution` in the lighting
+  config now takes the default for the GUI lighting sliders, as a null
+  `light_position` already did; it used to fail an internal assertion.
+  Internal consistency checks raise `RuntimeError` or `ValueError` with a
+  message instead of using `assert`, so they hold under `python -O`.
 
 - Frequency-limited callbacks and plugins, `collision_check_frequency` and the
   DataMonitor refresh no longer skip beats or drift. They compared the
