@@ -983,6 +983,27 @@ def quat_angle_between(q0: Quat, q1: Quat) -> float:
     return 2.0 * math.acos(dot_abs)
 
 
+def rotation_axis_z(q_from: np.ndarray, q_to: np.ndarray) -> np.ndarray:
+    """World-frame ``z`` component of the unit axis of the shortest rotation ``q_from -> q_to``.
+
+    Accepts ``(4,)`` or ``(N, 4)`` arrays of ``(x, y, z, w)`` quaternions and
+    returns a scalar array or ``(N,)``. A slerp between the two turns about
+    this axis, so its yaw rate is this times the angular speed: ``+1`` for a
+    pure counter-clockwise turn about ``z``, ``-1`` clockwise, ``0`` with no
+    rotation.
+    """
+    a = np.asarray(q_to, dtype=np.float64)
+    b = np.asarray(q_from, dtype=np.float64)
+    ax, ay, az, aw = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+    bx, by, bz, bw = b[..., 0], b[..., 1], b[..., 2], b[..., 3]
+    # q_rel = q_to * conj(q_from): the world-frame rotation between them.
+    w = aw * bw + ax * bx + ay * by + az * bz
+    z = -aw * bz - ax * by + ay * bx + az * bw
+    z = np.where(w < 0.0, -z, z)  # the shorter way round
+    sin_half = np.sqrt(np.maximum(1.0 - np.minimum(w * w, 1.0), 0.0))
+    return np.where(sin_half > 1e-12, z / np.where(sin_half > 1e-12, sin_half, 1.0), 0.0)
+
+
 # ============================================================================
 # Fast two-keyframe scalar quaternion slerp
 #

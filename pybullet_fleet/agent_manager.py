@@ -938,7 +938,7 @@ class AgentManager(SimObjectManager[Agent]):
             name_prefix=name_prefix,
         )
 
-    def set_goal_pose(self, agent_index: int, goal: Pose):
+    def set_goal_pose(self, agent_index: int, goal: Pose) -> bool:
         """
         Set goal pose for a specific agent.
 
@@ -947,14 +947,17 @@ class AgentManager(SimObjectManager[Agent]):
                 a manager holding a non-agent would otherwise shift the
                 indices of everything after it.
             goal: Target Pose
+
+        Returns:
+            Whether the agent took the goal (see :meth:`Agent.set_path`).
         """
         agents = self.agents
         if 0 <= agent_index < len(agents):
-            agents[agent_index].set_goal_pose(goal)
-        else:
-            logger.warning("Invalid agent index %d", agent_index)
+            return agents[agent_index].set_goal_pose(goal)
+        logger.warning("Invalid agent index %d", agent_index)
+        return False
 
-    def set_goal_pose_by_body_id(self, body_id: int, goal: Pose):
+    def set_goal_pose_by_body_id(self, body_id: int, goal: Pose) -> bool:
         """
         Set goal pose for an agent by its PyBullet body ID.
 
@@ -969,11 +972,11 @@ class AgentManager(SimObjectManager[Agent]):
         """
         target = self.body_ids.get(body_id)
         if isinstance(target, Agent):
-            target.set_goal_pose(goal)
-        else:
-            logger.warning("Unknown agent body_id %d", body_id)
+            return target.set_goal_pose(goal)
+        logger.warning("Unknown agent body_id %d", body_id)
+        return False
 
-    def set_goal_pose_by_object_id(self, object_id: int, goal: Pose):
+    def set_goal_pose_by_object_id(self, object_id: int, goal: Pose) -> bool:
         """
         Set goal pose for an agent by its simulation object ID.
 
@@ -986,9 +989,9 @@ class AgentManager(SimObjectManager[Agent]):
         """
         target = self.object_ids.get(object_id)
         if isinstance(target, Agent):
-            target.set_goal_pose(goal)
-        else:
-            logger.warning("Unknown agent object_id %d", object_id)
+            return target.set_goal_pose(goal)
+        logger.warning("Unknown agent object_id %d", object_id)
+        return False
 
     def stop_all(self):
         """Stop all agents and clear their goals."""

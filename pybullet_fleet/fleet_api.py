@@ -27,6 +27,9 @@ from pybullet_fleet.commands import (
     Vec3,
 )
 from pybullet_fleet.states import RobotState2D, RobotState3D
+from pybullet_fleet.logging_utils import get_lazy_logger
+
+logger = get_lazy_logger(__name__)
 
 
 class FleetStateProvider:
@@ -123,21 +126,53 @@ class FleetCommandDispatcher:
         source: str = "python",
         command_id: str | None = None,
     ) -> CommandAck:
-        """Apply one or more navigation goals by robot name."""
+        """Apply one or more navigation goals by robot name.
+
+        A target robot provides ``get_pose()``, ``set_goal_pose()`` and
+        ``path_rejection()``, as :class:`~pybullet_fleet.agent.Agent` does.
+        """
         commands = tuple(goals)
         resolved_id = _resolve_command_id(command_id, commands)
         accepted, rejected = self._resolve_targets(command.name for command in commands)
-        ack = self._ack("navigate", resolved_id, source, tuple(command.name for command in commands), accepted, rejected)
         by_name = _first_command_by_name(commands)
+        # A planar goal without a height keeps the robot's present one.
+        goal_poses = {name: by_name[name].to_pose(_current_z(agent)) for name, agent in accepted.items()}
+        # A moving robot only takes a goal it can reach within its limits (see
+        # Agent.set_path); report the others as rejected before acting.
+        for name in list(accepted):
+            rejection = accepted[name].path_rejection([goal_poses[name]])
+            if rejection is not None:
+                rejected[name] = rejection.reason
+                del accepted[name]
+        ack = self._ack("navigate", resolved_id, source, tuple(command.name for command in commands), accepted, rejected)
+        # The command event is emitted before the goals are applied. A handler
+        # of it can change a robot so that it then refuses its goal; the event
+        # cannot be taken back, but the returned ack and the recorded input
+        # only claim the goals that were applied.
+        refused: dict[str, str] = {}
         for name in ack.accepted_names:
-            accepted[name].set_goal_pose(by_name[name].to_pose())
+            agent = accepted[name]
+            if agent.set_goal_pose(goal_poses[name]) is False:
+                rejection = agent.path_rejection([goal_poses[name]])
+                refused[name] = rejection.reason if rejection is not None else "goal refused"
+        if refused:
+            logger.warning(
+                "navigate %s: goals refused after the command event announced them as accepted: %s", resolved_id, refused
+            )
+            ack = CommandAck(
+                command_id=ack.command_id,
+                source=ack.source,
+                sim_time=ack.sim_time,
+                accepted_names=tuple(name for name in ack.accepted_names if name not in refused),
+                rejected={**ack.rejected, **refused},
+            )
         self._record_effective_input(
             "navigate",
             ack,
             {
                 name: {
-                    "position": list(by_name[name].to_pose().position),
-                    "orientation": list(by_name[name].to_pose().orientation),
+                    "position": list(goal_poses[name].position),
+                    "orientation": list(goal_poses[name].orientation),
                     "auto_approach": True,
                     "final_orientation_align": True,
                 }
@@ -473,6 +508,11 @@ def _resolve_command_id(command_id: str | None, commands: Iterable[Any]) -> str:
 
 def _new_command_id() -> str:
     return uuid4().hex
+
+
+def _current_z(agent: Any) -> float:
+    """The robot's present height, for a planar goal that does not name one."""
+    return float(agent.get_pose().position[2])
 
 
 def _first_command_by_name(commands: Iterable[Any]) -> dict[str, Any]:

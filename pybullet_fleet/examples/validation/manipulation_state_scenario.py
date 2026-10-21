@@ -150,7 +150,9 @@ def _configure_scenario(
     callback_phase = "outside_step"
 
     def lifecycle_record(operation: str, obj: SimObject) -> dict:
-        completed_step = sim.step_count + (callback_phase == "POST_STEP")
+        # POST_STEP sees the counter of the step it completes; PRE_STEP and
+        # outside a step see the last completed one.
+        completed_step = sim.step_count
         return {
             "operation": operation,
             "phase": callback_phase,
@@ -222,9 +224,9 @@ def _configure_scenario(
             return
         try:
             callback_phase = "POST_STEP"
-            # POST_STEP has the new physical state but core counters still
-            # identify the preceding completed step until this callback ends.
-            step = sim.step_count + 1
+            # POST_STEP sees the new physical state and the counter of the step
+            # that produced it.
+            step = sim.step_count
             if run.stage == "base_motion":
                 if step == 1:
                     require_ack(

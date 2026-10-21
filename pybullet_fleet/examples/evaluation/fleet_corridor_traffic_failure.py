@@ -338,7 +338,7 @@ def run_policy(
         if callback_error:
             return
         try:
-            step = sim.step_count + 1  # POST_STEP precedes the counter update.
+            step = sim.step_count  # POST_STEP sees the counter of the step it completes.
             states = {state.name: state for state in provider.get_states_2d()}
             for name, state in states.items():
                 x, y = state.position

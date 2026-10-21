@@ -599,6 +599,13 @@ class TestSimulationParams:
         with pytest.raises(ValueError, match="light_position must be a three-element list"):
             sim_core._install_gui_lighting_controls()
 
+    def test_gui_lighting_defaults_fill_explicit_nulls(self):
+        """A null shadow setting takes the default, as a null light_position does."""
+        config = {"light_position": None, "shadow_map_world_size": None, "shadow_map_resolution": None}
+        values = MultiRobotSimulationCore._validated_gui_lighting_values(config, defaults=True)
+        assert values == ([4.0, -4.0, 8.0], 12, 2048)
+        assert MultiRobotSimulationCore._validated_gui_lighting_values(config) == (None, None, None)
+
     def test_from_yaml(self, tmp_path):
         import yaml
 
@@ -800,13 +807,12 @@ class TestStepOnce:
         assert sim_core.step_count == 1
 
     def test_step_advances_sim_time(self, sim_core):
-        # sim_time is computed BEFORE step_count is incremented:
-        # sim_time = step_count * dt (where step_count is the OLD value)
-        # After 2 steps: step_count=2, sim_time = 1*dt
+        # The clock advances with the step counter, so outside a step
+        # sim_time is the completed time: after 2 steps, 2*dt.
         dt = sim_core.params.timestep
         sim_core.step_once()
         sim_core.step_once()
-        assert sim_core.sim_time == pytest.approx(dt, abs=1e-9)
+        assert sim_core.sim_time == pytest.approx(2 * dt, abs=1e-9)
 
     def test_step_updates_agent(self, sim_core):
         agent = make_agent(sim_core, position=(0, 0, 0))
@@ -874,8 +880,8 @@ class TestStepOnce:
         for _ in range(n):
             sim_core.step_once()
         assert sim_core.step_count == n
-        # sim_time is computed before step_count increment, so after n steps: sim_time = (n-1) * dt
-        assert sim_core.sim_time == pytest.approx((n - 1) * dt, abs=1e-6)
+        # sim_time advances with step_count: after n steps it is n * dt.
+        assert sim_core.sim_time == pytest.approx(n * dt, abs=1e-6)
 
     def test_step_triggers_collision_check(self, sim_core):
         obj1 = make_box(sim_core, [0, 0, 0])
@@ -1365,13 +1371,14 @@ class TestReset:
 
     def test_resets_counters(self, sim_core):
         """Step count, collision count, and sim_time are zeroed."""
-        sim_core._step_count = 100
+        for _ in range(3):
+            sim_core.step_once()
         sim_core._collision_count = 50
-        sim_core.sim_time = 99.9
+        assert sim_core.step_count == 3 and sim_core.sim_time > 0.0
 
         sim_core.reset()
 
-        assert sim_core._step_count == 0
+        assert sim_core.step_count == 0
         assert sim_core._collision_count == 0
         assert sim_core.sim_time == 0.0
 
@@ -1408,20 +1415,26 @@ class TestReset:
         assert num_bodies >= 1
 
     def test_preserves_callbacks(self, sim_core):
-        """Registered callbacks survive reset (only last_exec is zeroed)."""
+        """Registered callbacks survive reset, and their schedule restarts."""
         calls = []
 
         def cb(sc, dt):
-            calls.append(dt)
+            calls.append((round(sc.sim_time, 9), round(dt, 9)))
 
         sim_core.register_callback(cb, frequency=10.0)
-        # Fake a stale last_exec
-        sim_core._callbacks[0]["last_exec"] = 999.0
+        sim_core.initialize_simulation()
+        for _ in range(25):
+            sim_core.step_once()
+        calls.clear()
 
         sim_core.reset()
+        # The first step ends at one timestep: run exactly one interval.
+        for _ in range(int(round(0.1 / sim_core.params.timestep))):
+            sim_core.step_once()
 
         assert len(sim_core._callbacks) == 1
-        assert sim_core._callbacks[0]["last_exec"] == 0.0
+        # One interval into the new run, with a dt measured from its start.
+        assert calls == [(0.1, 0.1)]
 
     def test_step_works_after_reset(self, sim_core):
         """step_once() runs cleanly on a fresh world after reset."""
@@ -1466,19 +1479,24 @@ class TestInitializeSimulation:
         sim_core.initialize_simulation()
         assert len(sim_core._speed_history) == 0
 
-    def test_resets_callback_last_exec(self, sim_core):
-        """#3: callback last_exec must be reset to 0.0 for correct dt on restart."""
-        called_dts = []
+    def test_resets_callback_schedule(self, sim_core):
+        """#3: a restart must not carry the previous run's schedule (stale dt)."""
+        called = []
 
         def cb(sc, dt):
-            called_dts.append(dt)
+            called.append((round(sc.sim_time, 9), round(dt, 9)))
 
         sim_core.register_callback(cb, frequency=10.0)
-        # Simulate previous run leaving stale last_exec
-        sim_core._callbacks[0]["last_exec"] = 999.0
+        sim_core.initialize_simulation()
+        for _ in range(37):
+            sim_core.step_once()
+        called.clear()
 
         sim_core.initialize_simulation()
-        assert sim_core._callbacks[0]["last_exec"] == 0.0
+        # The first step ends at one timestep: run exactly one interval.
+        for _ in range(int(round(0.1 / sim_core.params.timestep))):
+            sim_core.step_once()
+        assert called == [(0.1, 0.1)]
 
     def test_clears_profiling_stats(self, sim_core):
         """#4: _profiling_stats lists must be emptied to avoid mixing runs."""
@@ -1509,12 +1527,13 @@ class TestInitializeSimulation:
 
     def test_counters_reset(self, sim_core):
         """Basic counters should all be zeroed."""
-        sim_core._step_count = 100
+        for _ in range(3):
+            sim_core.step_once()
         sim_core._collision_count = 50
-        sim_core.sim_time = 99.9
+        assert sim_core.step_count == 3 and sim_core.sim_time > 0.0
 
         sim_core.initialize_simulation()
-        assert sim_core._step_count == 0
+        assert sim_core.step_count == 0
         assert sim_core._collision_count == 0
         assert sim_core.sim_time == 0.0
 

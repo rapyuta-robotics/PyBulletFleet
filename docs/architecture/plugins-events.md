@@ -28,8 +28,9 @@ construct -> on_init -> on_step (zero or more times) -> on_reset -> on_shutdown
 
 `on_init()` runs after the world and robots have been created. Use it to inspect
 agents, allocate resources, or subscribe to events. `on_step(dt)` runs at every
-simulation step by default; a configured `frequency` invokes it less often and
-passes the accumulated elapsed time. `on_reset()` must discard state that does
+simulation step by default; a configured `frequency` invokes it less often, on
+the fixed schedule described in [the two-phase step](two-phase-step.md), and
+passes the simulated time since its previous run. `on_reset()` must discard state that does
 not survive a reset, and `on_shutdown()` must release external resources before
 PyBullet disconnects.
 

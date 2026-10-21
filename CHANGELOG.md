@@ -12,7 +12,157 @@ profiles. A declared kinematic profile supports fixed-arm and mobile-arm validat
 they do not provide general save/load for arbitrary simulations and
 are not recommended for production use yet.
 
+### Added
+
+- `Agent.brake()`: come to rest at `max_linear_decel` along the current line of
+  motion, keeping the heading and dropping the rest of the path, for
+  omnidirectional and differential-drive agents (per-agent and batched) under
+  a path or a velocity command. A differential agent brakes straight along its
+  heading, backwards when it is backing up. `stop()` remains the immediate
+  stop. Controllers gain `continuation_velocity(agent)`, the velocity a new
+  path continues from.
+
+- Braking is a controller method: `Agent.brake()` delegates to the
+  controller's `brake(agent)`, and both it and `goal_replacement="brake"` take
+  the braking path from `braking_request(agent)`, which a custom controller
+  overrides to brake differently. A request that cannot continue the current
+  motion is not started: a warning naming the agent, and the default braking
+  point instead. The base `Controller.brake()` returns
+  `False` (cannot brake).
+
+- `ControllerParams.goal_replacement` (`GoalReplacement`): what a moving agent
+  does with a goal it cannot reach from its current motion within its limits.
+  `brake` (the default) brakes along the current motion at `max_linear_decel`
+  and starts the goal from rest; `immediate` starts it from rest at once;
+  `reject` refuses it (`set_path` returns `False`); `wait_complete` holds every
+  goal set while a path is in progress, reachable or not, and starts it once
+  that path is finished. A goal the agent can reach is taken at once,
+  continuing the motion, in every mode but `wait_complete`. Only the latest
+  held goal is kept; a newer request, `stop()`, `brake()` or a velocity
+  command drops it, with an INFO log line naming the agent, the goal and the
+  reason. The global default is `_defaults.CONTROLLER["goal_replacement"]`
+  (environment variable `PBF_CONTROLLER_GOAL_REPLACEMENT`); a manager's
+  `fleet_controller` and an agent's own `controller` settings override it.
+  Per-agent and batched, omnidirectional and differential controllers behave
+  alike. Differential agents now continue the motion into a goal that needs no
+  turn (issue #78). Checkpoints record the held goal and the braking state;
+  the kinematic profile's controller state is now version 3, and the omni
+  checkpoint proof's record version 3.
+
 ### Changed
+
+- `ControllerParams` takes either enum field -- `default_direction` and
+  `goal_replacement` -- as the enum or its string value, on construction and
+  on any later assignment, and stores the enum; an unknown value raises
+  `ValueError` there.
+  `default_direction` given as a string to the constructor used to stay a
+  string (only `from_dict()` converted it). `ControllerParams.as_config()`
+  returns the fields as plain data, enums as their string values.
+
+- A goal or path set on a moving agent that it cannot continue into within
+  its limits now brakes first by default (`goal_replacement="brake"`): the
+  agent stops along its current motion at `max_linear_decel`, then starts the
+  goal from rest. The last release started such a goal from rest at once,
+  dropping the current speed in one step; set `goal_replacement="immediate"`
+  (per agent, per manager's `fleet_controller`, or globally through
+  `PBF_CONTROLLER_GOAL_REPLACEMENT`) for that behaviour.
+
+- `MoveAction` ends `COMPLETED` only when the agent comes to rest at the
+  path's last waypoint. Stopped elsewhere -- the path was braked
+  (`Agent.brake()`) or replaced by a newer one, held goals included -- it ends
+  `CANCELLED`, and a path the agent refuses for good (a fixed base, an empty
+  path) ends `FAILED`; both used to end `COMPLETED`. The check no longer reads
+  `Agent.path`, which a batch-owned agent always reports empty.
+
+- A moving differential-drive agent takes a goal whose line is within
+  `_replan.HEADING_TOL` (1e-3 rad) of its heading as straight on: it snaps its
+  heading onto the line and continues at its speed, as an omnidirectional
+  agent does within its cross-track tolerance. A larger turn still needs a
+  turn in place (braked for under `brake`). From rest the agent still turns
+  for any heading error above 1e-6 rad.
+
+- An agent's velocity is its state, set from the trajectory it follows. The
+  batched controllers (`BatchOmniController`, `BatchDifferentialController`)
+  now report each agent's profile velocity at the step's time, as the
+  per-agent controllers do, instead of the pose change averaged over the step,
+  which lagged while accelerating, led while braking and stayed non-zero on the
+  arrival step. `Agent.velocity`, `angular_velocity` and the odometry built
+  from them therefore change for batched agents: the twist is the
+  instantaneous velocity at the end of the step, so integrating it while the
+  agent accelerates or brakes no longer reproduces the pose change exactly
+  (the pose itself is unchanged). A goal replaced mid-motion
+  continues from that velocity state in every controller (the batched ones
+  re-derived it from their trajectory arrays), so a restored velocity is what a
+  new goal continues from. The yaw rate reported during a turn in place now
+  carries the turn's sense (negative clockwise) in the per-agent controllers
+  too; it was the unsigned angular speed.
+
+- `step_once()` advances `sim_time`, the elapsed time and `step_count` right
+  after the `pre_step` event, before the object update, instead of after the
+  `post_step` event. `sim_time` is now the time of the state you see everywhere
+  except a `pre_step` subscriber:
+  - Position controllers (`OmniController`, `DifferentialController` and the
+    batched omni and differential controllers) evaluate their trajectories at
+    the end of the step, as kinematic joints already did; before, a step's pose
+    was the trajectory one step earlier. A path set in a `pre_step` subscriber
+    moves in that same step (with `auto_approach=False`; the default
+    zero-length approach waypoint still takes a step), and a motion completes
+    one step sooner.
+  - `post_step` subscribers (and the `post_step` payload's `sim_time`) see the
+    step they complete: `step_count` and `sim_time` have already advanced. Code
+    that added one to `step_count` in a `post_step` handler must drop it.
+  - Outside a step `sim_time` is the completed time (it used to lag one step
+    behind `step_count`); actions' start and end times, behavior-tree ticks and
+    collision observations carry the time of the step that produced them.
+  - A step that raises before it completes returns the clock and counter to
+    the last completed boundary.
+  - `sim_time` is read-only: it reads the simulation's one clock, so it can no
+    longer drift from the elapsed time by assignment. Move the clock with
+    `restore_completed_step_boundary()` (resuming from a checkpoint); assigning
+    `sim_time` raises `AttributeError`.
+  - The snapshot-replay evidence documents keep the values recorded before this
+    change, with a note.
+
+- A goal or path set on a moving omnidirectional agent (per-agent
+  `OmniController` and `BatchOmniController`) now continues the motion: the
+  new trajectory starts from the agent's speed toward the new goal instead of
+  from rest, and `Agent.set_path` no longer puts a zero-length approach
+  waypoint (the current pose) in front of it while the agent moves. The speed
+  is signed along the new line, so a goal behind is reached by slowing,
+  reversing and driving back. A goal is taken when that trajectory exists
+  within the configured limits; otherwise `goal_replacement` decides (see
+  above), and under `reject` it is refused -- inside the braking
+  distance, where the agent is, or off the line of motion: the current motion
+  and path continue unchanged, no limit is ever exceeded, and
+  `Agent.set_path` / `set_goal_pose` return `False` (`True` when taken; the
+  `AgentManager.set_goal_pose*` wrappers pass it on). `Agent.path_rejection()`
+  gives the reason without acting, as a `PathRejection` whose `temporary`
+  flag tells a refusal that lasts only while the agent moves from a
+  permanent one (fixed base, empty path). At rest every goal is taken, as
+  before. Callers inside the library retry a temporarily refused goal on
+  their next update
+  (`MoveAction`, `PatrolController`, `RandomWalkController`, the behaviour
+  tree's `NavigateTo`, whose `NavigationAdapter.start_navigation()` may now
+  return `False`), and `FleetCommandDispatcher.navigate()` reports it in the
+  ack's `rejected` map -- also when the refusal comes only after the command
+  event was emitted (a handler of it changed the robot): the returned ack and
+  the recorded input then list only the goals actually applied. A replaced
+  goal is judged on the speed of the pose in effect when it is set
+  (`sim_time`), per-agent and batched alike, whichever phase sets it.
+  This needs
+  `two-point-interpolation>=1.3.2`: earlier versions could return a trajectory
+  that never reached its target for a body starting away from it, which a
+  reversal is. Navigation checkpoints record the trajectory's initial
+  speed (`forward.v0`); the kinematic profile's controller state is now
+  version 2. A refusal is logged at DEBUG. From a speed above `vmax` (lowered
+  during the motion) the new trajectory first slows down to it.
+
+- `RobotGoalCommand2D.z` defaults to `None`: the robot keeps its present
+  height (`to_pose(current_z)`, which `FleetCommandDispatcher.navigate()`
+  passes). It was `0.0`, which made a planar goal a 3D move for a robot whose
+  pose is not at `z = 0` -- one a moving omni agent refuses as off its line of
+  motion. An explicit `z` is kept; `ReplayInput.navigate()` and recorded
+  `navigate` inputs accept `z: null` the same way.
 
 - URDF SimObject and mesh Agent factories retain their effective spawn
   descriptors for recording handlers, including URDF fixed-base and scale
@@ -75,7 +225,25 @@ are not recommended for production use yet.
   checkpoint/state-discovery programs under `examples/validation/`. Their
   Python module paths and documented run commands now use those folders.
 
+- A negative or non-finite `frequency` for `register_callback()`,
+  `register_plugin()` or a plugin config now raises `ValueError`; a negative
+  one used to mean every step. `None` (and `0` for a callback) still means
+  every step.
+
+- `SimulationParams.monitor_update_interval` is read once, when the
+  simulation is created; changing `params` afterwards no longer changes the
+  DataMonitor refresh rate.
+
+- Time profiling reports `CallbackPhase.POST_STEP` callbacks as
+  `callbacks_post_step`, apart from `events_post_step`.
+
 ### Added
+
+- Add `register_callback(..., phase=CallbackPhase.POST_STEP)` (`CallbackPhase`
+  in `pybullet_fleet.types`; the string `"post_step"` works too): a callback that runs at the
+  end of the step, right after the `post_step` event, once poses are written
+  and the collision check is done, with the same `frequency` option as Phase-1
+  callbacks, scheduled on `sim_time`, the time of the state it sees.
 
 - Add `MultiRobotSimulationCore.set_collision_ignore_filter(fn)`: touching
   pairs for which `fn(obj_a, obj_b)` returns `True` are excluded from
@@ -100,8 +268,10 @@ are not recommended for production use yet.
 
 - Add `SimulationParams.monitor_update_interval`: simulated seconds between
   DataMonitor refreshes, which were fixed at every step with a GUI and every
-  second without one. That remains the default (`None`); `0` is every step.
-  It is independent of `monitor_log_interval`.
+  second without one. The default (`None`) is every step while the monitor
+  window is open (`enable_monitor_gui`, or `gui` when that is unset), so a
+  monitor window on a headless run stays live too, and every second
+  otherwise; `0` is every step. It is independent of `monitor_log_interval`.
 
 - The monitor's real-time factor is measured against the newest sample older
   than its 10 s window as well, so updates sparser than the window no longer
@@ -236,6 +406,33 @@ are not recommended for production use yet.
 - Keep replay input application and result capture in `ReplaySession`, without replay-specific mutation guards in ordinary simulation and Fleet APIs. Direct core calls are outside the recorded-input contract.
 
 ### Fixed
+
+- `BatchDifferentialController` uses the agent's
+  `controller_params.default_direction` for a path set without a direction, as
+  the per-agent `DifferentialController` does; it always drove `FORWARD`. A
+  goal replacement on a batched differential agent is judged with the new
+  path's direction, not the previous path's: a goal set without a direction
+  while backing up under `auto` was taken and turned around at once instead of
+  being refused (`reject`) or braked to (`brake`).
+
+- A null `shadow_map_world_size` or `shadow_map_resolution` in the lighting
+  config now takes the default for the GUI lighting sliders, as a null
+  `light_position` already did; it used to fail an internal assertion.
+  Internal consistency checks raise `RuntimeError` or `ValueError` with a
+  message instead of using `assert`, so they hold under `python -O`.
+
+- Frequency-limited callbacks and plugins, `collision_check_frequency` and the
+  DataMonitor refresh no longer skip beats or drift. They compared the
+  accumulated (float) simulation time with the interval since their last run,
+  so a 10 Hz callback on a 0.1 s timestep ran at gaps of 0.1 s and 0.2 s, a
+  1 Hz plugin missed every other second, and an interval that is not a whole
+  number of timesteps drifted. They now run on a fixed grid, `k / frequency`
+  from the start of the run, at most once per step, with a tolerance for float
+  error, and they read the time as the step count times the timestep rather
+  than the accumulated simulation time, whose error grew past that tolerance
+  within minutes at a 1 ms timestep. A handler registered mid-run first runs
+  at the next due time. A DataMonitor with a GUI now refreshes on every step,
+  as documented.
 
 - `Agent.set_controller()` now adopts the controller's own
   `ControllerParams` as the agent's `controller_params`, matching what

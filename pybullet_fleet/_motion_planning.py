@@ -20,10 +20,17 @@ Two helpers are provided:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Optional, Tuple
 
 import numpy as np
 from scipy.spatial.transform import Rotation as R
+
+from pybullet_fleet.types import MovementDirection
+
+if TYPE_CHECKING:
+    from pybullet_fleet.geometry import Pose
 
 
 @dataclass(frozen=True)
@@ -119,3 +126,44 @@ def align_x_axis_quat(
 
 
 __all__ = ["TranslationSegment", "plan_translation_segment", "align_x_axis_quat"]
+
+
+def heading_toward(
+    pose: "Pose", goal: "Pose", direction: "Optional[MovementDirection | str]", navigation_2d: Optional[bool]
+) -> Tuple[MovementDirection, np.ndarray, np.ndarray, float]:
+    """How a differential-drive body at ``pose`` heads for ``goal``.
+
+    Returns ``(direction, target_quat, displacement, distance)``. ``direction``
+    ``None`` is ``FORWARD``; ``AUTO`` picks ``BACKWARD`` for a goal more than 90
+    degrees behind the heading, judged in the plane (a goal straight above or
+    below is ``FORWARD``). ``target_quat`` points the body x-axis along the
+    travel, or against it when backing up (:func:`align_x_axis_quat`).
+    ``navigation_2d`` keeps the goal at the body's height.
+
+    The one rule for the per-agent and the batched differential controllers.
+    """
+    resolved = MovementDirection.FORWARD if direction is None else MovementDirection(direction)
+    start = np.asarray(pose.position, dtype=np.float64)
+    goal_pos = np.array(goal.position, dtype=np.float64)
+    if navigation_2d:
+        goal_pos[2] = start[2]
+    displacement = goal_pos - start
+    distance = float(np.linalg.norm(displacement))
+
+    if resolved == MovementDirection.AUTO:
+        resolved = MovementDirection.FORWARD
+        if float(np.linalg.norm(displacement[:2])) > 1e-6:
+            goal_heading = math.atan2(displacement[1], displacement[0])
+            delta = (goal_heading - pose.yaw + math.pi) % (2.0 * math.pi) - math.pi
+            if abs(delta) > math.pi / 2.0:
+                resolved = MovementDirection.BACKWARD
+
+    if distance > 1e-6:
+        unit = displacement / distance
+        x_axis_target = -unit if resolved == MovementDirection.BACKWARD else unit
+        target_quat = align_x_axis_quat(
+            np.asarray(pose.orientation, dtype=np.float64), np.asarray(goal.orientation, dtype=np.float64), x_axis_target
+        )
+    else:
+        target_quat = np.asarray(goal.orientation, dtype=np.float64)
+    return resolved, target_quat, displacement, distance

@@ -705,21 +705,18 @@ class TestReturnHome:
         drop = plugin.ingest("wc", robot, key="i1")
         drop._target_object = item
         drop.status = ActionStatus.COMPLETED
-        sim.sim_time = 5.0  # set a baseline sim_time for scheduling
-        plugin.on_step(0.1)
+        plugin.on_step(0.1)  # schedules the return home at sim time 0 + delay (1.0)
 
         # Move item away with different orientation
         item.set_pose_raw([10.0, 10.0, 0.1], [0, 0, 0, 1])
 
         # 1. Before delay expires — item should NOT have returned
-        sim.sim_time = 5.5  # only 0.5s after scheduling (delay=1.0)
-        plugin._process_return_home()
+        plugin._process_return_home(0.5)
         pos = item.get_pose().position
         assert abs(pos[0] - 10.0) < 0.1, "Item should still be at 10,10 before delay"
 
         # 2. After delay expires — item should return
-        sim.sim_time = 7.0  # well past the scheduled time
-        plugin._process_return_home()
+        plugin._process_return_home(2.0)
 
         pose = item.get_pose()
         # Position should be item's original spawn position

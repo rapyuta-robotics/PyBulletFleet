@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 
+from pybullet_fleet._replan import refused_until_stopped
 from pybullet_fleet.controller import Controller
 from pybullet_fleet.geometry import Pose
 
@@ -49,7 +50,9 @@ class RandomWalkController(Controller):
                 self._origin[1] + dist * math.sin(angle),
                 z,
             ]
-            agent.set_goal_pose(Pose.from_xyz(*target))
-            self._wait_timer = random.uniform(*self._wait_range)
+            # A refused goal (see Agent.set_path) is replaced on the next update.
+            goal = Pose.from_xyz(*target)
+            if agent.set_goal_pose(goal) is not False or not refused_until_stopped(agent, [goal]):
+                self._wait_timer = random.uniform(*self._wait_range)
 
         return False

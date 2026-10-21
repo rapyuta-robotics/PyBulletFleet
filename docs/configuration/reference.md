@@ -30,7 +30,7 @@ disabled behaviour.
 | `duration` | `0` | Default `run_simulation()` duration; `0` runs until interrupted or the GUI closes. |
 | `gui` / `physics` | `true` / `false` | Open a GUI / call `p.stepSimulation()` and update physics bodies each step. |
 | `monitor` / `enable_monitor_gui` | `true` / `true` | Enable DataMonitor and its optional tkinter window. The window provides playback controls plus entity selection and camera follow; requests are applied on the simulation step thread. |
-| `monitor_update_interval` | `None` | Simulated seconds between DataMonitor refreshes while `monitor` is on. `None` refreshes every step with a GUI and every second without one; `0` refreshes every step. |
+| `monitor_update_interval` | `None` | Simulated seconds between DataMonitor refreshes while `monitor` is on. `None` refreshes every step while the monitor window is open (`enable_monitor_gui`, or `gui` when that is unset) and every second otherwise; `0` refreshes every step. |
 | `monitor_log_interval` | `1.0` | Wall-clock seconds between INFO `[MONITOR]` log lines (real-time factor, collision totals, step count), independent of `monitor`, `gui` and `monitor_update_interval`; `0` logs none. The line shows only when `log_level` is `info` or lower. |
 | `log_level` | `warn` | Python logging level applied to the process root logger. |
 | `max_steps_per_frame` | `10` | Catch-up-step limit used by the pacing loop. |
@@ -251,7 +251,9 @@ two-phase step ordering.
 
 `pybullet_fleet/_defaults.py` holds built-in defaults. At module load time,
 `PBF_{SECTION}_{KEY}` environment variables replace non-`None` defaults; for
-example, `PBF_SIMULATION_TIMESTEP=0.05`. If `python-dotenv` is installed, a
+example, `PBF_SIMULATION_TIMESTEP=0.05`, or
+`PBF_CONTROLLER_GOAL_REPLACEMENT=reject` for how every agent without its own
+setting handles a goal it cannot reach from its current motion. If `python-dotenv` is installed, a
 `.env` file fills otherwise unset environment variables.
 
 YAML values passed to `from_yaml()` / `from_dict()` and explicit

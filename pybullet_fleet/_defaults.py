@@ -106,6 +106,10 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_angular_accel": 10.0,
         "cmd_vel_timeout": 0.0,
         "navigation_2d": False,
+        # What a moving agent does with a goal it cannot reach from its current
+        # motion within its limits: "brake", "reject", "wait_complete" or
+        # "immediate". See ControllerParams.goal_replacement.
+        "goal_replacement": "brake",
         # Not centralized (complex enum):
         #   default_direction — MovementDirection enum (forward / backward / …)
     },

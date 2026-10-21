@@ -42,8 +42,14 @@ Position3: TypeAlias = tuple[float, float, float]
 class NavigationAdapter(Protocol):
     """Backend-neutral navigation operations used by agent behavior trees."""
 
-    def start_navigation(self, goal: Position3) -> None:
-        """Start navigation toward ``goal`` for this adapter's execution target."""
+    def start_navigation(self, goal: Position3) -> bool | None:
+        """Start navigation toward ``goal`` for this adapter's execution target.
+
+        Return ``False`` when the target refuses the goal for now (for
+        example, it is moving and cannot turn toward it within its limits);
+        the action then tries again on its next tick. ``None`` or ``True``
+        means started.
+        """
 
     def navigation_status(self) -> NavigationStatus:
         """Return the lifecycle state of the currently active navigation."""

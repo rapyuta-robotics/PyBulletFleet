@@ -133,6 +133,14 @@ def _disable_monitor_gui(monkeypatch):
 
 
 @pytest.fixture
+def reject_mode(monkeypatch):
+    """Make ``goal_replacement="reject"`` the default, for tests of refused goals."""
+    from pybullet_fleet import _defaults
+
+    monkeypatch.setitem(_defaults.CONTROLLER, "goal_replacement", "reject")
+
+
+@pytest.fixture
 def pybullet_env():
     """Headless PyBullet DIRECT session with ground plane.
 

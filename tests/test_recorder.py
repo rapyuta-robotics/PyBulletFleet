@@ -158,20 +158,15 @@ class TestRecorderCapture:
 
     def test_auto_stop_on_duration(self, sim_core, tmp_gif):
         rec = SimulationRecorder(sim_core, output=tmp_gif, duration=1.0, width=160, height=120)
-        rec.start()
-        # Simulate time passing beyond duration
-        sim_core.sim_time = 0.0
-        rec._start_sim_time = 0.0
+        rec.start()  # at sim time 0
 
         # Capture within duration
-        sim_core.sim_time = 0.5
-        rec._capture_frame(sim_core, 0.5)
+        rec._capture_at(0.5)
         assert rec.is_recording is True
         assert rec.frame_count == 1
 
         # Capture at duration boundary
-        sim_core.sim_time = 1.1
-        rec._capture_frame(sim_core, 0.6)
+        rec._capture_at(1.1)
         assert rec.is_recording is False
         # Frame should NOT be captured after duration exceeded
         assert rec.frame_count == 1
@@ -283,14 +278,11 @@ class TestRecorderCamera:
         rec = SimulationRecorder(
             sim_core, output=tmp_gif, width=160, height=120, camera_mode="orbit", duration=2.0, orbit_degrees=90.0
         )
-        rec.start()
-        rec._start_sim_time = 0.0
-        sim_core.sim_time = 0.0
+        rec.start()  # at sim time 0
         rec._capture_frame(sim_core, 0.1)
         frame1 = rec._frames[0].copy()
 
-        sim_core.sim_time = 1.0
-        rec._capture_frame(sim_core, 1.0)
+        rec._capture_at(1.0)
         frame2 = rec._frames[1].copy()
 
         # Frames should differ (camera moved)
@@ -395,7 +387,7 @@ class TestRecorderTimeBase:
         rec.start()
         # sim mode: callback registered with frequency=fps
         cb = sim_core._callbacks[-1]
-        assert cb["frequency"] == 10.0
+        assert cb["gate"].frequency == 10.0
         rec.stop()
 
     def test_real_mode_registers_every_step(self, sim_core, tmp_gif):
@@ -403,7 +395,7 @@ class TestRecorderTimeBase:
         rec.start()
         # real mode: callback registered with frequency=None (every step)
         cb = sim_core._callbacks[-1]
-        assert cb["frequency"] is None
+        assert cb["gate"].frequency is None
         rec.stop()
 
     def test_real_mode_throttles_by_wall_clock(self, sim_core, tmp_gif, monkeypatch):
@@ -465,19 +457,15 @@ class TestRecorderTimeBase:
     def test_sim_mode_ignores_wall_clock(self, sim_core, tmp_gif):
         """In sim mode (default), capture frequency is based on sim_time, not wall clock."""
         rec = SimulationRecorder(sim_core, output=tmp_gif, width=80, height=60, fps=10, duration=1.0, time_base="sim")
-        rec.start()
-        rec._start_sim_time = 0.0
-        sim_core.sim_time = 0.0
+        rec.start()  # at sim time 0
 
         # Capture within duration
-        sim_core.sim_time = 0.5
-        rec._capture_frame(sim_core, 0.1)
+        rec._capture_at(0.5)
         assert rec.is_recording is True
         assert rec.frame_count == 1
 
         # Sim time exceeds duration → stop
-        sim_core.sim_time = 1.1
-        rec._capture_frame(sim_core, 0.6)
+        rec._capture_at(1.1)
         assert rec.is_recording is False
         assert rec.frame_count == 1
 

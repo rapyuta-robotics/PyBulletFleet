@@ -16,17 +16,22 @@ from pybullet_fleet.behavior_tree_core import (
     Position3,
     TickResult,
 )
+from pybullet_fleet._replan import RefusesPaths, refused_until_stopped
 from pybullet_fleet.geometry import Pose
 
 
-class GoalPoseAgent(Protocol):
-    """PyBulletFleet Agent surface used by the default navigation adapter."""
+class GoalPoseAgent(RefusesPaths, Protocol):
+    """PyBulletFleet Agent surface used by the default navigation adapter.
+
+    ``path_rejection`` (from :class:`~pybullet_fleet._replan.RefusesPaths`)
+    tells a refusal that lasts only while the agent moves, which is retried.
+    """
 
     is_moving: bool
     goal_pose: Pose | None
 
-    def set_goal_pose(self, goal: Pose) -> None:
-        """Begin moving toward a goal pose."""
+    def set_goal_pose(self, goal: Pose) -> bool:
+        """Begin moving toward a goal pose; ``False`` if the agent refused it."""
 
 
 class AgentActionId(str, Enum):
@@ -43,8 +48,11 @@ class PyBulletFleetNavigationAdapter:
 
     agent: GoalPoseAgent
 
-    def start_navigation(self, goal: Position3) -> None:
-        self.agent.set_goal_pose(Pose.from_xyz(*goal))
+    def start_navigation(self, goal: Position3) -> bool:
+        pose = Pose.from_xyz(*goal)
+        # False only for a refusal that ends with the current motion; a
+        # permanent one counts as started, as before.
+        return self.agent.set_goal_pose(pose) is not False or not refused_until_stopped(self.agent, [pose])
 
     def navigation_status(self) -> NavigationStatus:
         if self.agent.is_moving or self.agent.goal_pose is not None:
@@ -73,7 +81,10 @@ class AgentBehaviorTree(BehaviorTree):
             goal = self._port(node.attrib.get("goal", "{goal}"))
             if not isinstance(goal, (tuple, list)) or len(goal) != 3:
                 return TickResult.FAILURE
-            self._navigation.start_navigation(cast(Position3, tuple(goal)))
+            if self._navigation.start_navigation(cast(Position3, tuple(goal))) is False:
+                # The agent refused the goal while still moving (see
+                # Agent.set_path); try again on the next tick.
+                return TickResult.RUNNING
             state["started"] = True
             return TickResult.RUNNING
         navigation_status = self._navigation.navigation_status()
