@@ -88,9 +88,9 @@ class _Writes:
         self.count = 0
         original = monitor._write_text
 
-        def counted(text):
+        def counted(*parts):
             self.count += 1
-            original(text)
+            original(*parts)
 
         monkeypatch.setattr(monitor, "_write_text", counted)
 

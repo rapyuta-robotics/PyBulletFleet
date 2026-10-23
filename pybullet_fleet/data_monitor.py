@@ -355,11 +355,17 @@ class DataMonitor:
         """
         self._write_text(json.dumps(sim_data))
 
-    def _write_text(self, text: str) -> None:
+    def _write_text(self, *parts: str) -> None:
+        """Write ``parts`` back to back as the file's whole content, atomically.
+
+        Taking the pieces separately lets a caller pass a large cached string
+        (the entity list) without first copying it into a new joined string.
+        """
         tmp_path = self.data_file + ".tmp"
         try:
             with open(tmp_path, "w") as f:
-                f.write(text)
+                for part in parts:
+                    f.write(part)
             os.replace(tmp_path, self.data_file)  # atomic on POSIX
         except Exception:
             pass  # Ignore errors in data writing
@@ -381,8 +387,8 @@ class DataMonitor:
         data["physics"] = "enabled" if data.pop("physics_enabled") else "disabled"
         data["frequency"] = 1 / frame.timestep
         text = json.dumps(data)
-        # Splice the cached list in as the "entities" member.
-        self._write_text(text[:-1] + (", " if data else "") + '"entities": ' + self._entities_json + "}")
+        # Splice the cached list in as the "entities" member, without copying it.
+        self._write_text(text[:-1], ", " if data else "", '"entities": ', self._entities_json, "}")
 
     def set_command_sink(self, sink: Callable[[GuiCommand], bool]) -> None:
         """Set the thread-safe callable that accepts monitor commands."""
