@@ -34,10 +34,11 @@ Registry
     ctrl = create_controller("differential", {"max_linear_vel": 1.5})
 """
 
-import inspect
+import copy
 import math
+import weakref
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Type, TypeVar
 
 import numpy as np
 
@@ -63,12 +64,18 @@ import pybullet_fleet._replan as _replan
 from pybullet_fleet._replan import HEADING_TOL, PathRequest
 from pybullet_fleet._tpi_state import capture_tpi_state, restore_tpi_state
 from pybullet_fleet._motion_planning import heading_toward
+from pybullet_fleet.config_utils import _parameter_names
 from pybullet_fleet.controller_params import ControllerParams
 
 if TYPE_CHECKING:
     from pybullet_fleet.agent import Agent
 
 logger = get_lazy_logger(__name__)
+
+#: Controller class -> whether its _construction_config, declared fresh, passed
+#: the one check that is cheap to make (two calls return two dicts). Checked on
+#: the first spawn of each class; weak keys so a run-time class is not kept alive.
+_FRESH_CONSTRUCTION_CONFIG_CHECKED: "weakref.WeakKeyDictionary[type, bool]" = weakref.WeakKeyDictionary()
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +190,13 @@ class Controller(ABC):
 
         Subclass-specific constructor arguments are outside this descriptor;
         profiles must explicitly support and validate those controllers.
+
+        Contract for overrides: return a new dict on every call, sharing no
+        mutable value with the controller -- the caller keeps it and may
+        change it. This implementation does (``dataclasses.asdict`` copies
+        nested values). :meth:`_spawn_descriptor_config` deep-copies the
+        result of an override unless the class declares
+        :attr:`_construction_config_is_fresh`.
         """
         from pybullet_fleet.controller_params import ControllerParams
 
@@ -190,6 +204,46 @@ class Controller(ABC):
         if kind is None or not isinstance(self.params, ControllerParams):
             return None
         return {"type": kind, **self.params.as_config()}
+
+    #: Set to ``True`` in a subclass that overrides :meth:`_construction_config`
+    #: and keeps its contract (a new dict on every call, no mutable value shared
+    #: with the controller), to skip the defensive deep copy per spawned agent.
+    #: The declaration is the subclass's responsibility. Only one breach is
+    #: checked, once per class on its first spawn: if two calls return the same
+    #: dict, a warning is logged and the class is copied as if undeclared. A
+    #: nested value shared with the controller is not detected.
+    #: The flag is inherited: a subclass that overrides ``_construction_config``
+    #: below a class that declared it is trusted too. Reset it to ``False`` in
+    #: such a subclass unless its override keeps the contract as well.
+    _construction_config_is_fresh: ClassVar[bool] = False
+
+    def _spawn_descriptor_config(self) -> Optional[dict]:
+        """:meth:`_construction_config` for an agent's spawn descriptor, owned by it.
+
+        The base implementation already returns a fresh dict, so it is kept
+        as it is -- a second deep copy per spawned agent was measurable. An
+        override is deep-copied unless the class declares
+        :attr:`_construction_config_is_fresh`.
+        """
+        config = self._construction_config()
+        cls = type(self)
+        if config is None or cls._construction_config is Controller._construction_config:
+            return config
+        if not cls._construction_config_is_fresh:
+            return copy.deepcopy(config)
+        fresh = _FRESH_CONSTRUCTION_CONFIG_CHECKED.get(cls)
+        if fresh is None:
+            # First spawn of this class: a second call must not hand back the
+            # same dict -- the usual breach, a dict the controller holds.
+            fresh = self._construction_config() is not config
+            _FRESH_CONSTRUCTION_CONFIG_CHECKED[cls] = fresh
+            if not fresh:
+                logger.warning(
+                    f"{cls.__name__} declares _construction_config_is_fresh, but "
+                    "_construction_config returned the same dict twice; its spawn "
+                    "descriptors are deep-copied instead"
+                )
+        return config if fresh else copy.deepcopy(config)
 
     @classmethod
     def from_config(cls: Type[_ControllerT], config: dict) -> "_ControllerT":
@@ -207,8 +261,7 @@ class Controller(ABC):
         """
         from pybullet_fleet.controller_params import ControllerParams
 
-        sig = inspect.signature(cls.__init__)
-        param_names = {p for p in sig.parameters if p != "self"}
+        param_names = _parameter_names(cls.__init__)
         kwargs: dict = {"params": ControllerParams.from_dict(config)}
         extra_keys = param_names - {"params"}
         kwargs.update({k: v for k, v in config.items() if k in extra_keys})

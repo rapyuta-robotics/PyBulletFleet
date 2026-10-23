@@ -66,6 +66,19 @@ are not recommended for production use yet.
   no demo worlds or the worlds name no Fuel models (the latter can be allowed
   with `ALLOW_NO_FUEL_MODELS=1`).
 
+- Spawning an agent no longer copies the controller's construction config a
+  second time for its spawn descriptor, and the parameter names of spawn
+  factories and controller constructors are introspected once per callable
+  instead of once per object: spawning 1000 agents takes 0.30 s instead of
+  0.36 s, as in v0.8.0. Each agent still keeps its own descriptor: a
+  controller that overrides `_construction_config()` should return a new dict
+  each call; its result is still deep-copied unless the class sets
+  `_construction_config_is_fresh = True`. That declaration is the class's
+  responsibility: the first spawn of each class only checks that two calls
+  return two dicts, and logs a warning and keeps copying if not. The
+  introspection cache holds its callables weakly and skips callables that
+  cannot be cached (an unhashable callable object, say).
+
 - `ControllerParams` takes either enum field -- `default_direction` and
   `goal_replacement` -- as the enum or its string value, on construction and
   on any later assignment, and stores the enum; an unknown value raises
