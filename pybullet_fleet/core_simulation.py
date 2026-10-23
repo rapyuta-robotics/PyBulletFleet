@@ -580,6 +580,12 @@ class MultiRobotSimulationCore:
             {}
         )  # object_id -> AABB
         self._cached_spatial_grid: Dict[Tuple[int, int, int], Set[int]] = {}  # Spatial hash grid: cell -> {object_ids}
+        # The broadphase margin the grid's registrations were made with. A pair
+        # within the margin is found only if both bodies were registered with
+        # it, so the grid is rebuilt whenever the effective margin differs --
+        # set_collision_margin() does so at once; a change made on ``params``
+        # directly is caught by filter_aabb_pairs().
+        self._grid_margin: Optional[float] = None
         self._cached_object_to_cell: Dict[int, List[Tuple[int, int, int]]] = (
             {}
         )  # object_id -> list of cells (supports multi-cell registration)
@@ -1737,9 +1743,10 @@ class MultiRobotSimulationCore:
         return cell_size
 
     def _rebuild_spatial_grid(self) -> None:
-        """Rebuild entire spatial grid using current cell_size and AABBs."""
+        """Rebuild entire spatial grid using current cell_size, margin and AABBs."""
         self._cached_spatial_grid.clear()
         self._cached_object_to_cell.clear()
+        self._grid_margin = self._collision_broadphase_margin()
 
         for object_id in self._cached_aabbs_dict.keys():
             self._update_object_spatial_grid(object_id)
@@ -2197,7 +2204,10 @@ class MultiRobotSimulationCore:
         # Every cell its AABB, enlarged by half the pair clearance, touches:
         # two bodies within the clearance then share a cell, so the pair
         # search looks in a body's own cells only.
-        cells = self._get_overlapping_cells(object_id, self._collision_broadphase_margin() / 2)
+        margin = self._collision_broadphase_margin()
+        if self._grid_margin is None:
+            self._grid_margin = margin
+        cells = self._get_overlapping_cells(object_id, margin / 2)
 
         # Same-cell optimization: skip grid operations if cells haven't changed
         if old_cells is not None and cells == old_cells:
@@ -3169,6 +3179,16 @@ class MultiRobotSimulationCore:
         if ignore_static is None:
             ignore_static = self._ignore_static_collision
         broadphase_margin = self._collision_broadphase_margin()
+
+        # 0. A margin changed on ``params`` directly (collision_margin, or a
+        # collision_detection_method with a different clearance) bypasses
+        # set_collision_margin(): rebuild with it, as that does, and check
+        # every body again -- stationary pairs included.
+        if self._grid_margin is not None and broadphase_margin != self._grid_margin:
+            self._rebuild_spatial_grid()
+            moved_objects = set(self._sim_objects_dict.keys())
+            self._moved_this_step.update(self._sim_objects_dict)
+            self._recheck_stationary_pairs = True
 
         # 1. Handle mode changes
         # Check if ignore_static mode has changed (skip if this is the first call)
