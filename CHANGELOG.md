@@ -58,7 +58,11 @@ are not recommended for production use yet.
   written at most once per `monitor_write_interval` (new, default 0.25 wall
   seconds; the window reads it every 0.5 s). A selection, follow or pause
   change, a change in the set of objects and the final frame of a run are
-  written at once. The JSON a reader sees is unchanged, and
+  written at once. A throttled frame is not left behind: the next
+  `step_once()` after the interval writes it (also while paused, so a single
+  step or a selection made while paused shows), `close()` flushes, and the
+  new `flush_monitor()` writes it on demand. `reset()` empties the entity
+  list. The JSON a reader sees is unchanged, and
   `last_monitor_frame` still refreshes on every `monitor_update_interval`.
   With 5000 static bodies, 20 moving agents and the monitor refreshing every
   step, a step takes 2.6 ms instead of 71 ms (2.3 ms with the monitor off).

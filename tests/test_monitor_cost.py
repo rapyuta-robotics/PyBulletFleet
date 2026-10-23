@@ -194,3 +194,113 @@ class TestThrottle:
         core.update_monitor()
         assert writes.count == 2
         assert _read(core)["paused"] is True
+
+
+class _Clock:
+    """Stands in for the DataMonitor's wall clock, so a throttle window can pass in a test."""
+
+    def __init__(self, monkeypatch):
+        import time as real_time
+        import types
+
+        self.now = 1000.0
+        fake = types.SimpleNamespace(
+            **{name: getattr(real_time, name) for name in dir(real_time) if not name.startswith("__")}
+        )
+        fake.monotonic = lambda: self.now
+        monkeypatch.setattr(data_monitor_module, "time", fake)
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+class TestNothingIsLeftUnwritten:
+    """A throttled frame reaches the file once the window passes, or on a flush."""
+
+    def test_a_single_step_while_paused(self, sim, monkeypatch):
+        clock = _Clock(monkeypatch)
+        core = sim(write_interval=1.0)
+        core.step_once()
+        core.pause()
+        core.step_once()  # paused: writes the pause at once
+        assert _read(core)["paused"] is True
+        assert core.request_single_step()
+        core.step_once()  # the single step's frame falls inside the window
+        steps = core.step_count
+        clock.advance(2.0)
+        core.step_once()  # still paused: nothing else will come
+        assert _read(core)["steps"] == steps
+
+    def test_a_selection_while_paused(self, sim, monkeypatch):
+        _Clock(monkeypatch)
+        core = sim(write_interval=1.0)
+        box = _box(core, 0.0, "picked")
+        core.step_once()
+        core.pause()
+        core.step_once()
+        core._set_selected_entity(box.object_id, "test")
+        core.step_once()  # paused, but the window shows the selection
+        assert _read(core)["selected_entity"]["entity"]["name"] == "picked"
+
+    def test_the_end_of_a_step_once_loop(self, sim, monkeypatch):
+        _Clock(monkeypatch)
+        core = sim(write_interval=1.0)
+        for _ in range(10):
+            core.step_once()
+        assert _read(core)["steps"] == 1  # the rest fell inside the window
+        assert core.flush_monitor()
+        assert _read(core)["steps"] == 10
+        assert not core.flush_monitor()  # nothing left to write
+
+    def test_close_flushes(self, sim, monkeypatch):
+        _Clock(monkeypatch)
+        core = sim(write_interval=1.0)
+        for _ in range(10):
+            core.step_once()
+        data_file = core._data_monitor.data_file
+        core.close()
+        with open(data_file) as f:
+            assert json.load(f)["steps"] == 10
+
+    def test_close_after_an_external_disconnect_does_not_raise(self, sim, monkeypatch):
+        _Clock(monkeypatch)
+        core = sim(write_interval=1.0)
+        box = _box(core, 0.0, "picked")
+        core.step_once()
+        core._set_selected_entity(box.object_id, "test")  # the flush needs PyBullet for this
+        p.disconnect(core.client)
+        core.close()
+
+    def test_a_running_loop_writes_the_trailing_frame_once_the_window_passes(self, sim, monkeypatch):
+        """With refreshes sparser than steps, the next step after the window writes the last frame."""
+        clock = _Clock(monkeypatch)
+        core = sim(write_interval=1.0, update_interval=0.5)
+        core.step_once()
+        for _ in range(4):
+            core.step_once()
+        refreshed = core.last_monitor_frame.steps
+        clock.advance(2.0)
+        core.step_once()
+        assert _read(core)["steps"] >= refreshed
+
+
+class TestOtherWaysTheSetOfObjectsChanges:
+    def test_reset_empties_the_entity_list(self, sim):
+        core = sim(write_interval=0)
+        _box(core, 0.0, "a")
+        core.step_once()
+        assert [e["name"] for e in _read(core)["entities"]] == ["a"]
+        core.reset()
+        core.update_monitor(force_write=True)
+        assert _read(core)["entities"] == []
+
+    def test_set_name_and_a_loader_rename_go_through_the_setter(self, sim):
+        core = sim(write_interval=0)
+        box = _box(core, 0.0, "a")
+        core.step_once()
+        box.set_name("b")
+        core.step_once()
+        assert [e["name"] for e in _read(core)["entities"]] == ["b"]
+        box.name = "{}/{}".format("model", box.name)  # what sdf_loader does
+        core.step_once()
+        assert [e["name"] for e in _read(core)["entities"]] == ["model/b"]

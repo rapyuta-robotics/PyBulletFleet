@@ -194,7 +194,9 @@ class SimulationParams:
     #: (``monitor_update_interval``) still builds :attr:`last_monitor_frame`;
     #: only the file the monitor window reads -- every 0.5 s -- is written
     #: less often. A selection, follow or pause change, a change in the set of
-    #: objects, and the final frame of a run are written at once. ``0`` writes
+    #: objects, and the final frame of a run are written at once. A throttled
+    #: frame is written by the next ``step_once()`` after the interval (also
+    #: while paused), by ``close()`` and by ``flush_monitor()``. ``0`` writes
     #: on every refresh.
     monitor_write_interval: float = _SIM_D["monitor_write_interval"]
     #: Wall-clock seconds between ``[MONITOR]`` lines logged at INFO -- RTF,
@@ -486,6 +488,10 @@ class MultiRobotSimulationCore:
         # the entity list): write the next refresh at once, whatever
         # monitor_write_interval says.
         self._monitor_write_pending: bool = True
+        # The last frame built was throttled and not written yet: the next
+        # call after the window (any step_once(), paused or not) or a
+        # flush_monitor() writes it, so the file never stays behind for good.
+        self._monitor_frame_unwritten: bool = False
         self._selected_entity_id: Optional[int] = None
         self._gui_follow_enabled: bool = False
         self._pacing_rebase_requested: bool = False
@@ -3831,6 +3837,45 @@ class MultiRobotSimulationCore:
         if self._data_monitor:
             if self._data_monitor.write_frame(frame, force=force_write or self._monitor_write_pending):
                 self._monitor_write_pending = False
+                self._monitor_frame_unwritten = False
+            else:
+                self._monitor_frame_unwritten = True
+
+    def flush_monitor(self) -> bool:
+        """Write the DataMonitor file now if it is behind; return whether it wrote.
+
+        Frames are written at most once per ``monitor_write_interval``. A
+        later :meth:`step_once` writes a throttled frame once the interval
+        has passed, and :meth:`close` flushes, so only a program that stops
+        calling ``step_once()`` and keeps the simulation open needs this.
+        """
+        if not self._data_monitor:
+            return False
+        if self._monitor_write_pending or self._last_monitor_frame is None:
+            # Something the window shows changed since the last frame was
+            # built (a selection while paused, say): build a fresh one.
+            self.update_monitor(force_write=True)
+            return True
+        if self._monitor_frame_unwritten:
+            self._data_monitor.write_frame(self._last_monitor_frame, force=True)
+            self._monitor_frame_unwritten = False
+            return True
+        return False
+
+    def _write_trailing_monitor_frame(self, paused: bool = False) -> None:
+        """On a step with no refresh: write what the window is missing, if the throttle allows.
+
+        Running, the next refresh writes any pending change, so only a
+        throttled frame is written here. Paused, no refresh comes at all, so
+        a pending change (a selection, the pause itself) builds a fresh frame.
+        """
+        if not self._data_monitor:
+            return
+        if paused and self._monitor_write_pending:
+            self.update_monitor(force_write=True)
+        elif self._monitor_frame_unwritten and self._last_monitor_frame is not None:
+            if self._data_monitor.write_frame(self._last_monitor_frame):
+                self._monitor_frame_unwritten = False
 
     def initialize_simulation(self) -> None:
         """
@@ -3868,6 +3913,7 @@ class MultiRobotSimulationCore:
         self._last_logged_collision_count = 0
         self._last_monitor_frame = None
         self._monitor_write_pending = True
+        self._monitor_frame_unwritten = False
         self._single_step_requested = False
         self._pacing_rebase_requested = False
         self._clear_selected_nameplate()
@@ -3956,6 +4002,7 @@ class MultiRobotSimulationCore:
         self._sim_objects.clear()
         self._sim_objects_dict.clear()
         self._agents.clear()
+        self._note_monitor_entities_changed()
 
         # Movement / collision caches
         self._moved_this_step.clear()
@@ -4566,8 +4613,17 @@ class MultiRobotSimulationCore:
         # strand the resources the later steps own -- and since _closed is
         # already set, a retry would be a no-op. The first exception is kept
         # and re-raised once everything has been given its chance.
+        def _flush_monitor() -> None:
+            # A program driving step_once() itself may stop inside a throttle
+            # window; leave the file at the last state it reached.
+            if self._monitor_enabled:
+                try:
+                    self.flush_monitor()
+                except Exception:  # noqa: BLE001 - a stale monitor file must not fail close()
+                    logger.debug("Final DataMonitor flush failed", exc_info=True)
+
         first_error: Optional[BaseException] = None
-        for step in (_finalise_recording, self._shutdown_plugins, _stop_monitor):
+        for step in (_flush_monitor, _finalise_recording, self._shutdown_plugins, _stop_monitor):
             try:
                 step()
             except BaseException as exc:  # noqa: BLE001 - re-raised below
@@ -4721,6 +4777,10 @@ class MultiRobotSimulationCore:
 
         # Skip physics simulation and callbacks if paused
         if self.is_paused and not self._single_step_requested:
+            if self._monitor_enabled:
+                # Nothing refreshes the monitor while paused: still show a
+                # selection or pause change, and the last single step.
+                self._write_trailing_monitor_frame(paused=True)
             return
         self._single_step_requested = False
 
@@ -4920,6 +4980,8 @@ class MultiRobotSimulationCore:
             if self._monitor_enabled:
                 if self._monitor_update_gate.due(self._schedule_time(), self._params.timestep) is not None:
                     self.update_monitor()
+                else:
+                    self._write_trailing_monitor_frame()
 
             if self._params.monitor_log_interval > 0:
                 self._maybe_log_monitor_line()
