@@ -53,17 +53,16 @@ are not recommended for production use yet.
 
 - The DataMonitor no longer costs more than the step in a large scene. Its
   entity list is rebuilt only when an object is added, removed or renamed
-  (`SimObject.name` is now a property that tells the simulation), the list's
-  JSON is serialized once per change, and the file the monitor window reads is
-  written at most once per `monitor_write_interval` (new, default 0.25 wall
-  seconds; the window reads it every 0.5 s). A selection, follow or pause
-  change, a change in the set of objects and the final frame of a run are
-  written at once. A throttled frame is not left behind: the next
-  `step_once()` after the interval writes it (also while paused, so a single
-  step or a selection made while paused shows), `close()` flushes, and the
-  new `flush_monitor()` writes it on demand. `reset()` empties the entity
-  list. The JSON a reader sees is unchanged, and
-  `last_monitor_frame` still refreshes on every `monitor_update_interval`.
+  (`SimObject.name` is now a property that tells the simulation), and the
+  list's JSON is serialized once per change. With the monitor window open,
+  `monitor_update_interval=None` now refreshes every 0.25 simulated seconds
+  instead of every step (the window reads the file every 0.5 s); without the
+  window it is still 1 s, and `0` is still every step. Each refresh builds
+  `last_monitor_frame` and writes the file. While paused, a selection, follow
+  or pause change and a single step refresh at once; the final frame of a run
+  is written, `close()` writes the last state, and the new `flush_monitor()`
+  does so on demand. `reset()` empties the entity list. The JSON a reader
+  sees is unchanged.
   With 5000 static bodies, 20 moving agents and the monitor refreshing every
   step, a step takes 2.6 ms instead of 71 ms (2.3 ms with the monitor off).
 

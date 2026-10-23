@@ -1,13 +1,15 @@
 """The DataMonitor stays cheap in a large scene.
 
-The entity list is rebuilt only when objects come, go or are renamed, its JSON
-is serialized once per change, and the file the monitor window reads is
-written at most once per ``monitor_write_interval`` -- except for changes the
-window shows (selection, follow, pause, the entity list) and the final frame,
-which go out at once. The JSON a reader sees is what it always was.
+The entity list is rebuilt only when objects come, go or are renamed, and its
+JSON is serialized once per change. A frame is built and written on each
+refresh -- every ``monitor_update_interval`` simulated seconds, by default
+0.25 s with the monitor window and 1 s without -- and, while paused, at once
+for a change the window shows or a single step. The JSON a reader sees is what
+it always was.
 """
 
 import json
+import os
 from dataclasses import asdict
 
 import pybullet as p
@@ -23,18 +25,20 @@ from pybullet_fleet.types import CollisionMode
 
 
 @pytest.fixture
-def sim(tmp_path):
-    def make(write_interval=0.25, update_interval=0.0):
+def sim(tmp_path, monkeypatch):
+    def make(update_interval=0.0, window=False):
+        # The window flag only decides the default interval here; the Tk
+        # window itself is never started.
+        monkeypatch.setattr(DataMonitor, "start", lambda self: None)
         core = MultiRobotSimulationCore(
             SimulationParams(
                 gui=False,
                 monitor=True,
-                enable_monitor_gui=False,
+                enable_monitor_gui=window,
                 enable_floor=False,
                 timestep=0.1,
                 target_rtf=0,
                 monitor_update_interval=update_interval,
-                monitor_write_interval=write_interval,
                 monitor_log_interval=0,
                 log_level="warning",
             )
@@ -97,16 +101,16 @@ class TestTheJson:
         a, b = _box(core, 0.0, "shelf"), _box(core, 1.0)
         core._set_selected_entity(a.object_id, "test")
         core.step_once()
-        core.update_monitor(force_write=True)
+        core.update_monitor()
         assert _read(core) == _legacy_json(core.last_monitor_frame)
         names = [e["name"] for e in _read(core)["entities"]]
         assert names == ["shelf", "entity-{}".format(b.object_id)]
 
     def test_an_empty_entity_list(self, tmp_path):
-        monitor = DataMonitor(enable_gui=False, write_interval=0)
+        monitor = DataMonitor(enable_gui=False)
         monitor.data_file = str(tmp_path / "m.json")
         frame = MonitorFrame(0.0, 0.0, 1.0, 1.0, 0.1, False, 0, 0, 0, 0, 0, False)
-        assert monitor.write_frame(frame)
+        monitor.write_frame(frame)
         with open(monitor.data_file) as f:
             assert json.load(f) == _legacy_json(frame)
 
@@ -129,7 +133,7 @@ class TestTheEntityList:
 
     def test_is_rebuilt_only_on_a_change(self, sim, monkeypatch):
         """Performance guard: no per-step rebuild or re-serialization of a static list."""
-        core = sim(write_interval=0)
+        core = sim()
         for i in range(50):
             _box(core, float(i))
         built, dumped = [0], [0]
@@ -158,82 +162,70 @@ class TestTheEntityList:
         assert dumped[0] == 2
 
 
-class TestThrottle:
-    def test_writes_at_most_once_per_interval(self, sim, monkeypatch):
-        core = sim(write_interval=3600.0)
-        writes = _Writes(core._data_monitor, monkeypatch)
-        for _ in range(30):
-            core.step_once()
-        assert writes.count == 1  # the first refresh; the rest are within the hour
-        assert core.last_monitor_frame.steps == 30  # refreshes still happen every step
+class TestTheRefreshInterval:
+    """``monitor_update_interval``: every refresh builds and writes one frame."""
 
-    def test_zero_writes_every_refresh(self, sim, monkeypatch):
-        core = sim(write_interval=0)
+    @pytest.mark.parametrize(
+        "window, expected",
+        [(True, 16), (False, 4)],
+        ids=["with_the_window_every_quarter_second", "without_it_every_second"],
+    )
+    def test_the_default(self, sim, monkeypatch, window, expected):
+        core = sim(update_interval=None, window=window)
+        writes = _Writes(core._data_monitor, monkeypatch)
+        for _ in range(40):  # 4 simulated seconds at dt=0.1
+            core.step_once()
+        assert expected - 1 <= writes.count <= expected + 1
+
+    def test_zero_is_every_step(self, sim, monkeypatch):
+        core = sim(update_interval=0.0)
         writes = _Writes(core._data_monitor, monkeypatch)
         for _ in range(10):
             core.step_once()
         assert writes.count == 10
 
-    def test_the_final_frame_is_written(self, sim):
-        core = sim(write_interval=3600.0)
+    def test_every_frame_built_is_written(self, sim, monkeypatch):
+        core = sim(update_interval=0.5)
+        writes = _Writes(core._data_monitor, monkeypatch)
+        built = [0]
+        original = core.update_monitor
+
+        def counted():
+            built[0] += 1
+            original()
+
+        monkeypatch.setattr(core, "update_monitor", counted)
+        for _ in range(30):
+            core.step_once()
+        assert built[0] == writes.count > 0
+
+
+class TestTheWindowIsNeverLeftBehind:
+    """Paused, a change the window shows or a single step is written at once; the end of a run is written."""
+
+    def test_the_final_frame_of_a_run(self, sim):
+        core = sim(update_interval=10.0)
         core.run_simulation(duration=1.0)
         assert _read(core)["steps"] == core.step_count
 
-    def test_a_change_the_window_shows_is_written_at_once(self, sim, monkeypatch):
-        core = sim(write_interval=3600.0)
-        box = _box(core, 0.0, "picked")
-        core.step_once()
-        writes = _Writes(core._data_monitor, monkeypatch)
-        core.step_once()
-        assert writes.count == 0
-        core._set_selected_entity(box.object_id, "test")
-        core.step_once()
-        assert writes.count == 1
-        assert _read(core)["selected_entity"]["entity"]["name"] == "picked"
-        core.pause()
-        core.update_monitor()
-        assert writes.count == 2
-        assert _read(core)["paused"] is True
-
-
-class _Clock:
-    """Stands in for the DataMonitor's wall clock, so a throttle window can pass in a test."""
-
-    def __init__(self, monkeypatch):
-        import time as real_time
-        import types
-
-        self.now = 1000.0
-        fake = types.SimpleNamespace(
-            **{name: getattr(real_time, name) for name in dir(real_time) if not name.startswith("__")}
-        )
-        fake.monotonic = lambda: self.now
-        monkeypatch.setattr(data_monitor_module, "time", fake)
-
-    def advance(self, seconds):
-        self.now += seconds
-
-
-class TestNothingIsLeftUnwritten:
-    """A throttled frame reaches the file once the window passes, or on a flush."""
-
-    def test_a_single_step_while_paused(self, sim, monkeypatch):
-        clock = _Clock(monkeypatch)
-        core = sim(write_interval=1.0)
+    def test_a_pause(self, sim):
+        core = sim(update_interval=10.0)
         core.step_once()
         core.pause()
-        core.step_once()  # paused: writes the pause at once
+        core.step_once()
         assert _read(core)["paused"] is True
+
+    def test_a_single_step_while_paused(self, sim):
+        core = sim(update_interval=10.0)
+        core.step_once()
+        core.pause()
+        core.step_once()
         assert core.request_single_step()
-        core.step_once()  # the single step's frame falls inside the window
-        steps = core.step_count
-        clock.advance(2.0)
-        core.step_once()  # still paused: nothing else will come
-        assert _read(core)["steps"] == steps
+        core.step_once()
+        assert _read(core)["steps"] == core.step_count
 
-    def test_a_selection_while_paused(self, sim, monkeypatch):
-        _Clock(monkeypatch)
-        core = sim(write_interval=1.0)
+    def test_a_selection_while_paused(self, sim):
+        core = sim(update_interval=10.0)
         box = _box(core, 0.0, "picked")
         core.step_once()
         core.pause()
@@ -242,19 +234,17 @@ class TestNothingIsLeftUnwritten:
         core.step_once()  # paused, but the window shows the selection
         assert _read(core)["selected_entity"]["entity"]["name"] == "picked"
 
-    def test_the_end_of_a_step_once_loop(self, sim, monkeypatch):
-        _Clock(monkeypatch)
-        core = sim(write_interval=1.0)
+    def test_the_end_of_a_step_once_loop(self, sim):
+        core = sim(update_interval=10.0)
         for _ in range(10):
             core.step_once()
-        assert _read(core)["steps"] == 1  # the rest fell inside the window
+        assert not os.path.exists(core._data_monitor.data_file)  # the first refresh is 10 s away
         assert core.flush_monitor()
         assert _read(core)["steps"] == 10
         assert not core.flush_monitor()  # nothing left to write
 
-    def test_close_flushes(self, sim, monkeypatch):
-        _Clock(monkeypatch)
-        core = sim(write_interval=1.0)
+    def test_close_flushes(self, sim):
+        core = sim(update_interval=10.0)
         for _ in range(10):
             core.step_once()
         data_file = core._data_monitor.data_file
@@ -262,40 +252,27 @@ class TestNothingIsLeftUnwritten:
         with open(data_file) as f:
             assert json.load(f)["steps"] == 10
 
-    def test_close_after_an_external_disconnect_does_not_raise(self, sim, monkeypatch):
-        _Clock(monkeypatch)
-        core = sim(write_interval=1.0)
+    def test_close_after_an_external_disconnect_does_not_raise(self, sim):
+        core = sim(update_interval=10.0)
         box = _box(core, 0.0, "picked")
         core.step_once()
         core._set_selected_entity(box.object_id, "test")  # the flush needs PyBullet for this
         p.disconnect(core.client)
         core.close()
 
-    def test_a_running_loop_writes_the_trailing_frame_once_the_window_passes(self, sim, monkeypatch):
-        """With refreshes sparser than steps, the next step after the window writes the last frame."""
-        clock = _Clock(monkeypatch)
-        core = sim(write_interval=1.0, update_interval=0.5)
-        core.step_once()
-        for _ in range(4):
-            core.step_once()
-        refreshed = core.last_monitor_frame.steps
-        clock.advance(2.0)
-        core.step_once()
-        assert _read(core)["steps"] >= refreshed
-
 
 class TestOtherWaysTheSetOfObjectsChanges:
     def test_reset_empties_the_entity_list(self, sim):
-        core = sim(write_interval=0)
+        core = sim()
         _box(core, 0.0, "a")
         core.step_once()
         assert [e["name"] for e in _read(core)["entities"]] == ["a"]
         core.reset()
-        core.update_monitor(force_write=True)
+        core.update_monitor()
         assert _read(core)["entities"] == []
 
     def test_set_name_and_a_loader_rename_go_through_the_setter(self, sim):
-        core = sim(write_interval=0)
+        core = sim()
         box = _box(core, 0.0, "a")
         core.step_once()
         box.set_name("b")

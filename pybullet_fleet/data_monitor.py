@@ -50,7 +50,6 @@ class DataMonitor:
         y: int = _SIM_D["monitor_y"],
         initial_target_rtf: Optional[float] = None,
         initial_timestep: Optional[float] = None,
-        write_interval: float = _SIM_D["monitor_write_interval"],
     ) -> None:
         self.title: str = title
         self.enable_gui: bool = enable_gui
@@ -59,10 +58,6 @@ class DataMonitor:
         self.labels: Dict[str, Any] = {}
         self.data_file: str = "/tmp/pybullet_sim_data.json"
         self.update_interval: float = 0.5  # Update every 500ms
-        #: Wall seconds between :meth:`write_frame` writes; the window reads
-        #: the file every ``update_interval``. 0 writes every frame.
-        self.write_interval: float = max(0.0, float(write_interval))
-        self._last_write: Optional[float] = None  # time.monotonic() of the last frame write
         # The entity list's JSON, kept for the tuple it was made from: the
         # list only changes when objects come and go, and serializing a few
         # thousand entries on every write would cost more than the step.
@@ -369,18 +364,13 @@ class DataMonitor:
         except Exception:
             pass  # Ignore errors in data writing
 
-    def write_frame(self, frame: MonitorFrame, force: bool = False) -> bool:
+    def write_frame(self, frame: MonitorFrame) -> None:
         """Write a :class:`MonitorFrame` through the legacy JSON monitor path.
 
-        At most once per :attr:`write_interval` wall seconds unless ``force``;
-        returns whether it wrote. The JSON (keys and values) is what it has
-        always been; only the entity list is serialized once per change of
-        ``frame.entities`` rather than on every write.
+        The JSON (keys and values) is what it has always been; only the
+        entity list is serialized once per change of ``frame.entities``
+        rather than on every write.
         """
-        now = time.monotonic()
-        if not force and self._last_write is not None and now - self._last_write < self.write_interval:
-            return False
-        self._last_write = now
         if frame.entities is not self._entities_source:
             self._entities_json = json.dumps([asdict(entity) for entity in frame.entities])
             self._entities_source = frame.entities
@@ -393,7 +383,6 @@ class DataMonitor:
         text = json.dumps(data)
         # Splice the cached list in as the "entities" member.
         self._write_text(text[:-1] + (", " if data else "") + '"entities": ' + self._entities_json + "}")
-        return True
 
     def set_command_sink(self, sink: Callable[[GuiCommand], bool]) -> None:
         """Set the thread-safe callable that accepts monitor commands."""

@@ -193,7 +193,7 @@ def test_record_forced_headless_keeps_the_headless_monitor_rate(monkeypatch, tmp
 
 
 def test_the_default_refresh_follows_the_monitor_window(make_sim, monkeypatch):
-    """The per-step default keeps the monitor window live, so it follows the
-    window (enable_monitor_gui, or gui when that is None), not gui alone."""
-    assert _monitor_updates(make_sim, monkeypatch, enable_monitor_gui=True) == 40
+    """The default refresh follows the window (enable_monitor_gui, or gui when
+    that is None), not gui alone: 0.25 s with it, 1 s without."""
+    assert _monitor_updates(make_sim, monkeypatch, enable_monitor_gui=True) == 16
     assert _monitor_updates(make_sim, monkeypatch, enable_monitor_gui=None) == 4

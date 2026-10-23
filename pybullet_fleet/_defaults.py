@@ -33,12 +33,9 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "monitor": True,
         # None: follow `gui`, so a headless run opens no window.
         "enable_monitor_gui": None,
-        # Simulated seconds between DataMonitor refreshes. None: every step
-        # with a GUI, every second without one.
+        # Simulated seconds between DataMonitor refreshes (build and write a
+        # frame). None: 0.25 s with the monitor window, 1 s without it.
         "monitor_update_interval": None,
-        # Wall seconds between DataMonitor file writes; the window reads the
-        # file every 0.5 s. 0 writes on every refresh.
-        "monitor_write_interval": 0.25,
         # Wall seconds between INFO-level [MONITOR] lines; 0 keeps them off.
         "monitor_log_interval": 1.0,
         "log_level": "warn",

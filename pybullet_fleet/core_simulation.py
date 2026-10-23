@@ -185,20 +185,15 @@ class SimulationParams:
     #: monitor window without the PyBullet viewer is still available.
     enable_monitor_gui: Optional[bool] = _SIM_D["enable_monitor_gui"]
     #: Simulated seconds between DataMonitor refreshes while ``monitor`` is
-    #: on. ``None`` (the default) is every step while the monitor window is
-    #: open (``enable_monitor_gui``, or ``gui`` when that is ``None``), so the
-    #: window stays live, and every second otherwise. ``0`` is every step.
-    #: Read once, when the simulation is created.
+    #: on. A refresh builds :attr:`last_monitor_frame` and writes the file the
+    #: monitor window reads (every 0.5 wall seconds). ``None`` (the default)
+    #: is 0.25 s while the monitor window is open (``enable_monitor_gui``, or
+    #: ``gui`` when that is ``None``) and 1 s otherwise; ``0`` is every step.
+    #: Simulated time: at a real-time factor above 1 a short interval means
+    #: more writes per wall second. While paused, a selection, follow or pause
+    #: change, and a single step, refresh at once. Read once, when the
+    #: simulation is created.
     monitor_update_interval: Optional[float] = _SIM_D["monitor_update_interval"]
-    #: Wall-clock seconds between DataMonitor file writes. A refresh
-    #: (``monitor_update_interval``) still builds :attr:`last_monitor_frame`;
-    #: only the file the monitor window reads -- every 0.5 s -- is written
-    #: less often. A selection, follow or pause change, a change in the set of
-    #: objects, and the final frame of a run are written at once. A throttled
-    #: frame is written by the next ``step_once()`` after the interval (also
-    #: while paused), by ``close()`` and by ``flush_monitor()``. ``0`` writes
-    #: on every refresh.
-    monitor_write_interval: float = _SIM_D["monitor_write_interval"]
     #: Wall-clock seconds between ``[MONITOR]`` lines logged at INFO -- RTF,
     #: collision totals, step count -- independent of ``monitor``, ``gui`` and
     #: ``monitor_update_interval``. ``monitor`` drives the DataMonitor, whose
@@ -484,14 +479,11 @@ class MultiRobotSimulationCore:
         # list of every one of them on every refresh.
         self._monitor_entities_version: int = 0
         self._monitor_entities_cache: Optional[Tuple[int, Tuple[MonitorEntity, ...]]] = None
-        # Something the monitor window shows changed (selection, follow, pause,
-        # the entity list): write the next refresh at once, whatever
-        # monitor_write_interval says.
-        self._monitor_write_pending: bool = True
-        # The last frame built was throttled and not written yet: the next
-        # call after the window (any step_once(), paused or not) or a
-        # flush_monitor() writes it, so the file never stays behind for good.
-        self._monitor_frame_unwritten: bool = False
+        # Something the monitor window shows (selection, follow, pause, the
+        # entity list) changed since the last frame was built. Running, the
+        # next refresh shows it; paused, nothing refreshes, so step_once()
+        # builds a frame for it at once.
+        self._monitor_frame_stale: bool = True
         self._selected_entity_id: Optional[int] = None
         self._gui_follow_enabled: bool = False
         self._pacing_rebase_requested: bool = False
@@ -637,14 +629,14 @@ class MultiRobotSimulationCore:
         self._plugins: List["SimPlugin"] = []
 
         self.setup_pybullet()
-        # DataMonitor refresh: monitor_update_interval, else every step while
-        # its window is open (enable_monitor_gui, or gui when that is None) and
-        # once a second otherwise. Set after setup_pybullet(): RECORD may turn
-        # the GUI off.
+        # DataMonitor refresh: monitor_update_interval, else 0.25 s while its
+        # window is open (enable_monitor_gui, or gui when that is None; the
+        # window reads every 0.5 wall seconds) and once a second otherwise.
+        # Set after setup_pybullet(): RECORD may turn the GUI off.
         interval = params.monitor_update_interval
         if interval is None:
             window = params.enable_monitor_gui if params.enable_monitor_gui is not None else params.gui
-            interval = 0.0 if window else 1.0
+            interval = 0.25 if window else 1.0
         self._monitor_update_gate = FrequencyGate(1.0 / interval if interval > 0 else None)
         self.setup_monitor()
 
@@ -668,7 +660,6 @@ class MultiRobotSimulationCore:
                 y=self._params.monitor_y,
                 initial_target_rtf=self._params.target_rtf,
                 initial_timestep=self._params.timestep,
-                write_interval=self._params.monitor_write_interval,
             )
             self._data_monitor.set_command_sink(self.enqueue_gui_command)
             self._data_monitor.start()
@@ -848,7 +839,7 @@ class MultiRobotSimulationCore:
         if self._selected_entity_id == entity_id:
             return
         self._selected_entity_id = entity_id
-        self._monitor_write_pending = True
+        self._monitor_frame_stale = True
         if entity_id is None:
             self._gui_follow_enabled = False
         self._update_selected_nameplate(force=True)
@@ -859,7 +850,7 @@ class MultiRobotSimulationCore:
         if self._gui_follow_enabled == enabled:
             return
         self._gui_follow_enabled = enabled
-        self._monitor_write_pending = True
+        self._monitor_frame_stale = True
         self.events.emit("gui.follow_changed", entity_id=self._selected_entity_id, enabled=enabled)
 
     def _clear_selected_nameplate(self) -> None:
@@ -3747,7 +3738,7 @@ class MultiRobotSimulationCore:
     def _note_monitor_entities_changed(self) -> None:
         """An object was added, removed or renamed: rebuild the monitor's entity list."""
         self._monitor_entities_version += 1
-        self._monitor_write_pending = True
+        self._monitor_frame_stale = True
 
     def _monitor_entities(self) -> Tuple[MonitorEntity, ...]:
         """The monitor's entity list, rebuilt only when it changed (see ``_note_monitor_entities_changed``)."""
@@ -3761,13 +3752,11 @@ class MultiRobotSimulationCore:
             self._monitor_entities_cache = cache
         return cache[1]
 
-    def update_monitor(self, force_write: bool = False) -> None:
+    def update_monitor(self) -> None:
         """Update simulation monitor with current statistics.
 
         Calculates actual simulation speed from a 10-second sliding window,
-        logs monitor data via logger, and writes to DataMonitor if enabled --
-        at most once per ``monitor_write_interval`` wall seconds, unless
-        ``force_write`` or something the monitor window shows has changed.
+        logs monitor data via logger, and writes to DataMonitor if enabled.
         """
         now = time.monotonic()  # monotonic: RTF/elapsed stay correct across wall-clock jumps
         sim_time = self._elapsed_sim_time
@@ -3834,48 +3823,24 @@ class MultiRobotSimulationCore:
             logger.info(f"NEW COLLISION: total={self._collision_count} at sim_time={sim_time:.2f}")
             self._last_logged_collision_count = self._collision_count
         # Also output to DataMonitor window
+        self._monitor_frame_stale = False
         if self._data_monitor:
-            if self._data_monitor.write_frame(frame, force=force_write or self._monitor_write_pending):
-                self._monitor_write_pending = False
-                self._monitor_frame_unwritten = False
-            else:
-                self._monitor_frame_unwritten = True
+            self._data_monitor.write_frame(frame)
 
     def flush_monitor(self) -> bool:
-        """Write the DataMonitor file now if it is behind; return whether it wrote.
+        """Build and write a monitor frame now if the window is behind; return whether it did.
 
-        Frames are written at most once per ``monitor_write_interval``. A
-        later :meth:`step_once` writes a throttled frame once the interval
-        has passed, and :meth:`close` flushes, so only a program that stops
+        Running, the next refresh (``monitor_update_interval``) shows any
+        change, and :meth:`close` flushes, so only a program that stops
         calling ``step_once()`` and keeps the simulation open needs this.
         """
         if not self._data_monitor:
             return False
-        if self._monitor_write_pending or self._last_monitor_frame is None:
-            # Something the window shows changed since the last frame was
-            # built (a selection while paused, say): build a fresh one.
-            self.update_monitor(force_write=True)
-            return True
-        if self._monitor_frame_unwritten:
-            self._data_monitor.write_frame(self._last_monitor_frame, force=True)
-            self._monitor_frame_unwritten = False
+        last = self._last_monitor_frame
+        if self._monitor_frame_stale or last is None or last.steps != self._step_count:
+            self.update_monitor()
             return True
         return False
-
-    def _write_trailing_monitor_frame(self, paused: bool = False) -> None:
-        """On a step with no refresh: write what the window is missing, if the throttle allows.
-
-        Running, the next refresh writes any pending change, so only a
-        throttled frame is written here. Paused, no refresh comes at all, so
-        a pending change (a selection, the pause itself) builds a fresh frame.
-        """
-        if not self._data_monitor:
-            return
-        if paused and self._monitor_write_pending:
-            self.update_monitor(force_write=True)
-        elif self._monitor_frame_unwritten and self._last_monitor_frame is not None:
-            if self._data_monitor.write_frame(self._last_monitor_frame):
-                self._monitor_frame_unwritten = False
 
     def initialize_simulation(self) -> None:
         """
@@ -3912,8 +3877,7 @@ class MultiRobotSimulationCore:
         self._last_monitor_log = None  # a fresh run logs its first step
         self._last_logged_collision_count = 0
         self._last_monitor_frame = None
-        self._monitor_write_pending = True
-        self._monitor_frame_unwritten = False
+        self._monitor_frame_stale = True
         self._single_step_requested = False
         self._pacing_rebase_requested = False
         self._clear_selected_nameplate()
@@ -4561,7 +4525,7 @@ class MultiRobotSimulationCore:
                 raise
         except p.error:
             logger.info("PyBullet connection lost (GUI window closed)")
-        self.update_monitor(force_write=True)
+        self.update_monitor()
         self.close()
 
     # ------------------------------------------------------------------
@@ -4614,8 +4578,8 @@ class MultiRobotSimulationCore:
         # already set, a retry would be a no-op. The first exception is kept
         # and re-raised once everything has been given its chance.
         def _flush_monitor() -> None:
-            # A program driving step_once() itself may stop inside a throttle
-            # window; leave the file at the last state it reached.
+            # A program driving step_once() itself may stop between refreshes;
+            # leave the file at the last state it reached.
             if self._monitor_enabled:
                 try:
                     self.flush_monitor()
@@ -4691,13 +4655,13 @@ class MultiRobotSimulationCore:
     def pause(self) -> None:
         """Pause the simulation. step_once will be skipped while paused."""
         self._simulation_paused = True
-        self._monitor_write_pending = True
+        self._monitor_frame_stale = True
         self.events.emit(SimEvents.PAUSED)
 
     def resume(self) -> None:
         """Resume the simulation after a pause."""
         self._simulation_paused = False
-        self._monitor_write_pending = True
+        self._monitor_frame_stale = True
         self.events.emit(SimEvents.RESUMED)
 
     @property
@@ -4777,11 +4741,13 @@ class MultiRobotSimulationCore:
 
         # Skip physics simulation and callbacks if paused
         if self.is_paused and not self._single_step_requested:
-            if self._monitor_enabled:
+            if self._monitor_enabled and self._monitor_frame_stale and self._data_monitor:
                 # Nothing refreshes the monitor while paused: still show a
-                # selection or pause change, and the last single step.
-                self._write_trailing_monitor_frame(paused=True)
+                # selection, follow or pause change.
+                self.update_monitor()
             return
+        # A single step taken while paused is shown at once, refresh due or not.
+        single_step = self.is_paused
         self._single_step_requested = False
 
         # Initialize profiling accumulators for this step (append 0.0 slot for ALL fields)
@@ -4978,10 +4944,10 @@ class MultiRobotSimulationCore:
                 t_mon0 = time.perf_counter()
 
             if self._monitor_enabled:
-                if self._monitor_update_gate.due(self._schedule_time(), self._params.timestep) is not None:
+                if self._monitor_update_gate.due(self._schedule_time(), self._params.timestep) is not None or (
+                    single_step and self._data_monitor
+                ):
                     self.update_monitor()
-                else:
-                    self._write_trailing_monitor_frame()
 
             if self._params.monitor_log_interval > 0:
                 self._maybe_log_monitor_line()
