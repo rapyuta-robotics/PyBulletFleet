@@ -12,7 +12,7 @@ import sys
 import subprocess
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from multiprocessing import Pipe
 from multiprocessing.connection import Connection
 from typing import Any, Callable, Dict, Optional
@@ -58,6 +58,11 @@ class DataMonitor:
         self.labels: Dict[str, Any] = {}
         self.data_file: str = "/tmp/pybullet_sim_data.json"
         self.update_interval: float = 0.5  # Update every 500ms
+        # The entity list's JSON, kept for the tuple it was made from: the
+        # list only changes when objects come and go, and serializing a few
+        # thousand entries on every write would cost more than the step.
+        self._entities_source: Optional[tuple] = None
+        self._entities_json: str = "[]"
         self.status_label: Optional[Any] = None
         self.monitor_thread: Optional[threading.Thread] = None
         self._monitor_process: Optional[subprocess.Popen] = None
@@ -348,22 +353,42 @@ class DataMonitor:
         Uses atomic write (write to temp file + os.replace) to prevent the
         reader from seeing a truncated / partially-written JSON file.
         """
+        self._write_text(json.dumps(sim_data))
+
+    def _write_text(self, *parts: str) -> None:
+        """Write ``parts`` back to back as the file's whole content, atomically.
+
+        Taking the pieces separately lets a caller pass a large cached string
+        (the entity list) without first copying it into a new joined string.
+        """
         tmp_path = self.data_file + ".tmp"
         try:
             with open(tmp_path, "w") as f:
-                json.dump(sim_data, f)
+                for part in parts:
+                    f.write(part)
             os.replace(tmp_path, self.data_file)  # atomic on POSIX
         except Exception:
             pass  # Ignore errors in data writing
 
     def write_frame(self, frame: MonitorFrame) -> None:
-        """Write a :class:`MonitorFrame` through the legacy JSON monitor path."""
-        data = asdict(frame)
+        """Write a :class:`MonitorFrame` through the legacy JSON monitor path.
+
+        The JSON (keys and values) is what it has always been; only the
+        entity list is serialized once per change of ``frame.entities``
+        rather than on every write.
+        """
+        if frame.entities is not self._entities_source:
+            self._entities_json = json.dumps([asdict(entity) for entity in frame.entities])
+            self._entities_source = frame.entities
+        data = asdict(replace(frame, entities=()))
+        del data["entities"]
         # Keep the established JSON keys stable for external file readers.
         data["time_step"] = data.pop("timestep")
         data["physics"] = "enabled" if data.pop("physics_enabled") else "disabled"
         data["frequency"] = 1 / frame.timestep
-        self.write_data(data)
+        text = json.dumps(data)
+        # Splice the cached list in as the "entities" member, without copying it.
+        self._write_text(text[:-1], ", " if data else "", '"entities": ', self._entities_json, "}")
 
     def set_command_sink(self, sink: Callable[[GuiCommand], bool]) -> None:
         """Set the thread-safe callable that accepts monitor commands."""

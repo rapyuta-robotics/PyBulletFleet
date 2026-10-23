@@ -79,6 +79,26 @@ are not recommended for production use yet.
   introspection cache holds its callables weakly and skips callables that
   cannot be cached (an unhashable callable object, say).
 
+- The DataMonitor no longer costs more than the step in a large scene. Its
+  entity list is rebuilt only when an object is added, removed or renamed
+  (`SimObject.name` is now a property that tells the simulation), the list's
+  JSON is serialized once per change, and the file is written from its parts
+  without joining them into a new string. With the monitor window open,
+  `monitor_update_interval=None` now refreshes every 0.25 simulated seconds
+  instead of every step (the window reads the file every 0.5 s); without the
+  window it is still 1 s, and `0` is still every step. Each refresh builds
+  `last_monitor_frame` and writes the file.
+  While paused, a selection, follow or pause change and a single step
+  refresh at once; the final frame of a run is written, `close()` writes the
+  last state, and the new `flush_monitor()` does so on demand. `reset()`
+  empties the entity list. The JSON a reader sees is unchanged.
+  Median step time with 5000 static boxes and 20 moving agents (headless,
+  `target_rtf=0`, timestep 0.1, a 312 KB monitor file): 25.9 ms before with
+  the window flag on (a refresh every step), 0.84 ms now with the window
+  flag on (default, every 0.25 s), and 0.63 ms with the monitor off. A
+  refresh every step (`monitor_update_interval=0`) still writes the whole
+  file each step: 0.95 ms per step, about 0.3 ms per write on that scene.
+
 - `ControllerParams` takes either enum field -- `default_direction` and
   `goal_replacement` -- as the enum or its string value, on construction and
   on any later assignment, and stores the enum; an unknown value raises
