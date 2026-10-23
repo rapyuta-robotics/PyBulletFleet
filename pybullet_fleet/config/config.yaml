@@ -32,6 +32,11 @@ simulation:
   # Enable external data monitor (true/false)
   monitor: true
 
+  # Wall seconds between writes of the file the monitor window reads (it reads
+  # every 0.5 s). Selection, follow and pause changes are written at once.
+  # 0 writes on every refresh.
+  monitor_write_interval: 0.25
+
   # Collision check frequency (times per second)
   # collision_check_frequency: 0.1
   # Ignore collisions with structure (True/False)

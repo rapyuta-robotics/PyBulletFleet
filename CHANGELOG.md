@@ -51,6 +51,18 @@ are not recommended for production use yet.
 
 ### Changed
 
+- The DataMonitor no longer costs more than the step in a large scene. Its
+  entity list is rebuilt only when an object is added, removed or renamed
+  (`SimObject.name` is now a property that tells the simulation), the list's
+  JSON is serialized once per change, and the file the monitor window reads is
+  written at most once per `monitor_write_interval` (new, default 0.25 wall
+  seconds; the window reads it every 0.5 s). A selection, follow or pause
+  change, a change in the set of objects and the final frame of a run are
+  written at once. The JSON a reader sees is unchanged, and
+  `last_monitor_frame` still refreshes on every `monitor_update_interval`.
+  With 5000 static bodies, 20 moving agents and the monitor refreshing every
+  step, a step takes 2.6 ms instead of 71 ms (2.3 ms with the monitor off).
+
 - `ControllerParams` takes either enum field -- `default_direction` and
   `goal_replacement` -- as the enum or its string value, on construction and
   on any later assignment, and stores the enum; an unknown value raises

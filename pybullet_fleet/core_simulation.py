@@ -190,6 +190,13 @@ class SimulationParams:
     #: window stays live, and every second otherwise. ``0`` is every step.
     #: Read once, when the simulation is created.
     monitor_update_interval: Optional[float] = _SIM_D["monitor_update_interval"]
+    #: Wall-clock seconds between DataMonitor file writes. A refresh
+    #: (``monitor_update_interval``) still builds :attr:`last_monitor_frame`;
+    #: only the file the monitor window reads -- every 0.5 s -- is written
+    #: less often. A selection, follow or pause change, a change in the set of
+    #: objects, and the final frame of a run are written at once. ``0`` writes
+    #: on every refresh.
+    monitor_write_interval: float = _SIM_D["monitor_write_interval"]
     #: Wall-clock seconds between ``[MONITOR]`` lines logged at INFO -- RTF,
     #: collision totals, step count -- independent of ``monitor``, ``gui`` and
     #: ``monitor_update_interval``. ``monitor`` drives the DataMonitor, whose
@@ -469,6 +476,16 @@ class MultiRobotSimulationCore:
         self._gui_commands: Queue[GuiCommand] = Queue(maxsize=32)
         self._single_step_requested: bool = False
         self._last_monitor_frame: Optional[MonitorFrame] = None
+        # The monitor's entity list, rebuilt only when the set of objects or a
+        # name changes (_note_monitor_entities_changed bumps the version): a
+        # scene of thousands of static bodies would otherwise pay for a sorted
+        # list of every one of them on every refresh.
+        self._monitor_entities_version: int = 0
+        self._monitor_entities_cache: Optional[Tuple[int, Tuple[MonitorEntity, ...]]] = None
+        # Something the monitor window shows changed (selection, follow, pause,
+        # the entity list): write the next refresh at once, whatever
+        # monitor_write_interval says.
+        self._monitor_write_pending: bool = True
         self._selected_entity_id: Optional[int] = None
         self._gui_follow_enabled: bool = False
         self._pacing_rebase_requested: bool = False
@@ -645,6 +662,7 @@ class MultiRobotSimulationCore:
                 y=self._params.monitor_y,
                 initial_target_rtf=self._params.target_rtf,
                 initial_timestep=self._params.timestep,
+                write_interval=self._params.monitor_write_interval,
             )
             self._data_monitor.set_command_sink(self.enqueue_gui_command)
             self._data_monitor.start()
@@ -824,6 +842,7 @@ class MultiRobotSimulationCore:
         if self._selected_entity_id == entity_id:
             return
         self._selected_entity_id = entity_id
+        self._monitor_write_pending = True
         if entity_id is None:
             self._gui_follow_enabled = False
         self._update_selected_nameplate(force=True)
@@ -834,6 +853,7 @@ class MultiRobotSimulationCore:
         if self._gui_follow_enabled == enabled:
             return
         self._gui_follow_enabled = enabled
+        self._monitor_write_pending = True
         self.events.emit("gui.follow_changed", entity_id=self._selected_entity_id, enabled=enabled)
 
     def _clear_selected_nameplate(self) -> None:
@@ -2549,6 +2569,7 @@ class MultiRobotSimulationCore:
 
         self._sim_objects.append(obj)
         self._sim_objects_dict[obj.object_id] = obj
+        self._note_monitor_entities_changed()
 
         # Add to agents list if this is an Agent instance (for O(M) iteration)
         if isinstance(obj, Agent):
@@ -2617,6 +2638,7 @@ class MultiRobotSimulationCore:
             return
 
         self._sim_objects_dict.pop(obj_id, None)
+        self._note_monitor_entities_changed()
         if self._selected_entity_id == obj_id:
             self._set_selected_entity(None, source="system")
 
@@ -3716,11 +3738,30 @@ class MultiRobotSimulationCore:
         elapsed = rt1 - rt0
         return (st1 - st0) / elapsed if elapsed > 0 else 0.0
 
-    def update_monitor(self) -> None:
+    def _note_monitor_entities_changed(self) -> None:
+        """An object was added, removed or renamed: rebuild the monitor's entity list."""
+        self._monitor_entities_version += 1
+        self._monitor_write_pending = True
+
+    def _monitor_entities(self) -> Tuple[MonitorEntity, ...]:
+        """The monitor's entity list, rebuilt only when it changed (see ``_note_monitor_entities_changed``)."""
+        cache = self._monitor_entities_cache
+        if cache is None or cache[0] != self._monitor_entities_version:
+            entities = tuple(
+                MonitorEntity(object_id=obj.object_id, name=obj.name or f"entity-{obj.object_id}", kind=type(obj).__name__)
+                for obj in sorted(self._sim_objects, key=lambda item: item.object_id)
+            )
+            cache = (self._monitor_entities_version, entities)
+            self._monitor_entities_cache = cache
+        return cache[1]
+
+    def update_monitor(self, force_write: bool = False) -> None:
         """Update simulation monitor with current statistics.
 
         Calculates actual simulation speed from a 10-second sliding window,
-        logs monitor data via logger, and writes to DataMonitor if enabled.
+        logs monitor data via logger, and writes to DataMonitor if enabled --
+        at most once per ``monitor_write_interval`` wall seconds, unless
+        ``force_write`` or something the monitor window shows has changed.
         """
         now = time.monotonic()  # monotonic: RTF/elapsed stay correct across wall-clock jumps
         sim_time = self._elapsed_sim_time
@@ -3731,10 +3772,7 @@ class MultiRobotSimulationCore:
         num_agents = len(self._agents)
         num_objects = len(self._sim_objects) - num_agents
 
-        entities = tuple(
-            MonitorEntity(object_id=obj.object_id, name=obj.name or f"entity-{obj.object_id}", kind=type(obj).__name__)
-            for obj in sorted(self._sim_objects, key=lambda item: item.object_id)
-        )
+        entities = self._monitor_entities()
         selected_state = None
         selected = self._sim_objects_dict.get(self._selected_entity_id) if self._selected_entity_id is not None else None
         if selected is not None:
@@ -3791,7 +3829,8 @@ class MultiRobotSimulationCore:
             self._last_logged_collision_count = self._collision_count
         # Also output to DataMonitor window
         if self._data_monitor:
-            self._data_monitor.write_frame(frame)
+            if self._data_monitor.write_frame(frame, force=force_write or self._monitor_write_pending):
+                self._monitor_write_pending = False
 
     def initialize_simulation(self) -> None:
         """
@@ -3828,6 +3867,7 @@ class MultiRobotSimulationCore:
         self._last_monitor_log = None  # a fresh run logs its first step
         self._last_logged_collision_count = 0
         self._last_monitor_frame = None
+        self._monitor_write_pending = True
         self._single_step_requested = False
         self._pacing_rebase_requested = False
         self._clear_selected_nameplate()
@@ -4474,7 +4514,7 @@ class MultiRobotSimulationCore:
                 raise
         except p.error:
             logger.info("PyBullet connection lost (GUI window closed)")
-        self.update_monitor()
+        self.update_monitor(force_write=True)
         self.close()
 
     # ------------------------------------------------------------------
@@ -4595,11 +4635,13 @@ class MultiRobotSimulationCore:
     def pause(self) -> None:
         """Pause the simulation. step_once will be skipped while paused."""
         self._simulation_paused = True
+        self._monitor_write_pending = True
         self.events.emit(SimEvents.PAUSED)
 
     def resume(self) -> None:
         """Resume the simulation after a pause."""
         self._simulation_paused = False
+        self._monitor_write_pending = True
         self.events.emit(SimEvents.RESUMED)
 
     @property
