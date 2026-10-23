@@ -1158,7 +1158,9 @@ class TestRuntimeModeChanges:
 # ============================================================================
 
 
-def _broadphase_scene(seed, margin, widths, modes=(CollisionMode.NORMAL_3D,), one_moved=False, ignore_static=False):
+def _broadphase_scene(
+    seed, margin, widths, modes=(CollisionMode.NORMAL_3D,), one_moved=False, ignore_static=False, change=None
+):
     """Random boxes on and off spatial-hash cell boundaries; returns (missed, checked).
 
     ``widths`` are AABB widths in cells; each box takes a random mode from
@@ -1171,6 +1173,13 @@ def _broadphase_scene(seed, margin, widths, modes=(CollisionMode.NORMAL_3D,), on
     STATIC bodies never move, so they are never searched from; a pair with
     one must be found from the other body's side, unless ``ignore_static``.
     Two STATIC bodies are never a pair.
+
+    ``change`` spawns everything with an effective margin of 0 and only then
+    sets ``margin``, through ``"setter"`` (``set_collision_margin``),
+    ``"params_margin"`` (assigning ``params.collision_margin``) or
+    ``"params_method"`` (switching ``params.collision_detection_method`` from
+    contact points, whose broadphase margin is 0, to closest points): every
+    body, STATIC ones included, must then be registered with the new margin.
     """
     import random
 
@@ -1181,7 +1190,10 @@ def _broadphase_scene(seed, margin, widths, modes=(CollisionMode.NORMAL_3D,), on
             gui=False,
             physics=False,
             monitor=False,
-            collision_margin=margin,
+            collision_margin=margin if change in (None, "params_method") else 0.0,
+            collision_detection_method=(
+                CollisionDetectionMethod.CONTACT_POINTS if change == "params_method" else CollisionDetectionMethod.CLOSEST_POINTS
+            ),
             spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
             spatial_hash_cell_size=cell,
             ignore_static_collision=ignore_static,
@@ -1198,6 +1210,12 @@ def _broadphase_scene(seed, margin, widths, modes=(CollisionMode.NORMAL_3D,), on
             objects.append(create_test_box(sim, xyz, size=half, collision_mode=rng.choice(modes)))
         static = {obj.object_id for obj in objects if obj.collision_mode == CollisionMode.STATIC}
         movers = [obj.object_id for obj in objects if obj.object_id not in static]
+        if change == "setter":
+            sim.set_collision_margin(margin)
+        elif change == "params_margin":
+            sim.params.collision_margin = margin
+        elif change == "params_method":
+            sim.params.collision_detection_method = CollisionDetectionMethod.CLOSEST_POINTS
         if one_moved:
             found = {}
             for object_id in movers:
@@ -1290,6 +1308,62 @@ def test_broadphase_finds_pairs_with_static_bodies(seed, margin, ignore_static, 
     )
     assert checked > 0
     assert missed == 0
+
+
+@pytest.mark.parametrize("seed", range(3))
+@pytest.mark.parametrize("margin", [0.02, 0.1])
+@pytest.mark.parametrize("change", ["setter", "params_margin", "params_method"])
+@pytest.mark.parametrize("one_moved", [False, True], ids=["all_moved", "one_moved"])
+def test_broadphase_follows_a_margin_change(seed, margin, change, one_moved):
+    """Bodies spawned with no broadphase margin, the margin raised afterwards:
+    every registration, STATIC bodies' included, must follow it however it was
+    changed -- the setter, the params field, or the detection method."""
+    widths = [0.04, 0.1, 0.2, 0.9, 1.0, 2.8]
+    modes = (CollisionMode.NORMAL_2D, CollisionMode.NORMAL_3D, CollisionMode.STATIC)
+    missed, checked = _broadphase_scene(seed, margin, widths=widths, modes=modes, one_moved=one_moved, change=change)
+    assert checked > 0
+    assert missed == 0
+
+
+@pytest.mark.parametrize("change", ["setter", "params_margin", "params_method"])
+@pytest.mark.parametrize("kind", [CollisionMode.NORMAL_3D, CollisionMode.STATIC])
+def test_a_margin_change_reregisters_bodies_registered_with_the_old_one(change, kind):
+    """Two boxes 0.04 apart across a cell boundary (cell 1.0, x = 1.0): with
+    no margin they share no cell. Raised to 0.1 afterwards, the pair is within
+    the margin and must be a candidate -- which needs both bodies, the other
+    one STATIC or not, re-registered with the new margin however it changed."""
+    margin = 0.1
+    sim = MultiRobotSimulationCore(
+        SimulationParams(
+            gui=False,
+            physics=False,
+            monitor=False,
+            collision_margin=0.0 if change != "params_method" else margin,
+            collision_detection_method=(
+                CollisionDetectionMethod.CONTACT_POINTS if change == "params_method" else CollisionDetectionMethod.CLOSEST_POINTS
+            ),
+            spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
+            spatial_hash_cell_size=1.0,
+            ignore_static_collision=False,
+        )
+    )
+    try:
+        sim.set_collision_spatial_hash_cell_size_mode()
+        mover = create_test_box(sim, [0.74, 0.5, 0.5], size=0.24, collision_mode=CollisionMode.NORMAL_3D)
+        other = create_test_box(sim, [1.26, 0.5, 0.5], size=0.24, collision_mode=kind)
+        pair = (min(mover.object_id, other.object_id), max(mover.object_id, other.object_id))
+        sim._moved_this_step = {mover.object_id}
+        assert pair not in set(sim.filter_aabb_pairs()[0])  # not within a margin of 0
+        if change == "setter":
+            sim.set_collision_margin(margin)
+        elif change == "params_margin":
+            sim.params.collision_margin = margin
+        else:
+            sim.params.collision_detection_method = CollisionDetectionMethod.CLOSEST_POINTS
+        sim._moved_this_step = {mover.object_id}
+        assert pair in set(sim.filter_aabb_pairs()[0])
+    finally:
+        p.disconnect(sim.client)
 
 
 @pytest.mark.parametrize("kind", [CollisionMode.NORMAL_3D, CollisionMode.STATIC])
