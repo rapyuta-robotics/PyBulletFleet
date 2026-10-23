@@ -99,6 +99,21 @@ are not recommended for production use yet.
   refresh every step (`monitor_update_interval=0`) still writes the whole
   file each step: 0.95 ms per step, about 0.3 ms per write on that scene.
 
+- Collision broadphase: every collision body is registered in every
+  spatial-hash cell its AABB, enlarged by half the collision margin (not in z
+  for a NORMAL_2D body), touches, and a moved body's candidates are the bodies
+  sharing one of its cells -- no 9- or 27-cell neighbour search. Two bodies
+  within the margin always share a cell, so no pair within it is missed,
+  whatever the bodies' sizes, their collision modes (NORMAL_2D, NORMAL_3D,
+  STATIC) or the margin, 0 included (#89). `multi_cell_threshold` is accepted
+  and no longer used. Each moved body updates the grid once per step (physics
+  bodies were updated twice), a body switched to STATIC is re-registered, and
+  a DISABLED body that moves is no longer put in the grid. 1000 batch agents,
+  half moving, a collision check every step, automatic cell size, robots
+  0.35 x 0.57 m with bins and static scenery: NORMAL_2D 18.3 ms per step
+  (48.2 ms before, 29.3 ms in v0.8.0), NORMAL_3D 18.4 ms (56.8 ms, 32.2 ms),
+  NORMAL_2D with static collisions counted 25.0 ms (88.4 ms, 43.0 ms).
+
 - `ControllerParams` takes either enum field -- `default_direction` and
   `goal_replacement` -- as the enum or its string value, on construction and
   on any later assignment, and stores the enum; an unknown value raises

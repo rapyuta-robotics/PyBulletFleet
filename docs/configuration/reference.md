@@ -63,7 +63,7 @@ their periodic reports.
 | `collision_margin` | `0.02` | Metres used by closest-points checks; ignored by contact-points checks. |
 | `spatial_hash_cell_size_mode` | `auto_initial` | `auto_initial`, `auto_adaptive`, or `constant`. |
 | `spatial_hash_cell_size` | `None` | Fixed cell size in metres when mode is `constant`. |
-| `multi_cell_threshold` | `1.5` | Dimensionless cell-size multiplier for multi-cell registration. |
+| `multi_cell_threshold` | `1.5` | Accepted for compatibility; not used. Every body is registered in each cell it reaches. |
 | `ignore_static_collision` | `true` | Skip every pair containing an entity with `collision_mode: static`. |
 | `ignore_attached_collision` | `true` | Do not report contact between an object and the object it is attached to (`attach_object()`); only the direct parent and child. For other expected contact, see `set_collision_ignore_filter()` in the collision internals. |
 | `enable_collision_color_change` | `false` | Change object colour while a collision is active. |

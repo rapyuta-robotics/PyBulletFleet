@@ -135,15 +135,14 @@ World Space (top view):
 │  ·  │  ·  │  ·  │  ·  │  ·  │  ·  │
 └─────┴─────┴─────┴─────┴─────┴─────┘
 
-R2 only checks: 9 neighbor cells (NORMAL_2D) or 27 cells (NORMAL_3D)
-   → Finds W (wall) in adjacent cell
-   → No need to check R1, R3 (not in neighbor cells)
+R2 only checks the bodies registered in its own cell(s)
+   → Finds W (wall), which is registered in every cell it covers
+   → No need to check R1, R3 (no shared cell)
 ```
 
 **Key Optimizations** (→ [Spatial Hash Grid](collision-spatial-hash)):
 1. **[Incremental Updates](incremental-updates)**: Only update AABBs for moved objects
-2. **[Mode-Based Neighbors](neighbor-search-patterns)**: 2D checks 9 cells, 3D checks 27 cells
-3. **[Multi-Cell Registration](multi-cell-registration)**: Large objects registered to multiple cells
+2. **[Registration and Candidate Search](multi-cell-registration)**: every body is in each cell its margin-enlarged AABB touches, and a moved body's candidates are the bodies sharing one of its cells
 
 ---
 
@@ -194,7 +193,7 @@ not call `check_collisions()` yourself.
 │    → Iterate through _moved_this_step objects               │
 │    → For each moved object:                                  │
 │      - Get its grid cells                                    │
-│      - Check 9 or 27 neighbor cells (mode-dependent)         │
+│      - Collect the bodies registered in those cells          │
 │      - Collect potential pairs                               │
 │    → AABB overlap test → Filter to candidates               │
 │                                                              │
@@ -278,7 +277,6 @@ python -m pytest tests/test_collision_comprehensive.py -v
 3. ✅ Set appropriate cell_size (~2× object size)
 4. ✅ Use NORMAL_2D instead of NORMAL_3D for ground robots
 5. ✅ Enable physics=False for kinematics (huge speedup!)
-6. ✅ Check multi_cell_threshold (default 1.5 is usually good)
 
 **Benchmark**:
 ```bash

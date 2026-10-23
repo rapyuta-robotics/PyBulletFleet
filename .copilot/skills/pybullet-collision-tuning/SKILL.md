@@ -47,7 +47,7 @@ Narrow Phase: PyBullet API — per-pair verification
 
 | Entity Type | Recommended Mode | Why |
 |------------|-----------------|-----|
-| Ground mobile robot | `NORMAL_2D` | Z-axis irrelevant, 9 vs 27 neighbors |
+| Ground mobile robot | `NORMAL_2D` | Z-axis margin not applied; pairs need real z overlap |
 | Flying drone / 3D robot | `NORMAL_3D` | Full 3D detection needed |
 | Wall / shelf / structure | `STATIC` | Never moves → skip AABB/grid updates |
 | Visual marker / helper | `DISABLED` | Exclude from collision entirely |
@@ -85,7 +85,7 @@ obj.set_collision_mode(CollisionMode.DISABLED)
 | Fixed cell size | `spatial_hash_cell_size` | (auto) | 2× median object extent. Too small → many cells, too large → many objects per cell |
 | Check frequency | `collision_check_frequency` | null (every step) | null=every step, 0=disabled, N=Hz. 10Hz usually sufficient |
 | Ignore static | `ignore_static_collision` | true | Skip static-static pairs |
-| Multi-cell threshold | `multi_cell_threshold` | 1.5 | Objects >1.5× cell size span multiple cells |
+| Multi-cell threshold | `multi_cell_threshold` | 1.5 | Accepted for compatibility; not used |
 
 ## Diagnostic Flowcharts
 

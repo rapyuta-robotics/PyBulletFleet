@@ -10,10 +10,10 @@ This demo showcases:
 4. Real-time collision statistics
 
 Features demonstrated:
-- NORMAL_3D mode (Green, Orange, Cyan): 27 neighbor cells checked (full 3D collision detection)
-- NORMAL_2D mode (Blue, Magenta): 9 neighbor cells checked (XY-only collision detection)
+- NORMAL_3D mode (Green, Orange, Cyan): full 3D collision detection
+- NORMAL_2D mode (Blue, Magenta): XY collision detection; z must actually overlap
 - DISABLED mode (White): No collision detection at all
-- Multi-cell registration (Red center object): Objects larger than threshold registered to multiple cells
+- Multi-cell registration (Red center object): every object is registered in each grid cell it reaches
 - Collision color change: Objects change color when actively colliding
 - Real-time performance metrics: Monitor collision detection performance
 
@@ -65,9 +65,6 @@ AREA_SIZE = 20.0
 # Small cell size to demonstrate multi-cell registration
 CELL_SIZE = 2.0  # 2m cells
 
-# Objects larger than this will use multi-cell registration
-MULTI_CELL_THRESHOLD = 1.5  # 1.5x cell_size = 3.0m
-
 # Collision detection margin (safety buffer)
 COLLISION_MARGIN = 0.1  # 10cm
 
@@ -97,7 +94,7 @@ def create_demo_objects(sim_core: MultiRobotSimulationCore):
     print("\n--- Left Side Robots (NORMAL_3D, NORMAL_2D, NORMAL_3D) ---")
 
     # Robot 1: NORMAL_3D (Green)
-    print("  [1] NORMAL_3D mode (Green) - 27 neighbor cells")
+    print("  [1] NORMAL_3D mode (Green)")
     spawn_params = AgentSpawnParams(
         initial_pose=Pose.from_xyz(-5.0, -4.0, 0.5),
         visual_shape=ShapeParams(
@@ -120,7 +117,7 @@ def create_demo_objects(sim_core: MultiRobotSimulationCore):
     print(f"      Created at position {spawn_params.initial_pose.position}")
 
     # Robot 2: NORMAL_2D (Blue)
-    print("  [2] NORMAL_2D mode (Blue) - 9 neighbor cells (XY only)")
+    print("  [2] NORMAL_2D mode (Blue) (XY only)")
     spawn_params = AgentSpawnParams(
         initial_pose=Pose.from_xyz(-5.0, 0.0, 0.5),
         visual_shape=ShapeParams(
@@ -143,7 +140,7 @@ def create_demo_objects(sim_core: MultiRobotSimulationCore):
     print(f"      Created at position {spawn_params.initial_pose.position}")
 
     # Robot 3: Another NORMAL_3D with different color (Orange)
-    print("  [3] NORMAL_3D mode (Orange) - 27 neighbor cells")
+    print("  [3] NORMAL_3D mode (Orange)")
     spawn_params = AgentSpawnParams(
         initial_pose=Pose.from_xyz(-5.0, 4.0, 0.5),
         visual_shape=ShapeParams(
@@ -171,7 +168,7 @@ def create_demo_objects(sim_core: MultiRobotSimulationCore):
     print("\n--- Right Side Robots (NORMAL_3D, NORMAL_2D, DISABLED) ---")
 
     # Robot 4: NORMAL_3D (Cyan)
-    print("  [4] NORMAL_3D mode (Cyan) - 27 neighbor cells")
+    print("  [4] NORMAL_3D mode (Cyan)")
     spawn_params = AgentSpawnParams(
         initial_pose=Pose.from_xyz(5.0, -4.0, 0.5),
         visual_shape=ShapeParams(
@@ -194,7 +191,7 @@ def create_demo_objects(sim_core: MultiRobotSimulationCore):
     print(f"      Created at position {spawn_params.initial_pose.position}")
 
     # Robot 5: NORMAL_2D (Magenta)
-    print("  [5] NORMAL_2D mode (Magenta) - 9 neighbor cells (XY only)")
+    print("  [5] NORMAL_2D mode (Magenta) (XY only)")
     spawn_params = AgentSpawnParams(
         initial_pose=Pose.from_xyz(5.0, 0.0, 0.5),
         visual_shape=ShapeParams(
@@ -244,8 +241,7 @@ def create_demo_objects(sim_core: MultiRobotSimulationCore):
     # ========================================
     print("\n--- Center: Large Multi-Cell Object ---")
     print(f"  - Cell size: {CELL_SIZE}m")
-    print(f"  - Multi-cell threshold: {MULTI_CELL_THRESHOLD}x = {CELL_SIZE * MULTI_CELL_THRESHOLD}m")
-    print(f"  - Objects > {CELL_SIZE * MULTI_CELL_THRESHOLD}m will span multiple cells")
+    print("  - Every object is registered in each cell it reaches (its AABB plus half the margin)")
 
     # Large cube (4m x 4m x 2m) - will span multiple cells
     large_obj = SimObject.from_mesh(
@@ -370,7 +366,6 @@ def main():
                 "collision_margin": COLLISION_MARGIN,
                 "spatial_hash_cell_size_mode": "constant",
                 "spatial_hash_cell_size": CELL_SIZE,
-                "multi_cell_threshold": MULTI_CELL_THRESHOLD,
                 "enable_collision_color_change": True,
                 "enable_collision_shapes": False,
                 "enable_time_profiling": True,
@@ -403,8 +398,6 @@ def main():
     print("Simulation Configuration")
     print("=" * 70)
     print(f"Cell size: {sim_core._cached_cell_size}m")
-    cell_size = sim_core._cached_cell_size if sim_core._cached_cell_size is not None else 0.0
-    print(f"Multi-cell threshold: {MULTI_CELL_THRESHOLD}x = {cell_size * MULTI_CELL_THRESHOLD}m")
     print(f"Collision margin: {COLLISION_MARGIN}m")
     print(f"Total cells in grid: {len(sim_core._cached_spatial_grid)}")
     print(f"Total objects: {len(objects)}")
