@@ -56,11 +56,9 @@ are not recommended for production use yet.
   (`SimObject.name` is now a property that tells the simulation), the list's
   JSON is serialized once per change, and the file is written from its parts
   without joining them into a new string. With the monitor window open,
-  `monitor_update_interval=None` now refreshes every
-  `monitor_update_interval_window` (default 0.25) simulated seconds instead
-  of every step (the window reads the file every 0.5 s); without the window
-  it is `monitor_update_interval_headless` (default 1 s), and `0` is still
-  every step. Each refresh builds `last_monitor_frame` and writes the file.
+  `monitor_update_interval=None` now refreshes every 0.25 simulated seconds
+  instead of every step (the window reads the file every 0.5 s); without the
+  window it is still 1 s, and `0` is still every step. Each refresh builds `last_monitor_frame` and writes the file.
   While paused, a selection, follow or pause change and a single step
   refresh at once; the final frame of a run is written, `close()` writes the
   last state, and the new `flush_monitor()` does so on demand. `reset()`

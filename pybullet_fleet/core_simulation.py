@@ -64,6 +64,7 @@ from pybullet_fleet.agent import Agent
 from pybullet_fleet.agent_manager import SimObjectManager
 from pybullet_fleet.behavior_tree_core import BehaviorTree
 from pybullet_fleet.types import CallbackPhase, SpatialHashCellSizeMode, CollisionDetectionMethod, CollisionMode
+from pybullet_fleet._defaults import MONITOR_REFRESH_HEADLESS, MONITOR_REFRESH_WITH_WINDOW
 from pybullet_fleet._defaults import SIMULATION as _SIM_D
 
 if TYPE_CHECKING:
@@ -188,20 +189,13 @@ class SimulationParams:
     #: Simulated seconds between DataMonitor refreshes while ``monitor`` is
     #: on. A refresh builds :attr:`last_monitor_frame` and writes the file the
     #: monitor window reads (every 0.5 wall seconds). ``None`` (the default)
-    #: is :attr:`monitor_update_interval_window` while the monitor window is
-    #: open (``enable_monitor_gui``, or ``gui`` when that is ``None``) and
-    #: :attr:`monitor_update_interval_headless` otherwise; ``0`` is every step.
+    #: is 0.25 s while the monitor window is open (``enable_monitor_gui``, or
+    #: ``gui`` when that is ``None``) and 1 s otherwise; ``0`` is every step.
     #: Simulated time: at a real-time factor above 1 a short interval means
     #: more writes per wall second. While paused, a selection, follow or pause
     #: change, and a single step, refresh at once. Read once, when the
     #: simulation is created.
     monitor_update_interval: Optional[float] = _SIM_D["monitor_update_interval"]
-    #: The refresh, in simulated seconds, when ``monitor_update_interval`` is
-    #: ``None`` and the monitor window is open (default 0.25).
-    monitor_update_interval_window: float = _SIM_D["monitor_update_interval_window"]
-    #: The refresh, in simulated seconds, when ``monitor_update_interval`` is
-    #: ``None`` and no monitor window is open (default 1.0).
-    monitor_update_interval_headless: float = _SIM_D["monitor_update_interval_headless"]
     #: Wall-clock seconds between ``[MONITOR]`` lines logged at INFO -- RTF,
     #: collision totals, step count -- independent of ``monitor``, ``gui`` and
     #: ``monitor_update_interval``. ``monitor`` drives the DataMonitor, whose
@@ -629,14 +623,14 @@ class MultiRobotSimulationCore:
 
         self.setup_pybullet()
         # DataMonitor refresh: monitor_update_interval, else
-        # monitor_update_interval_window while its window is open
+        # MONITOR_REFRESH_WITH_WINDOW while its window is open
         # (enable_monitor_gui, or gui when that is None; the window reads every
-        # 0.5 wall seconds) and monitor_update_interval_headless otherwise.
+        # 0.5 wall seconds) and MONITOR_REFRESH_HEADLESS otherwise.
         # Set after setup_pybullet(): RECORD may turn the GUI off.
         interval = params.monitor_update_interval
         if interval is None:
             window = params.enable_monitor_gui if params.enable_monitor_gui is not None else params.gui
-            interval = params.monitor_update_interval_window if window else params.monitor_update_interval_headless
+            interval = MONITOR_REFRESH_WITH_WINDOW if window else MONITOR_REFRESH_HEADLESS
         self._monitor_update_gate = FrequencyGate(1.0 / interval if interval > 0 else None)
         self.setup_monitor()
 

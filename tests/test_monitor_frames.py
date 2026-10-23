@@ -136,9 +136,21 @@ class TestTheDefaultRefreshIsConfigurable:
         return count[0]
 
     def test_with_the_window(self, tmp_path, monkeypatch):
-        n = self._writes_over_4_seconds(tmp_path, monkeypatch, enable_monitor_gui=True, monitor_update_interval_window=0.5)
+        import pybullet_fleet.core_simulation as core_simulation
+
+        monkeypatch.setattr(core_simulation, "MONITOR_REFRESH_WITH_WINDOW", 0.5)
+        n = self._writes_over_4_seconds(tmp_path, monkeypatch, enable_monitor_gui=True)
         assert 7 <= n <= 9
 
     def test_without_it(self, tmp_path, monkeypatch):
-        n = self._writes_over_4_seconds(tmp_path, monkeypatch, enable_monitor_gui=False, monitor_update_interval_headless=2.0)
+        import pybullet_fleet.core_simulation as core_simulation
+
+        monkeypatch.setattr(core_simulation, "MONITOR_REFRESH_HEADLESS", 2.0)
+        n = self._writes_over_4_seconds(tmp_path, monkeypatch, enable_monitor_gui=False)
         assert 1 <= n <= 3
+
+    def test_they_are_not_parameters(self):
+        from pybullet_fleet import SimulationParams
+
+        assert not hasattr(SimulationParams(), "monitor_update_interval_window")
+        assert not hasattr(SimulationParams(), "monitor_update_interval_headless")

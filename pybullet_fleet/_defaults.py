@@ -34,15 +34,9 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         # None: follow `gui`, so a headless run opens no window.
         "enable_monitor_gui": None,
         # Simulated seconds between DataMonitor refreshes (build and write a
-        # frame). None: monitor_update_interval_window with the monitor
-        # window, monitor_update_interval_headless without it.
+        # frame). None: MONITOR_REFRESH_WITH_WINDOW with the monitor window,
+        # MONITOR_REFRESH_HEADLESS without it.
         "monitor_update_interval": None,
-        # The refresh used when monitor_update_interval is None: the window
-        # reads the file every 0.5 wall seconds, so 0.25 s keeps it current at
-        # a real-time factor of 1; without a window, a frame a second is
-        # enough for last_monitor_frame.
-        "monitor_update_interval_window": 0.25,
-        "monitor_update_interval_headless": 1.0,
         # Wall seconds between INFO-level [MONITOR] lines; 0 keeps them off.
         "monitor_log_interval": 1.0,
         "log_level": "warn",
@@ -231,6 +225,15 @@ CONTROLLER: Dict[str, Any] = _DEFAULTS["controller"]
 SIM_OBJECT: Dict[str, Any] = _DEFAULTS["sim_object"]
 SHAPE: Dict[str, Any] = _DEFAULTS["shape"]
 IK: Dict[str, Any] = _DEFAULTS["ik"]
+
+#: Simulated seconds between DataMonitor refreshes when
+#: ``monitor_update_interval`` is ``None``. With the monitor window open: the
+#: window reads the file every 0.5 wall seconds, so 0.25 s keeps it current at
+#: a real-time factor of 1. Without it: a frame a second is enough for
+#: ``last_monitor_frame``. Internal defaults, not parameters; set
+#: ``monitor_update_interval`` to choose another refresh.
+MONITOR_REFRESH_WITH_WINDOW: float = 0.25
+MONITOR_REFRESH_HEADLESS: float = 1.0
 
 #: Keys in ``simulation`` whose default is ``None`` (not env-overridable).
 NONE_SENTINEL_KEYS = frozenset(k for k, v in _DEFAULTS["simulation"].items() if v is None)
