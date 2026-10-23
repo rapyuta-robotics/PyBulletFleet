@@ -85,6 +85,17 @@ def build_tpi(
     return tpi
 
 
+#: A solve kept for the next build: ``(inputs, result)``, set only by a call
+#: with ``keep_for_build=True``. A goal set on a moving agent is checked
+#: (:func:`pybullet_fleet._replan.replacement_rejection`, which keeps its solve
+#: and discards it) and then built with the very same solver inputs; that build
+#: takes the kept solve instead of solving twice. A kept solve is handed out at
+#: most once and only to an exact match of every input, so the trajectory it
+#: returns belongs to that one caller -- no two trajectories ever share a
+#: ``TwoPointInterpolation``. One entry, swapped as a whole (atomic under the GIL).
+_kept_solve: Optional[Tuple[tuple, Optional[TwoPointInterpolation]]] = None
+
+
 def try_build_tpi(
     p0: float,
     pe: float,
@@ -94,6 +105,7 @@ def try_build_tpi(
     v0: float = 0.0,
     ve: float = 0.0,
     decel: Optional[float] = None,
+    keep_for_build: bool = False,
 ) -> Optional[TwoPointInterpolation]:
     """Build a :class:`TwoPointInterpolation`, or ``None`` if there is none.
 
@@ -114,20 +126,33 @@ def try_build_tpi(
     stands. A caller that reads "trajectory over" as "target reached" needs
     the two cases kept apart, and gets ``None`` here instead.
 
+    ``keep_for_build`` is for a feasibility check that discards the result:
+    the solve is kept so the next call with exactly the same inputs takes it
+    instead of solving again. Any other call solves unless it finds such a
+    kept solve, and never keeps its own.
+
     Returns:
         The calculated trajectory, or ``None`` when the solver rejects the
         request as infeasible.
     """
+    global _kept_solve
     dec = accel if decel is None else decel
     if abs(v0) <= vmax * (1.0 + _V0_OVER_VMAX_TOL):
         # The solver treats v0 == vmax as exceeding it.
         v0 = max(-vmax * _V0_CAP, min(float(v0), vmax * _V0_CAP))
-    tpi = TwoPointInterpolation()
+    key = (p0, pe, vmax, accel, t0, v0, ve, dec)
+    kept = _kept_solve
+    if not keep_for_build and kept is not None and kept[0] == key:
+        _kept_solve = None
+        return kept[1]
+    tpi: Optional[TwoPointInterpolation] = TwoPointInterpolation()
     try:
         tpi.init(p0=p0, pe=pe, acc_max=accel, vmax=vmax, t0=t0, v0=v0, ve=ve, dec_max=dec)
         tpi.calc_trajectory()
     except ValueError:
-        return None
+        tpi = None
+    if keep_for_build:
+        _kept_solve = (key, tpi)
     return tpi
 
 

@@ -16,6 +16,34 @@ benchmark results, see the Benchmark Suite (`benchmark/README.md`).
 
 ---
 
+## Goal Replacement Experiments
+
+### `goal_replacement_cost.py`
+
+**Purpose:** Measure the wall-clock cost per goal of setting a new goal on
+agents that are already moving: the periodic re-send pattern.
+
+```bash
+# Default: 300 agents, 16 rounds, every controller and goal kind
+python benchmark/experiments/goal_replacement_cost.py
+
+# One case, or a cProfile breakdown of one case
+python benchmark/experiments/goal_replacement_cost.py --only omni/ahead
+python benchmark/experiments/goal_replacement_cost.py --profile batch_omni:offline:set
+```
+
+Every agent first drives toward a far goal, then receives a new goal every ten
+steps: `ahead` goals lie further along the line of motion (the agent
+continues into them), `offline` goals beside it (handled by
+`goal_replacement`, `brake` by default). The script times only the
+`Agent.set_goal_pose` calls, and `FleetCommandDispatcher.navigate` for the
+`ahead` goals, for per-agent and batched, omnidirectional and differential
+controllers, and prints the median microseconds per goal. The absolute numbers
+follow the host's load closely; compare branches by interleaving runs on the
+same host rather than against numbers from another session.
+
+---
+
 ## Collision Detection Experiments
 
 ### `collision_methods_config_based.py`

@@ -915,3 +915,16 @@ class TestQuatAngleBetween:
             expected = (R.from_quat(q1) * R.from_quat(q0).inv()).magnitude()
             actual = quat_angle_between(tuple(q0), tuple(q1))
             assert actual == pytest.approx(expected, abs=1e-9)
+
+
+def test_cross3_matches_np_cross():
+    """Same arithmetic as np.cross, so swapping it in changes no trajectory."""
+    from pybullet_fleet.geometry import cross3
+
+    rng = np.random.default_rng(3)
+    cases = [rng.normal(size=(2, 3)) for _ in range(200)]
+    cases += [np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]]), np.array([[1.0, 2.0, 3.0], [2.0, 4.0, 6.0]])]
+    for a, b in cases:
+        assert np.array_equal(cross3(a, b), np.cross(a, b))
+    # Plain sequences work too, as np.cross accepts them.
+    assert np.array_equal(cross3([0, 0, 1], [1, 0, 0]), np.cross([0, 0, 1], [1, 0, 0]))

@@ -51,6 +51,13 @@ are not recommended for production use yet.
 
 ### Changed
 
+- Setting a goal on a moving agent is cheaper: the check whether the agent
+  can continue into it and the trajectory it then follows share one solve
+  instead of solving the same trajectory twice, and the differential heading
+  computation avoids a generic cross product. Per goal, 5-45% less time
+  across per-agent and batched, omnidirectional and differential controllers
+  (`benchmark/experiments/goal_replacement_cost.py`).
+
 - The ROS 2 bridge Docker images build from the Open-RMF demos image pinned
   by digest (`RMF_DEMOS_IMAGE` build argument) instead of the nightly
   `jazzy-rmf-latest` tag, whose rebuilds changed the demo worlds' model URIs
