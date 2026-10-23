@@ -165,7 +165,7 @@ This section provides comprehensive details for each collision mode.
 ### NORMAL_3D - Full 3D Collision
 
 **Characteristics**:
-- **Neighbor Check**: 27 cells (3×3×3 cube)
+- **Candidates**: the bodies sharing one of its cells
 - **AABB Updates**: Every movement
 - **Grid Registration**: Updated on movement
 - **PyBullet Collision**: Enabled
@@ -187,7 +187,7 @@ drone = SimObject(
 ```
 
 **Performance**:
-- Registered with its z extent enlarged by half the margin, a NORMAL_2D body without
+- Registered with its z extent enlarged by half the margin; a NORMAL_2D body's z extent is not enlarged
 - Candidates are the bodies sharing a cell, for both modes
 - Typical overhead: <10% vs NORMAL_2D
 
@@ -218,9 +218,9 @@ agv = SimObject(
 ### STATIC - Fixed Objects
 
 **Characteristics**:
-- **Neighbor Check**: 27 cells (when checked by moving objects)
+- **Candidates**: found from a moving body's side, through a cell both are registered in
 - **AABB Updates**: NEVER (calculated once at spawn)
-- **Grid Registration**: Once at spawn, never updated
+- **Grid Registration**: At spawn, and again whenever the grid is rebuilt (cell size or margin change)
 - **Movement**: Assumed to never move
 
 **Use Cases**:

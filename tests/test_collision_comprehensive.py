@@ -7,7 +7,7 @@ robust and correct collision detection behavior.
 Test Categories:
 1. Basic Collision Detection (mode combinations)
 2. CollisionDetectionMethod verification
-3. 2D vs 3D neighbor search
+3. 2D vs 3D registration and search
 4. STATIC object optimization
 5. DISABLED mode
 6. Multi-cell registration
@@ -726,17 +726,8 @@ class TestMultiCellRegistration:
         """multi_cell_threshold no longer changes registration (kept for compatibility)."""
         registered = []
         for threshold in (1.2, 10.0):
-            params = SimulationParams(
-                gui=False,
-                physics=False,
-                monitor=False,
-                collision_detection_method=CollisionDetectionMethod.CLOSEST_POINTS,
-                spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
-                spatial_hash_cell_size=2.0,
-                multi_cell_threshold=threshold,
-                ignore_static_collision=False,
-                log_level="warning",
-            )
+            with pytest.warns(DeprecationWarning, match="multi_cell_threshold"):
+                params = self._threshold_params(threshold)
             sim_core = MultiRobotSimulationCore(params)
             sim_core.set_collision_spatial_hash_cell_size_mode()
             try:
@@ -745,6 +736,27 @@ class TestMultiCellRegistration:
             finally:
                 p.disconnect(sim_core.client)
         assert registered[0] == registered[1] and len(registered[0]) > 1
+
+    def test_the_default_threshold_does_not_warn(self):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            self._threshold_params(1.5)
+
+    @staticmethod
+    def _threshold_params(threshold):
+        return SimulationParams(
+            gui=False,
+            physics=False,
+            monitor=False,
+            collision_detection_method=CollisionDetectionMethod.CLOSEST_POINTS,
+            spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
+            spatial_hash_cell_size=2.0,
+            multi_cell_threshold=threshold,
+            ignore_static_collision=False,
+            log_level="warning",
+        )
 
     def test_coord_to_cell_positive(self, sim_core_multicell):
         """_coord_to_cell converts positive coordinates to correct cell index."""
@@ -1192,7 +1204,9 @@ def _broadphase_scene(
             monitor=False,
             collision_margin=margin if change in (None, "params_method") else 0.0,
             collision_detection_method=(
-                CollisionDetectionMethod.CONTACT_POINTS if change == "params_method" else CollisionDetectionMethod.CLOSEST_POINTS
+                CollisionDetectionMethod.CONTACT_POINTS
+                if change == "params_method"
+                else CollisionDetectionMethod.CLOSEST_POINTS
             ),
             spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
             spatial_hash_cell_size=cell,
@@ -1283,9 +1297,9 @@ def test_broadphase_finds_pairs_with_normal_2d_bodies(seed, margin):
 @pytest.mark.parametrize("seed", range(4))
 @pytest.mark.parametrize("margin", [0.0, 0.02, 0.1])
 def test_broadphase_finds_normal_2d_pairs_from_either_side(seed, margin):
-    """As above, but each body searched alone: a NORMAL_2D body that moved
-    must itself find a NORMAL_3D body in the z layer next to its own, which
-    it only looks into while such a body is registered there."""
+    """As above, but each body searched alone, as when it is the only one that
+    moved: a NORMAL_2D body must itself find the NORMAL_3D bodies it overlaps
+    in z, through a cell both are registered in."""
     widths = [0.04, 0.1, 0.2, 0.9, 1.0, 2.8, 5.0]
     modes = (CollisionMode.NORMAL_2D, CollisionMode.NORMAL_3D)
     missed, checked = _broadphase_scene(seed, margin, widths=widths, modes=modes, one_moved=True)
@@ -1298,9 +1312,9 @@ def test_broadphase_finds_normal_2d_pairs_from_either_side(seed, margin):
 @pytest.mark.parametrize("ignore_static", [False, True], ids=["static_counts", "static_ignored"])
 @pytest.mark.parametrize("one_moved", [False, True], ids=["all_moved", "one_moved"])
 def test_broadphase_finds_pairs_with_static_bodies(seed, margin, ignore_static, one_moved):
-    """As above, with STATIC bodies among the 2D and 3D ones. A NORMAL_2D body
-    looks into the next z layer for a STATIC one only while static collisions
-    count; when they are ignored no pair with a STATIC body is required."""
+    """As above, with STATIC bodies among the 2D and 3D ones. A pair with a
+    STATIC body is required while static collisions count; when they are
+    ignored, none is."""
     widths = [0.04, 0.1, 0.2, 0.9, 1.0, 2.8, 5.0]
     modes = (CollisionMode.NORMAL_2D, CollisionMode.NORMAL_3D, CollisionMode.STATIC)
     missed, checked = _broadphase_scene(
@@ -1340,7 +1354,9 @@ def test_a_margin_change_reregisters_bodies_registered_with_the_old_one(change, 
             monitor=False,
             collision_margin=0.0 if change != "params_method" else margin,
             collision_detection_method=(
-                CollisionDetectionMethod.CONTACT_POINTS if change == "params_method" else CollisionDetectionMethod.CLOSEST_POINTS
+                CollisionDetectionMethod.CONTACT_POINTS
+                if change == "params_method"
+                else CollisionDetectionMethod.CLOSEST_POINTS
             ),
             spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
             spatial_hash_cell_size=1.0,

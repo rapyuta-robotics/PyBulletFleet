@@ -31,9 +31,9 @@ cat docs/spatial_hash_cell_size_modes.md
 Broad Phase: Spatial Hash Grid — O(N) filtering
   │
   ├── Objects hashed into cells by AABB
-  ├── Only check pairs in same/neighboring cells
-  ├── Incremental: only re-hash moved objects (_moved_this_step)
-  └── Multi-cell: large objects span multiple cells
+  ├── Each body in every cell its AABB (+ margin/2) touches
+  ├── Only check pairs sharing a cell (no neighbour search)
+  └── Incremental: only re-hash moved objects (_moved_this_step)
   │
   ▼
 Narrow Phase: PyBullet API — per-pair verification

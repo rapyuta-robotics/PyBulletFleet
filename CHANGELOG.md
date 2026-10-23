@@ -105,8 +105,11 @@ are not recommended for production use yet.
   sharing one of its cells -- no 9- or 27-cell neighbour search. Two bodies
   within the margin always share a cell, so no pair within it is missed,
   whatever the bodies' sizes, their collision modes (NORMAL_2D, NORMAL_3D,
-  STATIC) or the margin, 0 included (#89). `multi_cell_threshold` is accepted
-  and no longer used. Each moved body updates the grid once per step (physics
+  STATIC) or the margin, 0 included (#89). The grid is rebuilt whenever the
+  effective margin changes, also when `params.collision_margin` or
+  `params.collision_detection_method` is assigned directly. `multi_cell_threshold`
+  is accepted, no longer used, and a value other than the default raises a
+  DeprecationWarning. Each moved body updates the grid once per step (physics
   bodies were updated twice), a body switched to STATIC is re-registered, and
   a DISABLED body that moves is no longer put in the grid. 1000 batch agents,
   half moving, a collision check every step, automatic cell size, robots
