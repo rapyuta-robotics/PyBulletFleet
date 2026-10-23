@@ -94,7 +94,7 @@ class SpyGrid(dict):
     """A dict subclass that records every key passed to .get().
 
     Replaces sim_core._cached_spatial_grid to observe which cells
-    filter_aabb_pairs actually queries during neighbour search.
+    filter_aabb_pairs actually queries: a body's own cells.
     """
 
     def __init__(self, original):
@@ -2075,11 +2075,11 @@ class TestFilterAabbPairs:
         """NORMAL_2D with Z-separated objects in the SAME Z-cell: rejected.
 
         Both objects share the same XY position and fall in the same Z-cell
-        (Z=0 → cell 0, Z=1.5 → cell 0 with cell_size=2.0), so 2D neighbor
-        search finds them.  However their Z-axis AABBs (size=0.25) do NOT
+        (Z=0 → cell 0, Z=1.5 → cell 0 with cell_size=2.0), so they share a
+        cell and the search finds them.  However their Z-axis AABBs (size=0.25) do NOT
         overlap: [−0.125, 0.125] vs [1.375, 1.625].
 
-        NORMAL_2D's optimisation is only in neighbour search (9 vs 27 cells).
+        NORMAL_2D changes registration only (no z enlargement by the margin).
         AABB overlap is always checked on all 3 axes, so this pair is rejected
         — same as NORMAL_3D for the same geometry."""
         obj1 = make_box(sim_core, [0, 0, 0], collision_mode=CollisionMode.NORMAL_2D)
@@ -2101,7 +2101,7 @@ class TestFilterAabbPairs:
         """NORMAL_2D with actually overlapping objects should be detected.
 
         Both objects are at the same position → AABBs fully overlap on all
-        3 axes.  2D neighbour search (9 cells) finds them, and the full
+        3 axes.  They share a cell, so the search finds them, and the full
         XYZ AABB check passes."""
         obj1 = make_box(sim_core, [0, 0, 0], collision_mode=CollisionMode.NORMAL_2D)
         obj2 = make_box(sim_core, [0.3, 0, 0], collision_mode=CollisionMode.NORMAL_2D)
@@ -2154,10 +2154,11 @@ class TestFilterAabbPairs:
         assert pair not in pairs
 
     def test_3d_search_miss_z_cell_too_far(self, sim_core):
-        """3D neighbour search cannot reach Z-cell 2 from Z-cell 0 (search miss).
+        """A body in Z-cell 2 shares no cell with one in Z-cell 0 (search miss).
 
         Z=0 → cell 0, Z=5 → cell 2 (floor(5/2.0)=2).
-        3D offsets reach Z ∈ {-1, 0, 1} only, so cell 2 is out of range.
+        Each body's cells are only the ones its AABB (plus half the margin) touches,
+        so obj1's cells never include Z-cell 2.
 
         This tests the search boundary, NOT the AABB overlap check.
         See test_3d_aabb_rejects_adjacent_z_cell for the AABB rejection path."""
@@ -2170,7 +2171,7 @@ class TestFilterAabbPairs:
         pairs, _ = sim_core.filter_aabb_pairs()
 
         # obj2's cell was NEVER queried → genuine search miss
-        assert not was_searched(spy, sim_core, obj2), "obj2's Z-cell should NOT have been queried (too far for 3D offsets)"
+        assert not was_searched(spy, sim_core, obj2), "obj2's Z-cell should NOT have been queried (not one of obj1's cells)"
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair not in pairs
 

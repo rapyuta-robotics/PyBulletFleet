@@ -194,7 +194,7 @@ def check_collisions(self):
 
     # Only iterate through moved objects
     for obj_id in moved_objects:
-        # Find neighbors in grid
+        # Find the bodies registered in its own cells
         # Check AABB overlap
         # Add to candidate pairs
 ```

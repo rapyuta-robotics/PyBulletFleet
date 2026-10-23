@@ -344,7 +344,7 @@ simulation:
 entities:
   # collision_mode is per entity, not a simulation setting.
   - urdf_path: robots/mobile_robot.urdf
-    collision_mode: normal_2d  # other NORMAL_2D bodies: its own z layer only
+    collision_mode: normal_2d  # a pair with it needs real overlap in z
 
   - urdf_path: robots/simple_cube.urdf
     collision_mode: static  # fixed; cannot be moved until its mode changes

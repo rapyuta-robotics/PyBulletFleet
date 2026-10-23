@@ -13,6 +13,7 @@ import os
 import statistics
 import time
 import tracemalloc  # Memory profiling (imported once at module level)
+import warnings
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -250,6 +251,13 @@ class SimulationParams:
     monitor_y: int = _SIM_D["monitor_y"]
 
     def __post_init__(self) -> None:
+        if self.multi_cell_threshold != _SIM_D["multi_cell_threshold"]:
+            warnings.warn(
+                "multi_cell_threshold no longer has any effect: every body is registered in each "
+                "spatial-hash cell it reaches. It will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
         # Coerce a string (e.g. from YAML: collision_detection_method: "closest_points")
         # into the CollisionDetectionMethod enum. Without this the value stays a plain
         # str and the `== CollisionDetectionMethod.X` checks in check_collisions() never
