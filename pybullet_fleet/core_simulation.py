@@ -44,6 +44,7 @@ import pybullet_data
 import yaml
 
 from pybullet_fleet._frequency import FrequencyGate
+from pybullet_fleet._monitor_frames import MonitorFrames
 from pybullet_fleet._platform import IS_MACOS
 from pybullet_fleet.camera_controller import CameraController
 from pybullet_fleet.collision_visualizer import CollisionVisualizer  # deprecated, unused
@@ -187,13 +188,20 @@ class SimulationParams:
     #: Simulated seconds between DataMonitor refreshes while ``monitor`` is
     #: on. A refresh builds :attr:`last_monitor_frame` and writes the file the
     #: monitor window reads (every 0.5 wall seconds). ``None`` (the default)
-    #: is 0.25 s while the monitor window is open (``enable_monitor_gui``, or
-    #: ``gui`` when that is ``None``) and 1 s otherwise; ``0`` is every step.
+    #: is :attr:`monitor_update_interval_window` while the monitor window is
+    #: open (``enable_monitor_gui``, or ``gui`` when that is ``None``) and
+    #: :attr:`monitor_update_interval_headless` otherwise; ``0`` is every step.
     #: Simulated time: at a real-time factor above 1 a short interval means
     #: more writes per wall second. While paused, a selection, follow or pause
     #: change, and a single step, refresh at once. Read once, when the
     #: simulation is created.
     monitor_update_interval: Optional[float] = _SIM_D["monitor_update_interval"]
+    #: The refresh, in simulated seconds, when ``monitor_update_interval`` is
+    #: ``None`` and the monitor window is open (default 0.25).
+    monitor_update_interval_window: float = _SIM_D["monitor_update_interval_window"]
+    #: The refresh, in simulated seconds, when ``monitor_update_interval`` is
+    #: ``None`` and no monitor window is open (default 1.0).
+    monitor_update_interval_headless: float = _SIM_D["monitor_update_interval_headless"]
     #: Wall-clock seconds between ``[MONITOR]`` lines logged at INFO -- RTF,
     #: collision totals, step count -- independent of ``monitor``, ``gui`` and
     #: ``monitor_update_interval``. ``monitor`` drives the DataMonitor, whose
@@ -472,18 +480,9 @@ class MultiRobotSimulationCore:
         self._data_monitor: Optional[DataMonitor] = None
         self._gui_commands: Queue[GuiCommand] = Queue(maxsize=32)
         self._single_step_requested: bool = False
-        self._last_monitor_frame: Optional[MonitorFrame] = None
-        # The monitor's entity list, rebuilt only when the set of objects or a
-        # name changes (_note_monitor_entities_changed bumps the version): a
-        # scene of thousands of static bodies would otherwise pay for a sorted
-        # list of every one of them on every refresh.
-        self._monitor_entities_version: int = 0
-        self._monitor_entities_cache: Optional[Tuple[int, Tuple[MonitorEntity, ...]]] = None
-        # Something the monitor window shows (selection, follow, pause, the
-        # entity list) changed since the last frame was built. Running, the
-        # next refresh shows it; paused, nothing refreshes, so step_once()
-        # builds a frame for it at once.
-        self._monitor_frame_stale: bool = True
+        # Entity-list cache and "window is behind" state of the DataMonitor
+        # (see pybullet_fleet._monitor_frames).
+        self._monitor_frames = MonitorFrames()
         self._selected_entity_id: Optional[int] = None
         self._gui_follow_enabled: bool = False
         self._pacing_rebase_requested: bool = False
@@ -629,14 +628,15 @@ class MultiRobotSimulationCore:
         self._plugins: List["SimPlugin"] = []
 
         self.setup_pybullet()
-        # DataMonitor refresh: monitor_update_interval, else 0.25 s while its
-        # window is open (enable_monitor_gui, or gui when that is None; the
-        # window reads every 0.5 wall seconds) and once a second otherwise.
+        # DataMonitor refresh: monitor_update_interval, else
+        # monitor_update_interval_window while its window is open
+        # (enable_monitor_gui, or gui when that is None; the window reads every
+        # 0.5 wall seconds) and monitor_update_interval_headless otherwise.
         # Set after setup_pybullet(): RECORD may turn the GUI off.
         interval = params.monitor_update_interval
         if interval is None:
             window = params.enable_monitor_gui if params.enable_monitor_gui is not None else params.gui
-            interval = 0.25 if window else 1.0
+            interval = params.monitor_update_interval_window if window else params.monitor_update_interval_headless
         self._monitor_update_gate = FrequencyGate(1.0 / interval if interval > 0 else None)
         self.setup_monitor()
 
@@ -681,7 +681,7 @@ class MultiRobotSimulationCore:
     @property
     def last_monitor_frame(self) -> Optional[MonitorFrame]:
         """Return the most recently published toolkit-neutral monitor frame."""
-        return self._last_monitor_frame
+        return self._monitor_frames.last_frame
 
     @property
     def selected_entity_id(self) -> Optional[int]:
@@ -839,7 +839,7 @@ class MultiRobotSimulationCore:
         if self._selected_entity_id == entity_id:
             return
         self._selected_entity_id = entity_id
-        self._monitor_frame_stale = True
+        self._monitor_frames.view_changed()
         if entity_id is None:
             self._gui_follow_enabled = False
         self._update_selected_nameplate(force=True)
@@ -850,7 +850,7 @@ class MultiRobotSimulationCore:
         if self._gui_follow_enabled == enabled:
             return
         self._gui_follow_enabled = enabled
-        self._monitor_frame_stale = True
+        self._monitor_frames.view_changed()
         self.events.emit("gui.follow_changed", entity_id=self._selected_entity_id, enabled=enabled)
 
     def _clear_selected_nameplate(self) -> None:
@@ -3737,20 +3737,7 @@ class MultiRobotSimulationCore:
 
     def _note_monitor_entities_changed(self) -> None:
         """An object was added, removed or renamed: rebuild the monitor's entity list."""
-        self._monitor_entities_version += 1
-        self._monitor_frame_stale = True
-
-    def _monitor_entities(self) -> Tuple[MonitorEntity, ...]:
-        """The monitor's entity list, rebuilt only when it changed (see ``_note_monitor_entities_changed``)."""
-        cache = self._monitor_entities_cache
-        if cache is None or cache[0] != self._monitor_entities_version:
-            entities = tuple(
-                MonitorEntity(object_id=obj.object_id, name=obj.name or f"entity-{obj.object_id}", kind=type(obj).__name__)
-                for obj in sorted(self._sim_objects, key=lambda item: item.object_id)
-            )
-            cache = (self._monitor_entities_version, entities)
-            self._monitor_entities_cache = cache
-        return cache[1]
+        self._monitor_frames.objects_changed()
 
     def update_monitor(self) -> None:
         """Update simulation monitor with current statistics.
@@ -3767,7 +3754,7 @@ class MultiRobotSimulationCore:
         num_agents = len(self._agents)
         num_objects = len(self._sim_objects) - num_agents
 
-        entities = self._monitor_entities()
+        entities = self._monitor_frames.entities(self._sim_objects)
         selected_state = None
         selected = self._sim_objects_dict.get(self._selected_entity_id) if self._selected_entity_id is not None else None
         if selected is not None:
@@ -3805,7 +3792,6 @@ class MultiRobotSimulationCore:
             selected_entity=selected_state,
             follow_enabled=self._gui_follow_enabled,
         )
-        self._last_monitor_frame = frame
         logger.debug(
             "[MONITOR] sim_time=%.2f, real_time=%.2f, rtf=%.2f, agents=%d, objects=%d, "
             "active_collisions=%d, total_collisions=%d, steps=%d",
@@ -3823,7 +3809,7 @@ class MultiRobotSimulationCore:
             logger.info(f"NEW COLLISION: total={self._collision_count} at sim_time={sim_time:.2f}")
             self._last_logged_collision_count = self._collision_count
         # Also output to DataMonitor window
-        self._monitor_frame_stale = False
+        self._monitor_frames.built(frame)
         if self._data_monitor:
             self._data_monitor.write_frame(frame)
 
@@ -3836,8 +3822,7 @@ class MultiRobotSimulationCore:
         """
         if not self._data_monitor:
             return False
-        last = self._last_monitor_frame
-        if self._monitor_frame_stale or last is None or last.steps != self._step_count:
+        if self._monitor_frames.behind(self._step_count):
             self.update_monitor()
             return True
         return False
@@ -3876,8 +3861,7 @@ class MultiRobotSimulationCore:
         self._monitor_update_gate.reset()
         self._last_monitor_log = None  # a fresh run logs its first step
         self._last_logged_collision_count = 0
-        self._last_monitor_frame = None
-        self._monitor_frame_stale = True
+        self._monitor_frames.reset()
         self._single_step_requested = False
         self._pacing_rebase_requested = False
         self._clear_selected_nameplate()
@@ -4655,13 +4639,13 @@ class MultiRobotSimulationCore:
     def pause(self) -> None:
         """Pause the simulation. step_once will be skipped while paused."""
         self._simulation_paused = True
-        self._monitor_frame_stale = True
+        self._monitor_frames.view_changed()
         self.events.emit(SimEvents.PAUSED)
 
     def resume(self) -> None:
         """Resume the simulation after a pause."""
         self._simulation_paused = False
-        self._monitor_frame_stale = True
+        self._monitor_frames.view_changed()
         self.events.emit(SimEvents.RESUMED)
 
     @property
@@ -4741,7 +4725,7 @@ class MultiRobotSimulationCore:
 
         # Skip physics simulation and callbacks if paused
         if self.is_paused and not self._single_step_requested:
-            if self._monitor_enabled and self._monitor_frame_stale and self._data_monitor:
+            if self._monitor_enabled and self._data_monitor and self._monitor_frames.due_while_paused():
                 # Nothing refreshes the monitor while paused: still show a
                 # selection, follow or pause change.
                 self.update_monitor()
