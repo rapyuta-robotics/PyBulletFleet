@@ -2134,21 +2134,22 @@ class TestFilterAabbPairs:
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair not in pairs, "Search found obj2, but AABB Z-overlap should reject the pair"
 
-    def test_2d_search_miss_different_z_cell(self, sim_core):
-        """2D neighbour search never reaches a different Z-cell (search miss).
+    def test_2d_search_skips_2d_body_in_different_z_cell(self, sim_core):
+        """Two NORMAL_2D bodies in different Z-cells are never a candidate.
 
-        Z=0 → cell 0, Z=3.0 → cell 1 (floor(3.0/2.0)=1).
-        2D offsets use Z=0 only, so cell 1 is never visited."""
+        Z=0 → cell 0, Z=3.0 → cell 1 (floor(3.0/2.0)=1). A NORMAL_2D body is
+        registered in every z cell it touches, so two that overlap share one;
+        the search may look at the next layer (for NORMAL_3D bodies there)
+        but skips NORMAL_2D bodies outside its own layer."""
         obj1 = make_box(sim_core, [0, 0, 0], collision_mode=CollisionMode.NORMAL_2D)
         obj2 = make_box(sim_core, [0, 0, 3.0], collision_mode=CollisionMode.NORMAL_2D)
+        assert {c[2] for c in sim_core._cached_object_to_cell[obj1.object_id]}.isdisjoint(
+            c[2] for c in sim_core._cached_object_to_cell[obj2.object_id]
+        )
 
         sim_core._moved_this_step = {obj1.object_id}
-        spy = SpyGrid(sim_core._cached_spatial_grid)
-        sim_core._cached_spatial_grid = spy
         pairs, _ = sim_core.filter_aabb_pairs()
 
-        # obj2's cell was NEVER queried → genuine search miss
-        assert not was_searched(spy, sim_core, obj2), "obj2's Z-cell should NOT have been queried by 2D search"
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair not in pairs
 
@@ -2173,15 +2174,12 @@ class TestFilterAabbPairs:
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair not in pairs
 
-    def test_3d_aabb_rejects_adjacent_z_cell(self, sim_core):
-        """3D neighbour search reaches adjacent Z-cell, but AABB overlap fails.
+    def test_3d_bodies_in_adjacent_z_cells_share_no_cell(self, sim_core):
+        """Z=0 (AABB -0.125..0.125) and Z=2.5 (2.375..2.625), cell 2.0.
 
-        Z=0 → cell 0, Z=2.5 → cell 1 (floor(2.5/2.0)=1).
-        3D offsets include Z=+1, so cell 1 IS searched and the pair IS
-        considered.  However Z AABBs [−0.125, 0.125] vs [2.375, 2.625]
-        do NOT overlap, so the pair is rejected at the AABB check stage.
-
-        This tests the AABB rejection path (not search miss)."""
+        Each body is registered only in the cells its AABB touches, and the
+        search looks only there, so obj2's cell is never queried and the pair
+        is not a candidate."""
         obj1 = make_box(sim_core, [0, 0, 0], collision_mode=CollisionMode.NORMAL_3D)
         obj2 = make_box(sim_core, [0, 0, 2.5], collision_mode=CollisionMode.NORMAL_3D)
 
@@ -2190,11 +2188,9 @@ class TestFilterAabbPairs:
         sim_core._cached_spatial_grid = spy
         pairs, _ = sim_core.filter_aabb_pairs()
 
-        # obj2's cell WAS queried (adjacent Z-cell) → search hit
-        assert was_searched(spy, sim_core, obj2), "obj2's cell should have been queried (adjacent Z-cell via 3D offset)"
-        # but pair is rejected by AABB Z-overlap check
+        assert not was_searched(spy, sim_core, obj2)
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
-        assert pair not in pairs, "Search found obj2, but AABB Z-overlap should reject the pair"
+        assert pair not in pairs
 
     def test_return_profiling_includes_timings(self, sim_core):
         """return_profiling=True should return a dict with timing keys."""

@@ -118,8 +118,8 @@ scenarios:
 # - collision_check_frequency: 0 to disable, null for every step, or Hz value (e.g., 10.0)
 # - CollisionMode: Set per-object via spawn parameters (not in config file)
 #   Available modes (default: NORMAL_3D):
-#     - NORMAL_3D: Full 3D collision (27 neighbors) - default for all moving objects
-#     - NORMAL_2D: 2D collision only (9 neighbors, XY plane) - for ground robots
+#     - NORMAL_3D: Full 3D collision - default for all moving objects
+#     - NORMAL_2D: XY collision; z must actually overlap - for ground robots
 #     - STATIC: One-time AABB registration - for fixed structures
 #     - DISABLED: No collision detection - for visualization objects
 #
@@ -129,7 +129,7 @@ scenarios:
 #     # 2D ground robot
 #     params = AgentSpawnParams(
 #         urdf_path="robot.urdf",
-#         collision_mode=CollisionMode.NORMAL_2D,  # 9 neighbors
+#         collision_mode=CollisionMode.NORMAL_2D,
 #     )
 #
 #     # 3D drone (default)

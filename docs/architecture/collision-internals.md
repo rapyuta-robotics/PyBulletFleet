@@ -187,17 +187,17 @@ drone = SimObject(
 ```
 
 **Performance**:
-- Checks 27 neighbor cells vs 9 for 2D
-- ~3x more cells, but filtered by AABB
+- Registered with its z extent enlarged by half the margin, a NORMAL_2D body without
+- Candidates are the bodies sharing a cell, for both modes
 - Typical overhead: <10% vs NORMAL_2D
 
 ### NORMAL_2D - 2D Collision (XY Plane)
 
 **Characteristics**:
-- **Neighbor Check**: 9 cells (3×3×1, XY plane only)
+- **Candidates**: the bodies sharing one of its cells
 - **AABB Updates**: Every movement
-- **Grid Registration**: Updated on movement
-- **Z-Axis**: Ignored for neighbor search (but AABB Z must still overlap!)
+- **Grid Registration**: Updated on movement; z extent not enlarged by the margin
+- **Z-Axis**: AABB Z must actually overlap (no margin in z)
 
 **Use Cases**:
 - Ground robots (AGVs, AMRs)
@@ -331,7 +331,6 @@ params = SimulationParams(
     collision_detection_method=CollisionDetectionMethod.CLOSEST_POINTS,
     collision_margin=0.02,  # 2cm safety buffer
     spatial_hash_cell_size=2.0,  # 2m cells
-    multi_cell_threshold=1.5,  # Large object threshold
 )
 
 # Physics Mode
@@ -394,7 +393,6 @@ physics: false
 collision_detection_method: "closest_points"
 collision_margin: 0.02
 spatial_hash_cell_size: 2.0
-multi_cell_threshold: 1.5
 ignore_static_collision: false
 ```
 

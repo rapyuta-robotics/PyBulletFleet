@@ -92,7 +92,7 @@ Common optimization levers:
 | Disable GUI | `gui: false` | 2-3x faster |
 | Disable monitor | `monitor: false` | Removes matplotlib overhead |
 | Reduce collision frequency | `collision_check_frequency: 10` | Major if collision dominates |
-| Use NORMAL_2D | Per-object CollisionMode | 9 vs 27 neighbor checks |
+| Use NORMAL_2D | Per-object CollisionMode | No z margin; fewer z cells per body |
 | Mark static objects | `CollisionMode.STATIC` | Skip AABB updates |
 | Disable unnecessary collision | `CollisionMode.DISABLED` | Remove from spatial hash |
 | Increase timestep | `timestep: 0.1` | Fewer steps per second |

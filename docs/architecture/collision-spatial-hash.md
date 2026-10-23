@@ -1,7 +1,7 @@
 # Collision Detection Broad-Phase Details: Spatial Hash Grid
 
 Implementation details of the broad-phase spatial hash grid — cell calculation,
-AABB caching, neighbor search patterns, multi-cell registration, and
+AABB caching, registration and candidate search, and
 performance optimizations.
 
 ---
@@ -124,78 +124,59 @@ def _update_object_aabb(self, object_id: int):
 ---
 
 (neighbor-search-patterns)=
-## Neighbor Search Patterns
-
-```
-3D Mode (27 neighbors):
-Check all 27 cells in 3×3×3 cube
-
-    Z=+1 layer          Z=0 layer (object)   Z=-1 layer
-    ┌───┬───┬───┐       ┌───┬───┬───┐       ┌───┬───┬───┐
-    │ ✓ │ ✓ │ ✓ │       │ ✓ │ ✓ │ ✓ │       │ ✓ │ ✓ │ ✓ │
-    ├───┼───┼───┤       ├───┼───┼───┤       ├───┼───┼───┤
-    │ ✓ │ ✓ │ ✓ │       │ ✓ │ O │ ✓ │       │ ✓ │ ✓ │ ✓ │
-    ├───┼───┼───┤       ├───┼───┼───┤       ├───┼───┼───┤
-    │ ✓ │ ✓ │ ✓ │       │ ✓ │ ✓ │ ✓ │       │ ✓ │ ✓ │ ✓ │
-    └───┴───┴───┘       └───┴───┴───┘       └───┴───┴───┘
-    (9 cells)           (9 cells)           (9 cells)
-                        Total: 27 cells
-
-
-2D Mode (9 neighbors):
-Check only 9 cells in 3×3 grid on same Z layer
-
-    Z=0 layer (object's Z level only)
-    ┌───┬───┬───┐
-    │ ✓ │ ✓ │ ✓ │
-    ├───┼───┼───┤
-    │ ✓ │ O │ ✓ │  O: Object's cell
-    ├───┼───┼───┤  ✓: Checked neighbor cells
-    │ ✓ │ ✓ │ ✓ │
-    └───┴───┴───┘
-    Total: 9 cells (Z±1 layers ignored)
-```
-
----
-
 (multi-cell-registration)=
-## Multi-Cell Registration
+## Registration and Candidate Search
 
-**Problem**: Large objects may span multiple cells
+Every collision body (NORMAL_3D, NORMAL_2D and STATIC; not DISABLED) is
+registered in **every cell its AABB, enlarged by half the collision margin on
+every side, touches**. A NORMAL_2D body's z extent is not enlarged. A moved
+body's candidates are the bodies registered in **its own cells**: there is no
+neighbour search.
 
-**Solution**: Register to all overlapping cells
+```
+cell size 1.0, margin 0.02 (enlargement 0.01 per side)
 
-**Detection**:
-```python
-def _should_use_multi_cell_registration(self, object_id: int) -> bool:
-    aabb = self._cached_aabbs_dict[object_id]
-    extent_x = aabb[1][0] - aabb[0][0]
-    extent_y = aabb[1][1] - aabb[0][1]
-    max_extent = max(extent_x, extent_y)
-
-    threshold_size = self._cached_cell_size * self.params.multi_cell_threshold
-    return max_extent > threshold_size  # Default: 1.5x cell_size
+  x: 0.0         1.0         2.0
+     ┌───────────┬───────────┐
+     │   A       │           │   A: 0.40-0.60        -> cell 0 only
+     │        B══╪══         │   B: 0.90-1.10        -> cells 0 and 1
+     │           │  C        │   C: 1.15-1.35        -> cell 1 only
+     └───────────┴───────────┘
+  A-B share cell 0, B-C share cell 1: both pairs are candidates.
+  A-C share no cell: never looked at.
 ```
 
-**Example**:
-```
-Cell size: 2.0m, Threshold: 1.5
-Wall: 5.0m × 5.0m → max_extent=5.0 > 3.0 → Multi-cell ✓
+**Why no pair is missed**: two bodies within the margin `m` have enlarged AABBs
+(each grown by `m/2` per side) that overlap. The cell holding a point of that
+overlap is one both are registered in. A pair with a NORMAL_2D body must
+overlap in z, so the cell holding a point of that overlap is one both reach
+in z without enlargement. Without a margin (`m = 0`) every body is registered
+in exactly the cells its AABB touches, which is the same argument.
 
-Wall registered to 9 cells:
+**What it costs**: a body small next to a cell is usually in one cell, in two
+or four near a cell boundary. A body larger than a cell, a wall say, is in
+every cell it covers. The pair search then reads only the body's own cells,
+not the 9 or 27 around it, and the margin-based AABB filter (with its NORMAL_2D
+z rule, the zero margin for a pair with a physics body, `ignore_static` and
+DISABLED) decides on each candidate.
+
+`multi_cell_threshold` is accepted for compatibility and no longer used: every
+body is registered wherever it reaches, whatever its size.
+
+```
+Cell size: 2.0m
+Wall: 5.0m × 5.0m, centred on a cell corner -> registered in the 3×3 cells it covers:
 ┌─────┬─────┬─────┐
 │  W  │  W  │  W  │
 ├─────┼─────┼─────┤
-│  W  │  W  │  W  │  (3×3 grid)
+│  W  │  W  │  W  │
 ├─────┼─────┼─────┤
 │  W  │  W  │  W  │
 └─────┴─────┴─────┘
+A robot in any of them finds the wall in its own cell.
 ```
 
-**Benefits**:
-- Robot in any adjacent cell can find the wall
-- No missed collisions for large objects
-- Automatic (no manual configuration)
+A DISABLED body is in no cell, even after it moves.
 
 ---
 
