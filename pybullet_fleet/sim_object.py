@@ -1730,9 +1730,19 @@ class SimObject:
         if self.sim_core is None:
             return None
 
+        # Only the objects near enough to qualify: anything within the radius
+        # has its position, and so its AABB, inside this box. A core without
+        # query_aabb (a stand-in in tests, say) gets the full scan.
+        position = self.get_pose().position
+        query = getattr(self.sim_core, "query_aabb", None)
+        nearby = (
+            query([c - search_radius for c in position], [c + search_radius for c in position])
+            if query is not None
+            else self.sim_core.sim_objects
+        )
         return tools.find_nearest(
-            self.sim_core.sim_objects,
-            position=self.get_pose().position,
+            nearby,
+            position=position,
             search_radius=search_radius,
             predicate=lambda o: o.pickable and not o.is_attached(),
             exclude=self,

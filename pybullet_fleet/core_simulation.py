@@ -24,6 +24,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Iterable,
     List,
     Mapping,
     Optional,
@@ -3134,6 +3135,73 @@ class MultiRobotSimulationCore:
         if self._params.gui and self._camera_controller is None:
             self._camera_controller = CameraController(client_id=self._client)
             logger.info("Interactive camera controls enabled: right-drag/arrows=pan, +/-=zoom, o=top-down")
+
+    def query_aabb(self, aabb_min: Sequence[float], aabb_max: Sequence[float]) -> List[SimObject]:
+        """Objects whose AABB overlaps the box ``[aabb_min, aabb_max]``.
+
+        Looks only at the objects registered in the collision spatial hash
+        cells the box reaches, so the cost depends on how crowded the box is,
+        not on how many objects the simulation holds. Before the hash exists
+        (no collision check has run yet) every object is tested.
+
+        The broadphase does not track every object, so these are always tested
+        directly against their current PyBullet AABB as well: objects with
+        collision ``DISABLED``, and objects with a pose written since the last
+        step that the hash has not seen yet.
+
+        Args:
+            aabb_min: ``(x, y, z)`` lower corner of the box, world frame.
+            aabb_max: ``(x, y, z)`` upper corner of the box, world frame.
+
+        Returns:
+            The overlapping objects, in no particular order.
+
+        Example::
+
+            # Everything within 0.5 m of a point, as a box
+            nearby = sim.query_aabb((x - 0.5, y - 0.5, z - 0.5), (x + 0.5, y + 0.5, z + 0.5))
+        """
+        lo = tuple(float(v) for v in aabb_min)
+        hi = tuple(float(v) for v in aabb_max)
+
+        def overlaps(box: Tuple[Sequence[float], Sequence[float]]) -> bool:
+            (x0, y0, z0), (x1, y1, z1) = box
+            return x0 <= hi[0] and x1 >= lo[0] and y0 <= hi[1] and y1 >= lo[1] and z0 <= hi[2] and z1 >= lo[2]
+
+        objects = self._sim_objects_dict
+        cached = self._cached_aabbs_dict
+        stale = self._pending_pose_ids
+        if self._cached_cell_size is None:
+            candidate_ids: Iterable[int] = objects.keys()
+        else:
+            ids: Set[int] = set()
+            grid = self._cached_spatial_grid
+            empty = self._EMPTY_SET
+            x_range = range(self._coord_to_cell(lo[0]), self._coord_to_cell(hi[0]) + 1)
+            y_range = range(self._coord_to_cell(lo[1]), self._coord_to_cell(hi[1]) + 1)
+            z_range = range(self._coord_to_cell(lo[2]), self._coord_to_cell(hi[2]) + 1)
+            for x in x_range:
+                for y in y_range:
+                    for z in z_range:
+                        ids.update(grid.get((x, y, z), empty))
+            ids.update(self._disabled_collision_objects)
+            ids.update(stale)
+            candidate_ids = ids
+
+        found = []
+        for object_id in candidate_ids:
+            obj = objects.get(object_id)
+            if obj is None:
+                continue
+            box = cached.get(object_id)
+            if box is None or object_id in stale:
+                try:
+                    box = p.getAABB(obj.body_id, physicsClientId=self._client)
+                except p.error:
+                    continue
+            if overlaps(box):
+                found.append(obj)
+        return found
 
     def get_aabbs(self) -> List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
         """Get AABBs for all simulation objects."""
