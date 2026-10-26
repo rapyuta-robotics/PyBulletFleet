@@ -65,7 +65,7 @@ their periodic reports.
 | `spatial_hash_cell_size` | `None` | Fixed cell size in metres when mode is `constant`. |
 | `multi_cell_threshold` | `1.5` | Dimensionless cell-size multiplier for multi-cell registration. |
 | `ignore_static_collision` | `true` | Skip every pair containing an entity with `collision_mode: static`. |
-| `ignore_attached_collision` | `true` | Do not report contact between an object and the object it is attached to (`attach_object()`); only the direct parent and child. For other expected contact, see `set_collision_ignore_filter()` in the collision internals. |
+| `ignore_attached_collision` | `true` | Do not report contact between objects on one attachment tree (`attach_object()`): a carrier, the objects attached to it, and the objects attached to those, so a parent and child, two loads on one carrier, and a load on a load are all excluded. For other expected contact, see `set_collision_ignore_filter()` in the collision internals. |
 | `enable_collision_color_change` | `false` | Change object colour while a collision is active. |
 | `enable_collision_shapes` | `false` | Initially show collision-shape wireframes in the GUI. |
 | `enable_structure_transparency` | `false` | Initially render structure bodies semi-transparently. |

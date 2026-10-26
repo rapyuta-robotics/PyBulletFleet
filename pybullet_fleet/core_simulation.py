@@ -219,10 +219,9 @@ class SimulationParams:
     enable_shadows: bool = _SIM_D["enable_shadows"]
     enable_gui_panel: bool = _SIM_D["enable_gui_panel"]
     ignore_static_collision: bool = _SIM_D["ignore_static_collision"]
-    #: Do not count contact between an object and the object it is attached
-    #: to (``attach_object``): a carried load touches its carrier by design.
-    #: Only the direct parent and child; contact with anything else the
-    #: carrier holds is still reported.
+    #: Do not count contact between objects on one attachment tree
+    #: (``attach_object``): a carrier, its loads and their loads touch one
+    #: another by design. Contact with anything outside the tree is reported.
     ignore_attached_collision: bool = _SIM_D["ignore_attached_collision"]
     enable_time_profiling: bool = _SIM_D["enable_time_profiling"]
     profiling_interval: int = _SIM_D["profiling_interval"]
@@ -2094,7 +2093,9 @@ class MultiRobotSimulationCore:
 
     def _is_ignored_collision(self, obj_a: SimObject, obj_b: SimObject) -> bool:
         """Whether two touching objects are excluded from collision results."""
-        if self._params.ignore_attached_collision and (obj_a._attached_to is obj_b or obj_b._attached_to is obj_a):
+        # Every object on one attachment tree -- an agent, its loads, a load's
+        # loads -- belongs to one body: no contact among them is a collision.
+        if self._params.ignore_attached_collision and obj_a._attachment_root() is obj_b._attachment_root():
             return True
         return self._collision_ignore_filter is not None and bool(self._collision_ignore_filter(obj_a, obj_b))
 
@@ -3350,6 +3351,27 @@ class MultiRobotSimulationCore:
         else:
             return list(pairs), None
 
+    @staticmethod
+    def _stop_on_collision(obj_a: SimObject, obj_b: SimObject) -> None:
+        """Stop the agents a new contact involves, when their ``stop_on_collision`` is set.
+
+        An object attached to an agent (a carried load) stands for that agent,
+        so a load running into something stops its carrier. A contact between
+        an agent and its own load is not a collision with anything else. An
+        agent that is not moving, such as one struck while it stands, is left
+        alone: there is no motion to stop, and an action it is running goes on.
+        """
+
+        root_a, root_b = obj_a._attachment_root(), obj_b._attachment_root()
+        if root_a is root_b:
+            # Only reached with ignore_attached_collision off, where such a
+            # pair is still reported; it is never a reason to stop.
+            return
+        for root, other in ((root_a, obj_b), (root_b, obj_a)):
+            if isinstance(root, Agent) and root.is_moving and root.controller_params._eff_stop_on_collision():
+                logger.info(f"{root.name or root.object_id} stopped on collision with {other.name or other.object_id}")
+                root.stop()
+
     def check_collisions(
         self,
         collision_color: Optional[List[float]] = None,
@@ -3612,6 +3634,8 @@ class MultiRobotSimulationCore:
                             obj_a.events.emit(SimEvents.COLLISION_STARTED, other=obj_b)
                         if obj_b._has_entity_events():
                             obj_b.events.emit(SimEvents.COLLISION_STARTED, other=obj_a)
+                        # After the events, so handlers see the motion that led to the contact.
+                        self._stop_on_collision(obj_a, obj_b)
 
                 for obj_id_i, obj_id_j in resolved_collisions:
                     obj_a = self._sim_objects_dict.get(obj_id_i)

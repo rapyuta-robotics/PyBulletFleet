@@ -111,6 +111,9 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         # motion within its limits: "brake", "reject", "wait_complete" or
         # "immediate". See ControllerParams.goal_replacement.
         "goal_replacement": "brake",
+        # Whether an agent stops dead when a collision starts. See
+        # ControllerParams.stop_on_collision.
+        "stop_on_collision": False,
         # Not centralized (complex enum):
         #   default_direction — MovementDirection enum (forward / backward / …)
     },

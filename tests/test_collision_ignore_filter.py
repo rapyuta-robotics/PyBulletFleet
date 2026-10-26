@@ -150,6 +150,86 @@ class TestIgnoreAttachedCollision:
             p.disconnect(sim.client)
 
 
+def loads_on_one_carrier(sim: MultiRobotSimulationCore) -> Tuple[SimObject, SimObject, SimObject]:
+    """A carrier with two loads side by side on it, overlapping each other."""
+    carrier = box(sim, 0.0, name="carrier")
+    first = box(sim, -0.15, z=0.3, name="first")
+    second = box(sim, 0.15, z=0.3, name="second")
+    assert carrier.attach_object(first, keep_world_pose=True)
+    assert carrier.attach_object(second, keep_world_pose=True)
+    return carrier, first, second
+
+
+def load_on_a_load(sim: MultiRobotSimulationCore) -> Tuple[SimObject, SimObject, SimObject]:
+    """A carrier carrying a load that carries a second load, which overlaps the carrier."""
+    carrier = box(sim, 0.0, name="carrier")
+    first = box(sim, 0.0, z=0.3, name="first")
+    second = box(sim, 0.1, z=0.05, name="second")
+    assert carrier.attach_object(first, keep_world_pose=True)
+    assert first.attach_object(second, keep_world_pose=True)
+    return carrier, first, second
+
+
+class TestOneAttachmentTree:
+    """``ignore_attached_collision`` covers every object on an attachment tree:
+    a carrier, its loads and a load's loads, not only a direct parent/child."""
+
+    @pytest.mark.parametrize("build", [loads_on_one_carrier, load_on_a_load], ids=["siblings", "chain"])
+    def test_never_collides_with_itself(self, sim, build):
+        build(sim)
+        events = record_events(sim)
+
+        pairs, _ = sim.check_collisions()
+
+        assert pairs == []
+        assert sim.collision_count == 0
+        assert events == []
+        assert observed_pairs(sim) == []
+
+    @pytest.mark.parametrize("build", [loads_on_one_carrier, load_on_a_load], ids=["siblings", "chain"])
+    def test_turned_off_the_whole_tree_is_reported(self, build):
+        sim = make_sim(ignore_attached_collision=False)
+        try:
+            carrier, first, second = build(sim)
+
+            pairs, _ = sim.check_collisions()
+
+            assert pair_of(first, second) in pairs
+            assert pair_of(carrier, second) in pairs
+        finally:
+            p.disconnect(sim.client)
+
+    def test_attaching_two_touching_objects_to_one_carrier_resolves_their_contact(self, sim):
+        """Nothing moves: the pair is re-evaluated because it is active."""
+        carrier = box(sim, -1.0, name="carrier")
+        first = box(sim, -0.15, z=0.3, name="first")
+        second = box(sim, 0.15, z=0.3, name="second")
+        sim.check_collisions()
+        assert pair_of(first, second) in sim.get_active_collision_pairs()
+        events = record_events(sim)
+
+        assert carrier.attach_object(first, keep_world_pose=True)
+        assert carrier.attach_object(second, keep_world_pose=True)
+        pairs, _ = sim.check_collisions()
+
+        assert pair_of(first, second) not in pairs
+        assert [kind for kind, _, _ in events] == ["ended"]
+
+    def test_detaching_one_load_reports_its_contact_with_the_other(self, sim):
+        """detach_object() moves nothing: the ignored pair is found again only
+        because ignored pairs are re-evaluated."""
+        carrier, first, second = loads_on_one_carrier(sim)
+        sim.check_collisions()
+        assert sim.get_active_collision_pairs() == []
+        events = record_events(sim)
+
+        assert carrier.detach_object(second)
+        pairs, _ = sim.check_collisions()
+
+        assert pair_of(first, second) in pairs
+        assert [kind for kind, _, _ in events].count("started") >= 1
+
+
 class TestCollisionIgnoreFilter:
     def test_an_ignored_pair_is_absent_everywhere(self, sim):
         a = box(sim, 0.0, name="a")

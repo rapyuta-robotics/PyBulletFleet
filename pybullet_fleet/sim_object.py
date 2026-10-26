@@ -529,6 +529,22 @@ class SimObject:
         if callable(note):
             note()
 
+    def _attachment_root(self) -> "SimObject":
+        """The object at the top of this one's attachment chain (itself when not attached).
+
+        A load carried on a load carried by an agent has that agent as its
+        root. A cycle cannot be built through ``attach_object``; the walk
+        stops at the first repeated object anyway.
+        """
+        if self._attached_to is None:
+            return self  # most objects; this runs for every candidate pair
+        obj: SimObject = self
+        seen = {id(obj)}
+        while obj._attached_to is not None and id(obj._attached_to) not in seen:
+            obj = obj._attached_to
+            seen.add(id(obj))
+        return obj
+
     def set_name(self, name: Optional[str]) -> None:
         """
         Set the object name and update the log prefix accordingly.
