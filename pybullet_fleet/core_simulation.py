@@ -3141,8 +3141,12 @@ class MultiRobotSimulationCore:
 
         Looks only at the objects registered in the collision spatial hash
         cells the box reaches, so the cost depends on how crowded the box is,
-        not on how many objects the simulation holds. Before the hash exists
-        (no collision check has run yet) every object is tested.
+        not on how many objects the simulation holds. Every object is
+        registered in each cell its AABB reaches, and kinematic and physics
+        objects are re-registered on every step whatever the collision check
+        frequency, so the hash answers for the current step. Before the hash
+        exists, or when the box spans more cells than there are objects, every
+        object is tested instead.
 
         The broadphase does not track every object, so these are always tested
         directly against their current PyBullet AABB as well: objects with
@@ -3171,15 +3175,15 @@ class MultiRobotSimulationCore:
         objects = self._sim_objects_dict
         cached = self._cached_aabbs_dict
         stale = self._pending_pose_ids
-        if self._cached_cell_size is None:
-            candidate_ids: Iterable[int] = objects.keys()
-        else:
-            ids: Set[int] = set()
-            grid = self._cached_spatial_grid
-            empty = self._EMPTY_SET
+        candidate_ids: Iterable[int] = objects.keys()
+        if self._cached_cell_size is not None:
             x_range = range(self._coord_to_cell(lo[0]), self._coord_to_cell(hi[0]) + 1)
             y_range = range(self._coord_to_cell(lo[1]), self._coord_to_cell(hi[1]) + 1)
             z_range = range(self._coord_to_cell(lo[2]), self._coord_to_cell(hi[2]) + 1)
+        if self._cached_cell_size is not None and len(x_range) * len(y_range) * len(z_range) <= len(objects):
+            ids: Set[int] = set()
+            grid = self._cached_spatial_grid
+            empty = self._EMPTY_SET
             for x in x_range:
                 for y in y_range:
                     for z in z_range:

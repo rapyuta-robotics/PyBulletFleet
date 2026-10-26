@@ -19,22 +19,24 @@ from pybullet_fleet.sim_object import ShapeParams
 from pybullet_fleet.types import CollisionDetectionMethod, CollisionMode
 
 
-def make_sim() -> MultiRobotSimulationCore:
-    sim = MultiRobotSimulationCore(
+def make_sim(method: CollisionDetectionMethod = CollisionDetectionMethod.CLOSEST_POINTS, **params) -> MultiRobotSimulationCore:
+    return MultiRobotSimulationCore(
         SimulationParams(
             gui=False,
             physics=False,
             monitor=False,
-            collision_detection_method=CollisionDetectionMethod.CLOSEST_POINTS,
+            collision_detection_method=method,
             log_level="warning",
+            **params,
         )
     )
-    return sim
 
 
-@pytest.fixture
-def sim():
-    sim = make_sim()
+# CONTACT_POINTS has no broadphase margin: the hash then holds each body in
+# the cells its bare AABB reaches, the case most likely to miss an overlap.
+@pytest.fixture(params=[CollisionDetectionMethod.CLOSEST_POINTS, CollisionDetectionMethod.CONTACT_POINTS])
+def sim(request):
+    sim = make_sim(request.param)
     yield sim
     p.disconnect(sim.client)
 
@@ -118,6 +120,24 @@ class TestQueryAabb:
         mover.set_pose(Pose.from_xyz(0.0, 0.0, 0.0))
         assert "mover" in names(sim.query_aabb((-0.3, -0.3, -0.3), (0.3, 0.3, 0.3)))
 
+    def test_finds_an_object_whose_centre_cell_is_outside_the_box(self, sim):
+        """A body overlapping the box with its centre in a cell the box does not
+        reach. A hash that registered such a body only in its centre cell would
+        miss it."""
+        from pybullet_fleet.types import SpatialHashCellSizeMode
+
+        sim.set_collision_spatial_hash_cell_size_mode(mode=SpatialHashCellSizeMode.CONSTANT, cell_size=1.0)
+        box(sim, 2.5, 0.5, 0.5, half=0.6, name="wide")  # AABB x 1.9..3.1, centre cell 2
+        sim.step_once()
+        lo, hi = (1.92, 0.4, 0.4), (1.98, 0.6, 0.6)  # cell 1 only
+        assert names(sim.query_aabb(lo, hi)) == names(brute_force(sim, lo, hi)) == ["wide"]
+
+    def test_a_box_wider_than_the_scene_scans_everything(self, sim):
+        scatter(sim, count=40)
+        sim.step_once()
+        lo, hi = (-1000.0, -1000.0, -10.0), (1000.0, 1000.0, 10.0)
+        assert names(sim.query_aabb(lo, hi)) == names(sim.sim_objects)
+
     def test_finds_an_object_with_collision_disabled(self, sim):
         scatter(sim, count=40)
         box(sim, 30.0, name="ghost", mode=CollisionMode.DISABLED)
@@ -171,3 +191,48 @@ class TestElevatorPassengers:
         expected = [o for o in brute_force(sim, platform_min, search_max) if o is not car and not o.is_attached()]
         assert names(car._find_objects_on_platform()) == names(expected)
         assert "rider" in names(expected)
+
+
+class TestHashFreshness:
+    @pytest.mark.parametrize("frequency", [0, 0.1])
+    def test_an_agent_driven_across_cells_is_found_where_it_is(self, frequency):
+        """The hash follows a controller-driven agent every step, whether or not
+        a collision check runs on that step."""
+        from pybullet_fleet import Agent, AgentSpawnParams
+
+        sim = make_sim(collision_check_frequency=None)
+        try:
+            scatter(sim, count=60)
+            sim.step_once()  # builds the hash
+            assert sim._cached_cell_size is not None
+            sim.set_collision_check_frequency(frequency)
+            agent = Agent.from_params(
+                AgentSpawnParams(urdf_path="cube_small.urdf", name="walker", initial_pose=Pose.from_xyz(-20.0, -20.0, 0.0)),
+                sim_core=sim,
+            )
+            agent.set_goal_pose(Pose.from_xyz(-14.0, -20.0, 0.0))
+            for _ in range(400):
+                sim.step_once()
+            x, y, z = agent.get_pose().position
+            assert x > -19.0  # it moved several cells
+            here = sim.query_aabb((x - 0.1, y - 0.1, z - 0.1), (x + 0.1, y + 0.1, z + 0.1))
+            assert "walker" in names(here)
+            start = sim.query_aabb((-20.1, -20.1, -0.1), (-19.9, -19.9, 0.1))
+            assert "walker" not in names(start)
+        finally:
+            p.disconnect(sim.client)
+
+
+class TestOriginOutsideItsAabb:
+    def test_an_object_whose_shape_sits_off_its_origin_is_found(self, sim):
+        """Distance is measured from the base origin; a body whose shape is
+        offset from it is still found."""
+        shape = ShapeParams(shape_type="box", half_extents=[0.1, 0.1, 0.1], frame_pose=Pose.from_xyz(0.6, 0.0, 0.0))
+        shelf = SimObject.from_mesh(
+            visual_shape=shape, collision_shape=shape, pose=Pose.from_xyz(5.0, 5.0, 0.0), sim_core=sim, name="shelf"
+        )
+        shelf.pickable = True
+        finder = box(sim, 5.2, 5.0, 0.0, half=0.05, name="finder")
+        sim.step_once()
+        # Origin 0.2 m away, AABB 0.3 m away beyond the origin: outside a 0.25 m box.
+        assert finder.find_nearest_pickable(search_radius=0.25) is shelf

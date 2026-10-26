@@ -1719,6 +1719,10 @@ class SimObject:
         searches from this object's current position with the standard
         ``pickable and not attached`` filter.
 
+        Candidates come from :meth:`MultiRobotSimulationCore.query_aabb`, so an
+        object whose base origin lies more than one spatial-hash cell outside
+        its own AABB can be missed.
+
         Args:
             search_radius: Maximum search distance in metres (default: 1.0)
 
@@ -1730,16 +1734,19 @@ class SimObject:
         if self.sim_core is None:
             return None
 
-        # Only the objects near enough to qualify: anything within the radius
-        # has its position, and so its AABB, inside this box. A core without
-        # query_aabb (a stand-in in tests, say) gets the full scan.
+        # Only the objects near enough to qualify. Distance is measured from
+        # each object's base origin, which normally lies inside its AABB; the
+        # box is widened by one spatial-hash cell so that an origin a little
+        # outside its AABB (a mesh whose origin is at a corner, say) is still
+        # found. A core without query_aabb (a stand-in in tests) gets the
+        # full scan.
         position = self.get_pose().position
         query = getattr(self.sim_core, "query_aabb", None)
-        nearby = (
-            query([c - search_radius for c in position], [c + search_radius for c in position])
-            if query is not None
-            else self.sim_core.sim_objects
-        )
+        if query is None:
+            nearby = self.sim_core.sim_objects
+        else:
+            reach = search_radius + (getattr(self.sim_core, "_cached_cell_size", None) or 0.0)
+            nearby = query([c - reach for c in position], [c + reach for c in position])
         return tools.find_nearest(
             nearby,
             position=position,
