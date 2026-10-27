@@ -6,8 +6,8 @@ Collision detection mode comparison tool
 Overview:
     Compares the performance of 3 collision detection modes:
     1. No Collision (CollisionMode.DISABLED): Completely disable collision detection
-    2. 2D Collision (CollisionMode.NORMAL_2D): Ignore Z-axis neighbors (9 neighbors)
-    3. 3D Collision (CollisionMode.NORMAL_3D): Check neighbors in all directions (27 neighbors)
+    2. 2D Collision (CollisionMode.NORMAL_2D): XY collision; z must actually overlap
+    3. 3D Collision (CollisionMode.NORMAL_3D): Full 3D collision
 
 Usage:
     python collision_mode_comparison.py --agents=1000 --iterations=100
@@ -24,8 +24,8 @@ reference or as a mode-selection recommendation):
     Collision check: 0.000ms (disabled)
     Other processing: 2.345ms
 
-    Mode: 2D Collision (9 neighbors)
-    ---------------------------------
+    Mode: 2D Collision
+    ------------------
     Total simulation step: 5.678ms
     Collision check breakdown:
       Get AABBs:       0.523ms ( 10.2%)
@@ -37,8 +37,8 @@ reference or as a mode-selection recommendation):
 
     Speedup vs 3D: 1.45x
 
-    Mode: 3D Collision (27 neighbors)
-    ----------------------------------
+    Mode: 3D Collision
+    ------------------
     Total simulation step: 8.234ms
     Collision check breakdown:
       Get AABBs:       0.523ms ( 10.2%)
@@ -262,7 +262,7 @@ if __name__ == "__main__":
     print("[2/3] Benchmarking 2D Collision mode...")
     results.append(
         benchmark_collision_mode(
-            "2D Collision (9 neighbors)",
+            "2D Collision",
             collision_freq=None,  # Check every step
             collision_mode=CollisionMode.NORMAL_2D,
             num_agents=args.agents,
@@ -273,7 +273,7 @@ if __name__ == "__main__":
     print("[3/3] Benchmarking 3D Collision mode...")
     results.append(
         benchmark_collision_mode(
-            "3D Collision (27 neighbors)",
+            "3D Collision",
             collision_freq=None,  # Check every step
             collision_mode=CollisionMode.NORMAL_3D,
             num_agents=args.agents,

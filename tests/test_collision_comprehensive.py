@@ -7,7 +7,7 @@ robust and correct collision detection behavior.
 Test Categories:
 1. Basic Collision Detection (mode combinations)
 2. CollisionDetectionMethod verification
-3. 2D vs 3D neighbor search
+3. 2D vs 3D registration and search
 4. STATIC object optimization
 5. DISABLED mode
 6. Multi-cell registration
@@ -612,7 +612,7 @@ def test_set_collision_margin_rechecks_stationary_pair():
         p.disconnect(sim.client)
 
 
-def test_margin_registration_can_still_use_one_cell():
+def test_registration_covers_the_aabb_enlarged_by_half_the_margin():
     sim = MultiRobotSimulationCore(
         SimulationParams(
             gui=False,
@@ -627,8 +627,17 @@ def test_margin_registration_can_still_use_one_cell():
         sim.set_collision_spatial_hash_cell_size_mode()
         inside = create_test_box(sim, [0.5, 0.5, 0.5], size=0.05)
         edge = create_test_box(sim, [1.0, 0.5, 0.5], size=0.05)
-        assert len(sim._cached_object_to_cell[inside.object_id]) == 1
-        assert len(sim._cached_object_to_cell[edge.object_id]) == 2
+        near = create_test_box(sim, [0.945, 0.5, 0.5], size=0.05)  # 0.005 from x=1, within margin/2
+        large = create_test_box(sim, [1.0, 0.5, 0.5], size=1.5)
+        flat = create_test_box(sim, [0.5, 0.5, 0.945], size=0.05, collision_mode=CollisionMode.NORMAL_2D)
+        cells = sim._cached_object_to_cell
+        assert cells[inside.object_id] == [(0, 0, 0)]
+        # Every cell the AABB, enlarged by margin/2, touches.
+        assert cells[edge.object_id] == [(0, 0, 0), (1, 0, 0)]
+        assert cells[near.object_id] == [(0, 0, 0), (1, 0, 0)]
+        assert len(cells[large.object_id]) > 1
+        # A NORMAL_2D body's z extent is not enlarged.
+        assert cells[flat.object_id] == [(0, 0, 0)]
     finally:
         p.disconnect(sim.client)
 
@@ -662,32 +671,20 @@ class TestMultiCellRegistration:
         p.disconnect(sim_core.client)
 
     def test_small_object_single_cell(self, sim_core_multicell):
-        """Small objects (< threshold * cell_size) use single cell."""
+        """A small object inside one cell is registered in that cell only."""
         obj = create_test_box(
             sim_core_multicell,
-            [0, 0, 0],
+            [1, 1, 1],
             size=0.25,
             collision_mode=CollisionMode.NORMAL_3D,
         )
         cells = sim_core_multicell._cached_object_to_cell.get(obj.object_id, [])
         assert len(cells) == 1, f"Small object should use 1 cell, got {len(cells)}"
 
-    def test_should_use_multi_cell_registration(self, sim_core_multicell):
-        """_should_use_multi_cell_registration returns correct bool."""
-        small = create_test_box(
-            sim_core_multicell,
-            [0, 0, 0],
-            size=0.25,
-            collision_mode=CollisionMode.NORMAL_3D,
-        )
-        large = create_test_box(
-            sim_core_multicell,
-            [5, 0, 0],
-            size=2.5,
-            collision_mode=CollisionMode.STATIC,
-        )
-        assert not sim_core_multicell._should_use_multi_cell_registration(small.object_id)
-        assert sim_core_multicell._should_use_multi_cell_registration(large.object_id)
+    def test_small_object_on_a_cell_boundary_is_in_both_cells(self, sim_core_multicell):
+        """Registration follows the AABB, not its centre: straddling x=0 means two cells."""
+        obj = create_test_box(sim_core_multicell, [0, 1, 1], size=0.25, collision_mode=CollisionMode.NORMAL_3D)
+        assert sorted(sim_core_multicell._cached_object_to_cell[obj.object_id]) == [(-1, 0, 0), (0, 0, 0)]
 
     def test_get_overlapping_cells(self, sim_core_multicell):
         """_get_overlapping_cells returns cells covering object AABB."""
@@ -725,29 +722,41 @@ class TestMultiCellRegistration:
             message="Small robot near large wall edge should collide",
         )
 
-    def test_threshold_affects_registration(self):
-        """Lower threshold causes medium objects to use multi-cell."""
-        params = SimulationParams(
+    def test_threshold_is_accepted_and_ignored(self):
+        """multi_cell_threshold no longer changes registration (kept for compatibility)."""
+        registered = []
+        for threshold in (1.2, 10.0):
+            with pytest.warns(DeprecationWarning, match="multi_cell_threshold"):
+                params = self._threshold_params(threshold)
+            sim_core = MultiRobotSimulationCore(params)
+            sim_core.set_collision_spatial_hash_cell_size_mode()
+            try:
+                obj = create_test_box(sim_core, [0, 0, 0], size=1.25, collision_mode=CollisionMode.NORMAL_3D)
+                registered.append(sorted(sim_core._cached_object_to_cell[obj.object_id]))
+            finally:
+                p.disconnect(sim_core.client)
+        assert registered[0] == registered[1] and len(registered[0]) > 1
+
+    def test_the_default_threshold_does_not_warn(self):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            self._threshold_params(1.5)
+
+    @staticmethod
+    def _threshold_params(threshold):
+        return SimulationParams(
             gui=False,
             physics=False,
             monitor=False,
             collision_detection_method=CollisionDetectionMethod.CLOSEST_POINTS,
             spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
             spatial_hash_cell_size=2.0,
-            multi_cell_threshold=1.2,  # Lower threshold → 2.4m
+            multi_cell_threshold=threshold,
             ignore_static_collision=False,
             log_level="warning",
         )
-        sim_core = MultiRobotSimulationCore(params)
-        sim_core.set_collision_spatial_hash_cell_size_mode()
-
-        try:
-            # 2.5m object: multi-cell at 1.2x (2.4m threshold)
-            obj = create_test_box(sim_core, [0, 0, 0], size=1.25, collision_mode=CollisionMode.NORMAL_3D)
-            cells = sim_core._cached_object_to_cell.get(obj.object_id, [])
-            assert len(cells) > 1, f"Medium object with low threshold should use multi-cell, got {len(cells)}"
-        finally:
-            p.disconnect(sim_core.client)
 
     def test_coord_to_cell_positive(self, sim_core_multicell):
         """_coord_to_cell converts positive coordinates to correct cell index."""
@@ -785,7 +794,7 @@ class TestMultiCellRegistration:
         """_update_object_spatial_grid skips discard/add when cell unchanged."""
         obj = create_test_box(
             sim_core_multicell,
-            [0, 0, 0],
+            [1, 1, 1],
             size=0.25,
             collision_mode=CollisionMode.NORMAL_3D,
         )
@@ -801,7 +810,7 @@ class TestMultiCellRegistration:
         # Move slightly within the same cell (cell_size=2.0, move 0.1m)
         from pybullet_fleet.geometry import Pose
 
-        obj.set_pose(Pose(position=[0.1, 0.0, 0.0]))
+        obj.set_pose(Pose(position=[1.1, 1.0, 1.0]))
 
         # Call _update_object_spatial_grid (simulating what set_pose triggers)
         sim_core_multicell._update_object_spatial_grid(oid)
@@ -818,7 +827,7 @@ class TestMultiCellRegistration:
         """_discard_from_cells removes object from spatial grid and cleans empty cells."""
         obj = create_test_box(
             sim_core_multicell,
-            [0, 0, 0],
+            [1, 1, 1],
             size=0.25,
             collision_mode=CollisionMode.NORMAL_3D,
         )
@@ -1159,6 +1168,378 @@ class TestRuntimeModeChanges:
 # ============================================================================
 # Run Tests
 # ============================================================================
+
+
+def _broadphase_scene(
+    seed, margin, widths, modes=(CollisionMode.NORMAL_3D,), one_moved=False, ignore_static=False, change=None
+):
+    """Random boxes on and off spatial-hash cell boundaries; returns (missed, checked).
+
+    ``widths`` are AABB widths in cells; each box takes a random mode from
+    ``modes``. A pair is missed when its AABBs, enlarged by the collision
+    margin, overlap but the broadphase does not return it as a candidate. A
+    pair with a NORMAL_2D body needs actual overlap in z, as the broadphase
+    requires. With ``one_moved``, each body is searched for alone, as when it
+    is the only one that moved: its pairs must be found from its side.
+
+    STATIC bodies never move, so they are never searched from; a pair with
+    one must be found from the other body's side, unless ``ignore_static``.
+    Two STATIC bodies are never a pair.
+
+    ``change`` spawns everything with an effective margin of 0 and only then
+    sets ``margin``, through ``"setter"`` (``set_collision_margin``),
+    ``"params_margin"`` (assigning ``params.collision_margin``) or
+    ``"params_method"`` (switching ``params.collision_detection_method`` from
+    contact points, whose broadphase margin is 0, to closest points): every
+    body, STATIC ones included, must then be registered with the new margin.
+    """
+    import random
+
+    rng = random.Random(seed)
+    cell = rng.choice([0.2, 0.5, 1.0])
+    sim = MultiRobotSimulationCore(
+        SimulationParams(
+            gui=False,
+            physics=False,
+            monitor=False,
+            collision_margin=margin if change in (None, "params_method") else 0.0,
+            collision_detection_method=(
+                CollisionDetectionMethod.CONTACT_POINTS
+                if change == "params_method"
+                else CollisionDetectionMethod.CLOSEST_POINTS
+            ),
+            spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
+            spatial_hash_cell_size=cell,
+            ignore_static_collision=ignore_static,
+        )
+    )
+    try:
+        sim.set_collision_spatial_hash_cell_size_mode()
+        objects = []
+        for _ in range(30):
+            half = 0.5 * cell * rng.choice(widths)
+            # On a cell boundary, a hair off it, or anywhere.
+            offsets = [0.0, 0.001, -0.001, rng.uniform(-cell, cell)]
+            xyz = [round(rng.uniform(0.0, 3.0) / cell) * cell + rng.choice(offsets) for _ in range(3)]
+            objects.append(create_test_box(sim, xyz, size=half, collision_mode=rng.choice(modes)))
+        static = {obj.object_id for obj in objects if obj.collision_mode == CollisionMode.STATIC}
+        movers = [obj.object_id for obj in objects if obj.object_id not in static]
+        if change == "setter":
+            sim.set_collision_margin(margin)
+        elif change == "params_margin":
+            sim.params.collision_margin = margin
+        elif change == "params_method":
+            sim.params.collision_detection_method = CollisionDetectionMethod.CLOSEST_POINTS
+        if one_moved:
+            found = {}
+            for object_id in movers:
+                sim._moved_this_step = {object_id}
+                found[object_id] = set(sim.filter_aabb_pairs()[0])
+        else:
+            sim._moved_this_step = set(movers)
+            everything = set(sim.filter_aabb_pairs()[0])
+            found = {object_id: everything for object_id in movers}
+        aabbs = sim._cached_aabbs_dict
+        two_d = {obj.object_id for obj in objects if obj.collision_mode == CollisionMode.NORMAL_2D}
+        missed = checked = 0
+        for a, b in itertools.combinations([obj.object_id for obj in objects], 2):
+            if a in static and b in static:
+                continue
+            if ignore_static and (a in static or b in static):
+                continue
+            box_a, box_b = aabbs[a], aabbs[b]
+            z_margin = 0.0 if a in two_d or b in two_d else margin
+            margins = (margin, margin, z_margin)
+            overlap = all(
+                box_a[1][d] + margins[d] >= box_b[0][d] and box_a[0][d] - margins[d] <= box_b[1][d] for d in range(3)
+            )
+            checked += 1
+            pair = (min(a, b), max(a, b))
+            if overlap and any(pair not in found[s] for s in (a, b) if s not in static):
+                missed += 1
+        return missed, checked
+    finally:
+        p.disconnect(sim.client)
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("margin", [0.02, 0.1, 0.25])
+def test_broadphase_returns_every_pair_within_the_margin(seed, margin):
+    """Against brute force: tiny to multi-cell bodies, on and off cell
+    boundaries; every body is in each cell its AABB enlarged by margin/2
+    touches, and two within the margin share one."""
+    missed, checked = _broadphase_scene(seed, margin, widths=[0.04, 0.1, 0.2, 0.9, 1.0, 1.4, 2.8, 5.0])
+    assert checked > 0
+    assert missed == 0
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_broadphase_without_margin_returns_every_touching_pair(seed):
+    """margin == 0 (contact points): every width, including bodies between one
+    and one and a half cells wide that issue #89 missed."""
+    missed, checked = _broadphase_scene(seed, 0.0, widths=[0.04, 0.1, 0.2, 0.9, 1.0, 1.2, 1.4, 1.6, 2.8, 5.0])
+    assert checked > 0
+    assert missed == 0
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("margin", [0.0, 0.02, 0.1])
+def test_broadphase_finds_pairs_with_normal_2d_bodies(seed, margin):
+    """A NORMAL_2D body is registered by its real z extent, so a pair with one
+    that overlaps in z shares a cell. Against brute force, with 2D, 3D and
+    mixed pairs placed on and off z cell boundaries."""
+    widths = [0.04, 0.1, 0.2, 0.9, 1.0, 1.4, 2.8, 5.0]
+    missed, checked = _broadphase_scene(seed, margin, widths=widths, modes=(CollisionMode.NORMAL_2D, CollisionMode.NORMAL_3D))
+    assert checked > 0
+    assert missed == 0
+
+
+@pytest.mark.parametrize("seed", range(4))
+@pytest.mark.parametrize("margin", [0.0, 0.02, 0.1])
+def test_broadphase_finds_normal_2d_pairs_from_either_side(seed, margin):
+    """As above, but each body searched alone, as when it is the only one that
+    moved: a NORMAL_2D body must itself find the NORMAL_3D bodies it overlaps
+    in z, through a cell both are registered in."""
+    widths = [0.04, 0.1, 0.2, 0.9, 1.0, 2.8, 5.0]
+    modes = (CollisionMode.NORMAL_2D, CollisionMode.NORMAL_3D)
+    missed, checked = _broadphase_scene(seed, margin, widths=widths, modes=modes, one_moved=True)
+    assert checked > 0
+    assert missed == 0
+
+
+@pytest.mark.parametrize("seed", range(4))
+@pytest.mark.parametrize("margin", [0.0, 0.02, 0.1])
+@pytest.mark.parametrize("ignore_static", [False, True], ids=["static_counts", "static_ignored"])
+@pytest.mark.parametrize("one_moved", [False, True], ids=["all_moved", "one_moved"])
+def test_broadphase_finds_pairs_with_static_bodies(seed, margin, ignore_static, one_moved):
+    """As above, with STATIC bodies among the 2D and 3D ones. A pair with a
+    STATIC body is required while static collisions count; when they are
+    ignored, none is."""
+    widths = [0.04, 0.1, 0.2, 0.9, 1.0, 2.8, 5.0]
+    modes = (CollisionMode.NORMAL_2D, CollisionMode.NORMAL_3D, CollisionMode.STATIC)
+    missed, checked = _broadphase_scene(
+        seed, margin, widths=widths, modes=modes, one_moved=one_moved, ignore_static=ignore_static
+    )
+    assert checked > 0
+    assert missed == 0
+
+
+@pytest.mark.parametrize("seed", range(3))
+@pytest.mark.parametrize("margin", [0.02, 0.1])
+@pytest.mark.parametrize("change", ["setter", "params_margin", "params_method"])
+@pytest.mark.parametrize("one_moved", [False, True], ids=["all_moved", "one_moved"])
+def test_broadphase_follows_a_margin_change(seed, margin, change, one_moved):
+    """Bodies spawned with no broadphase margin, the margin raised afterwards:
+    every registration, STATIC bodies' included, must follow it however it was
+    changed -- the setter, the params field, or the detection method."""
+    widths = [0.04, 0.1, 0.2, 0.9, 1.0, 2.8]
+    modes = (CollisionMode.NORMAL_2D, CollisionMode.NORMAL_3D, CollisionMode.STATIC)
+    missed, checked = _broadphase_scene(seed, margin, widths=widths, modes=modes, one_moved=one_moved, change=change)
+    assert checked > 0
+    assert missed == 0
+
+
+@pytest.mark.parametrize("change", ["setter", "params_margin", "params_method"])
+@pytest.mark.parametrize("kind", [CollisionMode.NORMAL_3D, CollisionMode.STATIC])
+def test_a_margin_change_reregisters_bodies_registered_with_the_old_one(change, kind):
+    """Two boxes 0.04 apart across a cell boundary (cell 1.0, x = 1.0): with
+    no margin they share no cell. Raised to 0.1 afterwards, the pair is within
+    the margin and must be a candidate -- which needs both bodies, the other
+    one STATIC or not, re-registered with the new margin however it changed."""
+    margin = 0.1
+    sim = MultiRobotSimulationCore(
+        SimulationParams(
+            gui=False,
+            physics=False,
+            monitor=False,
+            collision_margin=0.0 if change != "params_method" else margin,
+            collision_detection_method=(
+                CollisionDetectionMethod.CONTACT_POINTS
+                if change == "params_method"
+                else CollisionDetectionMethod.CLOSEST_POINTS
+            ),
+            spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
+            spatial_hash_cell_size=1.0,
+            ignore_static_collision=False,
+        )
+    )
+    try:
+        sim.set_collision_spatial_hash_cell_size_mode()
+        mover = create_test_box(sim, [0.74, 0.5, 0.5], size=0.24, collision_mode=CollisionMode.NORMAL_3D)
+        other = create_test_box(sim, [1.26, 0.5, 0.5], size=0.24, collision_mode=kind)
+        pair = (min(mover.object_id, other.object_id), max(mover.object_id, other.object_id))
+        sim._moved_this_step = {mover.object_id}
+        assert pair not in set(sim.filter_aabb_pairs()[0])  # not within a margin of 0
+        if change == "setter":
+            sim.set_collision_margin(margin)
+        elif change == "params_margin":
+            sim.params.collision_margin = margin
+        else:
+            sim.params.collision_detection_method = CollisionDetectionMethod.CLOSEST_POINTS
+        sim._moved_this_step = {mover.object_id}
+        assert pair in set(sim.filter_aabb_pairs()[0])
+    finally:
+        p.disconnect(sim.client)
+
+
+@pytest.mark.parametrize("kind", [CollisionMode.NORMAL_3D, CollisionMode.STATIC])
+@pytest.mark.parametrize("ignore_static", [False, True], ids=["static_counts", "static_ignored"])
+@pytest.mark.parametrize("margin", [0.0, 0.02])
+def test_a_moved_normal_2d_body_and_one_centred_in_the_next_layer(kind, ignore_static, margin):
+    """The 2D body lies in z layer 1 only (z 0.50-0.70, cell 0.5); the other
+    body is centred in layer 0 (z 0.30-0.52) and reaches into layer 1, where
+    the two overlap. Only the 2D one moved, and it looks in its own cells only:
+    the pair is found there, except for a STATIC body while static collisions
+    are ignored."""
+    sim = MultiRobotSimulationCore(
+        SimulationParams(
+            gui=False,
+            physics=False,
+            monitor=False,
+            collision_margin=margin,
+            spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
+            spatial_hash_cell_size=0.5,
+            ignore_static_collision=ignore_static,
+        )
+    )
+    try:
+        sim.set_collision_spatial_hash_cell_size_mode()
+        flat = create_test_box(sim, [0.2, 0.2, 0.60], size=0.10, collision_mode=CollisionMode.NORMAL_2D)
+        other = create_test_box(sim, [0.2, 0.2, 0.41], size=0.11, collision_mode=kind)
+        assert {c[2] for c in sim._cached_object_to_cell[flat.object_id]} == {1}
+        assert {c[2] for c in sim._cached_object_to_cell[other.object_id]} == {0, 1}
+        looked_up = set()
+
+        class Grid(dict):
+            def get(self, key, default=None):
+                looked_up.add(key)
+                return super().get(key, default)
+
+        sim._cached_spatial_grid = Grid(sim._cached_spatial_grid)
+        sim._moved_this_step = {flat.object_id}
+        pair = tuple(sorted((flat.object_id, other.object_id)))
+        expected = not (ignore_static and kind == CollisionMode.STATIC)
+        assert (pair in set(sim.filter_aabb_pairs()[0])) is expected
+        assert looked_up == set(sim._cached_object_to_cell[flat.object_id])
+    finally:
+        p.disconnect(sim.client)
+
+
+def test_the_grid_follows_every_body():
+    """Each body is in exactly the cells its AABB, enlarged by margin/2 (not in
+    z for NORMAL_2D), touches, through moves, mode changes between NORMAL_2D,
+    NORMAL_3D, STATIC and DISABLED (also ones that keep the same cells) and
+    removals; a DISABLED body is in no cell."""
+    import random
+
+    rng = random.Random(3)
+    sim = MultiRobotSimulationCore(
+        SimulationParams(
+            gui=False,
+            physics=False,
+            monitor=False,
+            collision_margin=0.02,
+            spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
+            spatial_hash_cell_size=0.5,
+            ignore_static_collision=False,
+        )
+    )
+
+    def consistent():
+        half = sim._collision_broadphase_margin() / 2
+        grid = {}
+        for object_id, cells in sim._cached_object_to_cell.items():
+            if sorted(cells) != sorted(sim._get_overlapping_cells(object_id, half)):
+                return False
+            for cell in cells:
+                grid.setdefault(cell, set()).add(object_id)
+        return grid == sim._cached_spatial_grid and not sim._disabled_collision_objects & set(sim._cached_object_to_cell)
+
+    try:
+        sim.set_collision_spatial_hash_cell_size_mode()
+        modes = (CollisionMode.NORMAL_2D, CollisionMode.NORMAL_3D, CollisionMode.STATIC)
+        objects = [
+            create_test_box(
+                sim,
+                [rng.uniform(0, 2), rng.uniform(0, 2), rng.uniform(0, 2)],
+                size=rng.choice([0.05, 0.3, 0.8]),
+                collision_mode=rng.choice(modes),
+            )
+            for _ in range(20)
+        ]
+        assert consistent()
+        for _ in range(90):
+            obj = rng.choice(objects)
+            action = rng.random()
+            if action < 0.5:
+                pos = [rng.uniform(0, 2), rng.uniform(0, 2), rng.uniform(0, 2)]
+                p.resetBasePositionAndOrientation(obj.body_id, pos, [0, 0, 0, 1], physicsClientId=sim.client)
+                sim._update_object_aabb(obj.object_id)
+            elif action < 0.93:
+                others = [m for m in modes + (CollisionMode.DISABLED,) if m != obj.collision_mode]
+                obj.set_collision_mode(rng.choice(others))
+            else:
+                sim.remove_object(obj)
+                objects.remove(obj)
+            assert consistent()
+    finally:
+        p.disconnect(sim.client)
+
+
+def test_issue_89_bodies_one_to_one_and_a_half_cells_wide_touching_without_margin():
+    """Issue #89: without a margin, two touching bodies 1-1.5 cells wide were
+    missed when each sat in one cell (centre cells two apart). Every body is
+    now in every cell it touches."""
+    sim = MultiRobotSimulationCore(
+        SimulationParams(
+            gui=False,
+            physics=False,
+            monitor=False,
+            collision_detection_method=CollisionDetectionMethod.CLOSEST_POINTS,
+            collision_margin=0.0,
+            spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
+            spatial_hash_cell_size=1.0,
+            ignore_static_collision=False,
+        )
+    )
+    try:
+        sim.set_collision_spatial_hash_cell_size_mode()
+        # 1.4 cells wide each, overlapping by 0.01 around x=1.4: centre cells 0 and 2.
+        left = create_test_box(sim, [0.7, 0.5, 0.5], size=0.7)
+        right = create_test_box(sim, [2.09, 0.5, 0.5], size=0.7)
+        sim._moved_this_step = {left.object_id}
+        pair = tuple(sorted((left.object_id, right.object_id)))
+        assert pair in set(sim.filter_aabb_pairs()[0])
+    finally:
+        p.disconnect(sim.client)
+
+
+@pytest.mark.parametrize("modes", [(CollisionMode.NORMAL_2D,) * 2, (CollisionMode.NORMAL_2D, CollisionMode.NORMAL_3D)])
+def test_normal_2d_pair_across_a_z_cell_boundary(modes):
+    """Overlapping in z, with centres in different z cells (cell 0.5: z 0.40-0.60
+    and 0.30-0.45)."""
+    sim = MultiRobotSimulationCore(
+        SimulationParams(
+            gui=False,
+            physics=False,
+            monitor=False,
+            collision_margin=0.02,
+            spatial_hash_cell_size_mode=SpatialHashCellSizeMode.CONSTANT,
+            spatial_hash_cell_size=0.5,
+            ignore_static_collision=False,
+        )
+    )
+    try:
+        sim.set_collision_spatial_hash_cell_size_mode()
+        upper = create_test_box(sim, [0.2, 0.2, 0.50], size=0.10, collision_mode=modes[0])
+        lower = create_test_box(sim, [0.2, 0.2, 0.375], size=0.075, collision_mode=modes[1])
+        for moved in (upper, lower):
+            sim._moved_this_step = {moved.object_id}
+            pair = tuple(sorted((upper.object_id, lower.object_id)))
+            assert pair in set(sim.filter_aabb_pairs()[0]), f"missed when only {moved.collision_mode} moved"
+    finally:
+        p.disconnect(sim.client)
+
 
 if __name__ == "__main__":
     # Run with pytest

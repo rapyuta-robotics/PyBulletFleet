@@ -362,8 +362,13 @@ class Elevator(Agent):
         search_min = (platform_min[0], platform_min[1], platform_min[2])
         search_max = (platform_max[0], platform_max[1], platform_max[2] + 1.0)
 
+        # Only the objects near the platform; a core without query_aabb (a
+        # stand-in in tests, say) gets the full scan.
+        query = getattr(self.sim_core, "query_aabb", None)
+        nearby = query(search_min, search_max) if query is not None else self.sim_core.sim_objects
+
         candidates = []
-        for obj in self.sim_core.sim_objects:
+        for obj in nearby:
             if obj is self:
                 continue
             if obj.is_attached():

@@ -118,8 +118,8 @@ If collision is dominant, inspect `collision_breakdown` from
 - `auto_adaptive`: recalculate when objects are added or removed;
 - `constant`: use a measured fixed `spatial_hash_cell_size`.
 
-`multi_cell_threshold` controls when large objects occupy multiple cells.
-Choose cell size and threshold against the representative scene.
+Every body occupies each cell it reaches, so the cell size alone sets the
+trade-off: choose it against the representative scene.
 
 See [Collision Configuration](../how-to/collision-config) and
 [Collision Internals](../architecture/collision-internals).

@@ -53,7 +53,7 @@ enable_time_profiling: false
 # ========================================
 
 # 2D collision optimization is now per-object via CollisionMode enum
-# (CollisionMode.NORMAL_2D = 9 neighbors, CollisionMode.NORMAL_3D = 27 neighbors)
+# (CollisionMode.NORMAL_2D = XY only with real z overlap, CollisionMode.NORMAL_3D = full 3D)
 
 # ========================================
 # Logging Settings
