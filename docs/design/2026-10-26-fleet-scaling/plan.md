@@ -105,7 +105,7 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
     1 割のロボットを停止させて他がその周りを通る。候補ペア、narrow phase の呼び出し、
     `COLLISION_STARTED` / `COLLISION_ENDED` の数をステップあたりで記録する。
     P4 の効果とイベント処理のコストはこのシナリオで測る。
-  - **搬送 (carrying):** 疎シナリオの全台がベースに 1 個ずつ物体をアタッチして移動する。OKS の通常形
+  - **搬送 (carrying):** 疎シナリオの全台がベースに 1 個ずつ物体をアタッチして移動する。倉庫での通常形
     (ロボットがビンを運ぶ) で、現行では子オブジェクトの pose 伝播 (`_propagate_to_attached`、
     [sim_object.py#L1412](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/pybullet_fleet/sim_object.py#L1412))
     と子の AABB/grid 更新で phase 1-3 がほぼ倍になる。
