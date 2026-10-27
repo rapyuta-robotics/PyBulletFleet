@@ -1,4 +1,9 @@
-"""Numba variant of soa_kernel: same workload, counting-sort grid, parallel neighbor scan."""
+"""Numba variant of soa_kernel: same workload, counting-sort grid, parallel neighbor scan.
+
+The grid is dense (nx * ny cells over the bounding box of the scene), which is fine for
+this benchmark's compact layout but not for a sparse fleet on a large map. A production
+version would hash cell keys into a bounded table, as soa_kernel.py's sort-based grid does.
+"""
 
 import statistics
 import sys

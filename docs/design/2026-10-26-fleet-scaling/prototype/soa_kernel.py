@@ -86,8 +86,10 @@ for _ in range(150):
     ta.append((t1 - t0) * 1e3)
     tq.append((t2 - t1) * 1e3)
     tb.append((t3 - t2) * 1e3)
-tot = statistics.mean(ta) + statistics.mean(tq) + statistics.mean(tb)
+# Median per phase, like numba_kernel.py, so the two prototypes compare directly.
+ma, mq, mb = statistics.median(ta), statistics.median(tq), statistics.median(tb)
+tot = ma + mq + mb
 print(
-    f"N={n} advance={statistics.mean(ta):.3f}ms quat={statistics.mean(tq):.3f}ms broad+narrow={statistics.mean(tb):.3f}ms "
-    f"cand={ncand} hits={len(hi)} total={tot:.3f}ms RTF={100/tot:.0f}x"
+    f"N={n} advance={ma:.3f}ms quat={mq:.3f}ms broad+narrow={mb:.3f}ms "
+    f"cand={ncand} hits={len(hi)} total={tot:.3f}ms RTF={100/tot:.0f}x (median of steps)"
 )
