@@ -239,6 +239,25 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 - **検証:** 箱・円の形状で PyBullet の `getClosestPoints` と判定が一致すること (z 違いのケースを含む)。
   mesh を箱で近似した場合の差を、テストシーンで文書化する。
 
+### PC. コマンドの受理と適用の分離 (ros2_bridge 側、in-process、P1-P5 と独立)
+
+設計は spec の「コマンドの受理と適用の分離」を参照。小さな PR で、順序に関係なく最初に入れられる。
+
+- fleet services (`navigate`、`stop`、`attach`、`joint_command`) と per-robot の goal 系のハンドラを、
+  「検証してキューに積み、`accepted` の ack を返す」形にする。
+  sim スレッドは `step_once()` の先頭 (PRE_STEP の前) でキューをまとめて適用する。
+- 適用時の拒否 (`set_goal_pose()` が `False` など) は、コマンド ID 付きのイベント (`/fleet/command_events` など) で通知する。
+- `ack: applied` オプション (適用まで `Event` で待つ) を残し、RMF アダプタなど ack の結果で分岐するクライアントは
+  これを使う。既定は `accepted`。
+- sim の状態を直接変える services (`set_entity_state`、`reset_simulation`、`spawn_entity`、`delete_entity`) も
+  同じキューを通し、別スレッドから step の途中で状態を書き換えないようにする。
+- **効果見込み:** 最大速度で 1000 台の `/fleet/navigate` の ack が 0.55 s → 数 ms (ハンドラの中身が検証だけになる)。
+  hybrid モードの 8 s はエンドポイント数が原因なので、この PR では直らない (使わない構成として文書化済み)。
+- **検証:** `ros2_bridge/PERFORMANCE.md` の fleet モードの手順で、1000 台・最大速度の ack を before/after で記録。
+  `docker/test_bridge_api.sh` の bridge 統合スモークテスト。RMF デモ (`ros2_bridge/pybullet_fleet_rmf`) が
+  `ack: applied` で従来どおり動くこと。
+- **判断:** この PR の後も最大速度で ack が 10 ms を超えるなら、コマンドリング (下記 follow-up) に着手する。
+
 ### P5. ROS ブリッジの状態配信を共有メモリ経由の別プロセスにする
 
 設計は spec の「ROS ブリッジ: 状態配信の分離 (Q4)」を参照。2 つの PR に分ける。
@@ -284,6 +303,10 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
   sim 側は共有メモリのレイアウトにしか依存しないので、P5a はそのまま使える。
 - **範囲外 (follow-up):** 1 万台の全台 FleetState を毎ステップ配信すること。manager 単位のストリームに分け、
   複数のブリッジプロセスで publish する構成を検討する。
+- **条件付き follow-up: コマンドリング。** PC の後も最大速度で `/fleet/navigate` の ack が 10 ms を超える場合に、
+  コマンドも共有メモリ (ブリッジ → sim の要求リングと、sim → ブリッジの応答リング) に移し、
+  sim プロセスから ROS を外す。コストは spec の「コマンドの受理と適用の分離」に列挙したとおりで、
+  in-process モードは残す。
 
 ### P6 (条件付き). ネイティブカーネル
 
@@ -310,6 +333,7 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 - **P3 の後:** 1000 台で 2.0 ms/step、10000 台で 20 ms/step を満たしているか確認する。
   満たしていれば P4、P5 は機能要件 (ROS、密集シーン) のために進める。
   満たしていなければ、P6 を前倒しするか検討する。
+- **PC の後:** 最大速度で 1000 台の `/fleet/navigate` の ack が 10 ms を超えていれば、コマンドリングを follow-up から本計画に入れる。
 - **P5b の後:** ブリッジ側の 1 publish が 8 ms を超えていれば C++ 化を判断する。
 - **案 D (フルスクラッチ) の再検討:** spec の「D を再検討する条件」に該当した時点。
 
