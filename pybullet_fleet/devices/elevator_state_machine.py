@@ -23,6 +23,8 @@ class ElevatorRequestPolicy(str, Enum):
     REJECT = "reject"
     REPLACE_NEXT = "replace_next"
     QUEUE = "queue"
+    #: Turn the moving cabin toward the new floor at once; the latest request wins.
+    REDIRECT = "redirect"
 
 
 class ElevatorRequestResult(str, Enum):
@@ -31,6 +33,7 @@ class ElevatorRequestResult(str, Enum):
     ACCEPTED = "accepted"
     QUEUED = "queued"
     REPLACED = "replaced"
+    REDIRECTED = "redirected"
     REJECTED = "rejected"
 
 
@@ -71,18 +74,31 @@ class ElevatorStateMachine:
         return tuple(self._pending_floors)
 
     def request_floor(self, floor_name: str) -> ElevatorRequestResult:
-        """Accept, queue, replace, or reject a requested destination.
+        """Accept, queue, replace, redirect, or reject a requested destination.
 
-        The physical cabin is never redirected mid-motion.  ``REPLACE_NEXT``
-        replaces the pending destination after the current trip; ``QUEUE``
-        preserves requests in arrival order.
+        Only ``REDIRECT`` turns a moving cabin toward a new floor; it keeps its
+        passengers and drops any pending floor, so the latest request wins.
+        ``REPLACE_NEXT`` replaces the pending destination after the current
+        trip, and a request for the floor the cabin is already heading to
+        drops it -- the caller changed its mind back. ``QUEUE`` preserves
+        requests in arrival order.
         """
         if floor_name not in self._floors:
             return ElevatorRequestResult.REJECTED
 
         if self.state is ElevatorState.MOVING:
             if floor_name == self.target_floor:
+                if self.request_policy in (ElevatorRequestPolicy.REPLACE_NEXT, ElevatorRequestPolicy.REDIRECT) and (
+                    self._pending_floors
+                ):
+                    self._pending_floors.clear()
+                    return ElevatorRequestResult.REPLACED
                 return ElevatorRequestResult.REJECTED
+            if self.request_policy is ElevatorRequestPolicy.REDIRECT:
+                self._pending_floors.clear()
+                self.target_floor = floor_name
+                self._adapter.begin_motion(self._floors[floor_name])
+                return ElevatorRequestResult.REDIRECTED
             if self.request_policy is ElevatorRequestPolicy.REJECT:
                 return ElevatorRequestResult.REJECTED
             if self.request_policy is ElevatorRequestPolicy.REPLACE_NEXT:

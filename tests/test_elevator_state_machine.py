@@ -118,3 +118,50 @@ def test_elevator_state_machine_replaces_the_next_request_without_redirecting():
     assert adapter.target_height == 4.0
     assert machine.target_floor == "L2"
     assert machine.pending_floors == ("L1",)
+
+
+def test_elevator_state_machine_drops_the_next_request_when_the_current_target_is_asked_again():
+    adapter = _Adapter()
+    machine = ElevatorStateMachine(
+        {"L1": 0.0, "L2": 4.0, "L3": 8.0},
+        "L1",
+        adapter,
+        request_policy=ElevatorRequestPolicy.REPLACE_NEXT,
+    )
+
+    assert machine.request_floor("L3") is ElevatorRequestResult.ACCEPTED
+    assert machine.request_floor("L2") is ElevatorRequestResult.QUEUED
+    # The caller changed its mind back: the cabin must stay at L3 once there.
+    assert machine.request_floor("L3") is ElevatorRequestResult.REPLACED
+    assert machine.pending_floors == ()
+    assert machine.request_floor("L3") is ElevatorRequestResult.REJECTED
+
+    adapter.moving = False
+    assert machine.update() is True
+    machine.update()
+    assert machine.state is ElevatorState.IDLE
+    assert machine.current_floor == "L3"
+
+
+def test_elevator_state_machine_redirects_a_moving_cabin_to_the_latest_request():
+    adapter = _Adapter()
+    machine = ElevatorStateMachine(
+        {"L1": 0.0, "L2": 4.0, "L3": 8.0},
+        "L1",
+        adapter,
+        request_policy=ElevatorRequestPolicy.REDIRECT,
+    )
+
+    assert machine.request_floor("L3") is ElevatorRequestResult.ACCEPTED
+    assert machine.request_floor("L2") is ElevatorRequestResult.REDIRECTED
+    assert adapter.target_height == 4.0
+    assert machine.target_floor == "L2"
+    assert machine.pending_floors == ()
+    assert adapter.attached == 1, "passengers already on board stay attached"
+    assert machine.request_floor("L2") is ElevatorRequestResult.REJECTED
+
+    adapter.moving = False
+    assert machine.update() is True
+    assert machine.current_floor == "L2"
+    machine.update()
+    assert machine.state is ElevatorState.IDLE
