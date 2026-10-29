@@ -14,6 +14,18 @@ are not recommended for production use yet.
 
 ### Added
 
+- `ElevatorRequestPolicy.REDIRECT`: a request received while the cabin is
+  moving turns it toward the new floor at once, with its passengers, and drops
+  any pending floor, so the latest request wins (`ElevatorRequestResult.REDIRECTED`).
+  For controllers that retarget a car in motion instead of waiting for it to
+  arrive first.
+
+- `ElevatorParams.boarding_height` (default 1.0, the previous fixed value):
+  how far above the platform's top an object may be and still be attached
+  when the cabin starts moving. Keep it below the floor spacing; with 1.0 and
+  floors 0.6 m apart, a robot waiting on the floor above the cabin was taken
+  along and arrived 0.6 m above the floor it was carried to.
+
 - `ControllerParams.stop_on_collision`: an agent that sets it stops dead, as
   `stop()` does, on the step a collision starts that involves it or an object
   attached to it (a carried load stops its carrier), instead of driving or
@@ -492,6 +504,12 @@ are not recommended for production use yet.
 - Keep replay input application and result capture in `ReplaySession`, without replay-specific mutation guards in ordinary simulation and Fleet APIs. Direct core calls are outside the recorded-input contract.
 
 ### Fixed
+
+- `REPLACE_NEXT` elevators: a request for the floor the moving cabin is
+  already heading to now drops the pending floor (`REPLACED`) instead of being
+  rejected and leaving it queued. A controller that changed its target and then
+  changed it back had the cabin leave for the abandoned floor right after
+  arriving, under a robot that was boarding.
 
 - `BatchDifferentialController` uses the agent's
   `controller_params.default_direction` for a path set without a direction, as
