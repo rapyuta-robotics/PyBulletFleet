@@ -109,6 +109,10 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
     (ロボットがビンを運ぶ) で、現行では子オブジェクトの pose 伝播 (`_propagate_to_attached`、
     [sim_object.py#L1412](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/pybullet_fleet/sim_object.py#L1412))
     と子の AABB/grid 更新で phase 1-3 がほぼ倍になる。
+  - **倉庫 (warehouse):** 200 台が、1 m グリッドの床タイル 23.5k とビン 8.7k (計約 33k の静的な箱) の間の
+    通路を走る (`prototype/static_bench.py`)。静的ボディとは重ならないので broad phase の静的除外と、
+    per-object ループが静的ボディを舐めないことを測る。現状 16.3-17.2 ms、#94 で 6.2 ms、
+    numpy プロトタイプ 0.8 ms。
   - **待機 (idle):** 1000 台が全台停止。現行は moved-only の差分判定で約 0.37 ms/step
     (`ros2_bridge/PERFORMANCE.md` の "Core only")。P1 の配列 broad phase がこれより遅くならないことを見る。
 - 計測規約: 基準ホストは WSL2、warmup 20 steps、計測 150 steps × 3 回、中央値を採用。
@@ -180,6 +184,9 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
   ([sim_services.py#L279](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/ros2_bridge/pybullet_fleet_ros/pybullet_fleet_ros/sim_services.py#L279))
   は、`body_id` アクセサ経由なので同期される。store の AABB を返す API に置き換えてもよい。
 - **効果見込み:** pose flush 1.6-1.8 ms → headless ではほぼ 0。
+- **follow-up (この PR には含めない):** headless でプリミティブ形状の静的ボディは Bullet にボディを作らない
+  (`mirror: never` の行)。倉庫型シーンの spawn 16-19 s (ほぼ `createMultiBody`) と RSS を下げる。
+  GUI や `collision_shape: pybullet` が後から必要になった行は、そのときにボディを作る。
 - **検証:** GUI あり・なし、`mirror: always` あり・なしで同じ衝突結果になること。
   recorder の出力が変わらないこと。callback 中の `p.getBasePositionAndOrientation` が
   `mirror: always` で前ステップの値を返すこと (現行契約)。
@@ -190,12 +197,16 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 `_apply_phase1` 3.85 ms (うち `set_poses` 3.2 ms、per-agent の速度コピーループ
 [batch_base.py#L474](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/pybullet_fleet/controllers/batch_base.py#L474)
 約 0.6 ms)、アクションを持たない 1000 台の `Agent.update()` ループ約 0.55 ms。
-カーネルは問題でなく、周りのループが問題である。
+カーネルは問題でなく、周りのループが問題である。倉庫型シーンでは、per-object ループが動かない
+33k の静的ボディまで毎ステップ `_needs_update` を見るので、200 台しか動いていなくても phase1 が
+3.8-4.0 ms になる (spec の「倉庫型シーン」)。
 
 - batch controller のバッファ (`_pos_buf`, `_orn_buf`, `_lin_vel_buf`, `_ang_vel_buf`) を store の行に
   置き換え、`set_poses` 経由の書き戻しと速度のコピーループをなくす。`Agent.velocity` /
   `_current_velocity` は store の行のビューにする。
 - `step_once()` の per-object ループを、「Python の更新が必要なオブジェクト」の集合だけに回す。
+  集合は core が持ち、`_needs_update` の変化時に出し入れする (静的ボディと batch 管理下の
+  アクションなしエージェントは入らない)。全オブジェクトを走査しない。
   現状はこの集合が小さくならない要因が 3 つある: `MoveAction.execute()` が毎ステップ `agent.is_moving` を
   ポーリングする ([action.py#L321](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/pybullet_fleet/action.py#L321))、
   拒否されたパスの再試行も停止までポーリングする、`_update_kinematic_joints` が URDF ロボットの
@@ -377,6 +388,12 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
   (`python3 docs/design/2026-10-26-fleet-scaling/prototype/soa_kernel.py 1000`)。
   円近似の narrow phase を使うため、PyBullet のメッシュ判定とは厳密には一致しない。
   出力は step ごとの中央値 (numba 版と同じ統計量)。
+- `prototype/static_bench.py`: 現行コアの倉庫型シーン (200 台移動 + 約 33k 静的な箱)
+  (`python3 docs/design/2026-10-26-fleet-scaling/prototype/static_bench.py 200 100`)。
+  #94 の計測は、その PR のツリーで同じスクリプトを走らせた。
+- `prototype/soa_static.py`: 同じシーンの SoA + numpy 版。静的ボディのセルキーは一度だけソートし、
+  毎ステップは移動体だけをキー付けして `searchsorted` で候補を引く
+  (`python3 docs/design/2026-10-26-fleet-scaling/prototype/soa_static.py 200 100`)。
 - `prototype/numba_kernel.py`: 同じ負荷の Numba 版 (counting sort のグリッド + 並列の近傍探索)。
   Numba はリポジトリの依存に入っていないので、別の venv で実行する
   (`NUMBA_NUM_THREADS=1` で 1 スレッドの値を測れる)。候補ペア数が numpy 版と一致することを確認済み。
