@@ -14,6 +14,19 @@ are not recommended for production use yet.
 
 ### Added
 
+- `Agent.set_joint_position(joint, position)`: put a joint at a position at
+  once, without moving it there, as `set_pose()` does for the base. The
+  position becomes the joint's target and any profile speed is dropped, so the
+  joint stays there; objects attached to the links follow, and the body counts
+  as moved for the next collision check.
+
+- `Elevator.request_floor(floor, instant=True)`: the cabin is at the floor at
+  once with its passengers aboard, instead of riding there; the next update
+  observes the arrival and releases them as after any trip. Accepted also
+  while the cabin is moving, which drops the pending requests.
+  `ElevatorMotionAdapter.begin_motion` takes the matching `instant` flag,
+  passed only when a request asks for it.
+
 - `Agent.brake()`: come to rest at `max_linear_decel` along the current line of
   motion, keeping the heading and dropping the rest of the path, for
   omnidirectional and differential-drive agents (per-agent and batched) under

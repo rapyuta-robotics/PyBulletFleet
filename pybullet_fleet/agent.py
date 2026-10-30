@@ -2378,6 +2378,74 @@ class Agent(SimObject):
                 physicsClientId=self._pid,
             )
 
+    def set_joint_position(self, joint: Union[int, str], position: float) -> bool:
+        """Put a joint at ``position`` at once, without moving it there.
+
+        The joint counterpart of :meth:`set_pose`: what a simulator's "set
+        entity state" asks of a fixed-base mechanism such as a lift cabin,
+        where placing the base would carry the whole mechanism away.
+
+        ``position`` also becomes the joint's target, so the step loop keeps
+        it there instead of resuming a motion towards an older target, and any
+        speed or plan from a motion profile is dropped. Objects attached to
+        the robot's links follow at once, and the body counts as moved for the
+        next collision check. An action still driving this joint is not
+        cancelled; cancel it first if it should not move the joint again.
+
+        Args:
+            joint: Joint index or name.
+            position: Radians for a revolute joint, metres for a prismatic one.
+
+        Returns:
+            True if the joint was set; False for a non-URDF body, an unknown or
+            fixed joint.
+        """
+        if not self.is_urdf_robot():
+            self._log.warning("set_joint_position() only works for URDF robots")
+            return False
+        if isinstance(joint, str):
+            index = resolve_joint_index(self.body_id, joint)
+            if index == -1:
+                self._log.warning(f"Joint name '{joint}' not found.")
+                return False
+        else:
+            index = joint
+            if not 0 <= index < len(self.joint_info):
+                self._log.warning(f"joint_index {index} out of range (max: {len(self.joint_info)-1})")
+                return False
+        if self.joint_info[index][2] == p.JOINT_FIXED:
+            return False
+
+        state = self._joint(index)
+        newly_targeted = state.target is None
+        state.target = position
+        state.position = position
+        state.clear_motion()
+        if newly_targeted:
+            self._refresh_active_joints()
+        p.resetJointState(self.body_id, index, position, physicsClientId=self._pid)
+        if not self._use_kinematic_joints:
+            # Hold it there: the motor would otherwise pull it back to its last target.
+            p.setJointMotorControl2(
+                bodyUniqueId=self.body_id,
+                jointIndex=index,
+                controlMode=p.POSITION_CONTROL,
+                targetPosition=position,
+                physicsClientId=self._pid,
+            )
+
+        if self.attached_objects:
+            self.update_attached_objects_kinematics()
+        sim_core = self.sim_core
+        if sim_core is not None:
+            # As SimObject._set_pose_internal does for a moved base.
+            sim_core._mark_object_moved(self.object_id)
+            if not sim_core._in_step and self.object_id in sim_core._kinematic_objects:
+                sim_core._update_object_aabb(self.object_id)
+                if getattr(sim_core, "_cached_cell_size", None) is not None:
+                    sim_core._update_object_spatial_grid(self.object_id)
+        return True
+
     def set_joint_target_by_name(self, joint_name: str, target_position: float, max_force: float = 500.0):
         """
         Set target position for a joint by joint name.

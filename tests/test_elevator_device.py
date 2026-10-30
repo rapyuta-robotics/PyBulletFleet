@@ -318,3 +318,41 @@ class TestElevatorParams:
         )
         with pytest.raises(TypeError, match="ElevatorParams"):
             Elevator.from_params(params, sim_core)
+
+
+class TestElevatorInstantRide:
+    """request_floor(instant=True): the cabin is at the floor at once, passengers aboard."""
+
+    def test_cabin_and_passenger_are_there_without_a_step(self, sim_core):
+        elev = _make_elevator(sim_core, floors={"L1": 0.0, "L2": 4.0})
+        box = _make_box_on_platform(sim_core, x=0.0, y=0.0, z=0.2)
+        z = box.get_pose().position[2]
+
+        elev.request_floor("L2", instant=True)
+
+        assert elev.get_joint_state_by_name("lift")[0] == pytest.approx(4.0)
+        assert box.get_pose().position[2] == pytest.approx(z + 4.0, abs=1e-6)
+        assert box.is_attached()
+
+    def test_it_arrives_and_releases_on_the_next_update(self, sim_core):
+        elev = _make_elevator(sim_core, floors={"L1": 0.0, "L2": 4.0})
+        box = _make_box_on_platform(sim_core, x=0.0, y=0.0, z=0.2)
+
+        elev.request_floor("L2", instant=True)
+        sim_core.tick(1)
+
+        assert elev.current_floor == "L2"
+        assert not elev.is_moving
+        assert not box.is_attached()
+
+    def test_a_moving_cabin_is_put_at_the_new_floor(self, sim_core):
+        elev = _make_elevator(sim_core, floors={"L1": 0.0, "L2": 4.0, "L3": 8.0})
+        elev.request_floor("L2")
+        sim_core.tick(10)
+        assert elev.is_moving
+
+        elev.request_floor("L3", instant=True)
+        sim_core.tick(1)
+
+        assert elev.current_floor == "L3"
+        assert elev.get_joint_state_by_name("lift")[0] == pytest.approx(8.0)

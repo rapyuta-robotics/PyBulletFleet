@@ -239,19 +239,23 @@ class Elevator(Agent):
     # Floor request
     # ------------------------------------------------------------------
 
-    def request_floor(self, floor_name: str) -> ElevatorRequestResult:
+    def request_floor(self, floor_name: str, instant: bool = False) -> ElevatorRequestResult:
         """Request the elevator to move to the given floor.
 
         Attaches all objects on the platform, then starts the joint action.
 
         Args:
             floor_name: Name of the target floor (must exist in ``floors``).
+            instant: Put the cabin at the floor at once, passengers aboard,
+                instead of riding there (see
+                :meth:`ElevatorStateMachine.request_floor`). The next update
+                observes the arrival and releases the passengers.
 
         Returns:
             Whether the request was accepted immediately, queued, replaced, or
             rejected according to :attr:`request_policy`.
         """
-        result = self._state_machine.request_floor(floor_name)
+        result = self._state_machine.request_floor(floor_name, instant=instant)
         if result is ElevatorRequestResult.REJECTED:
             if floor_name not in self._floors:
                 logger.warning("Unknown floor: %s (available: %s)", floor_name, list(self._floors.keys()))
@@ -289,9 +293,16 @@ class Elevator(Agent):
     # ElevatorMotionAdapter implementation (PyBullet-specific mechanics)
     # ------------------------------------------------------------------
 
-    def begin_motion(self, target_height: float) -> None:
-        """Command the PyBullet lift joint to move to ``target_height``."""
+    def begin_motion(self, target_height: float, instant: bool = False) -> None:
+        """Command the PyBullet lift joint to move to ``target_height``.
+
+        With ``instant`` the joint is put there at once, carrying the attached
+        passengers (:meth:`Agent.set_joint_position`).
+        """
         self.clear_actions()
+        if instant:
+            self.set_joint_position(self._joint_name, target_height)
+            return
         self.add_action(JointAction(target_joint_positions={self._joint_name: target_height}))
 
     def motion_in_progress(self) -> bool:

@@ -70,15 +70,35 @@ class ElevatorStateMachine:
         """Floor requests waiting for the current transition to complete."""
         return tuple(self._pending_floors)
 
-    def request_floor(self, floor_name: str) -> ElevatorRequestResult:
+    def request_floor(self, floor_name: str, instant: bool = False) -> ElevatorRequestResult:
         """Accept, queue, replace, or reject a requested destination.
 
         The physical cabin is never redirected mid-motion.  ``REPLACE_NEXT``
         replaces the pending destination after the current trip; ``QUEUE``
         preserves requests in arrival order.
+
+        ``instant`` puts the cabin at the floor at once instead of riding there,
+        with its passengers aboard; the next :meth:`update` observes the
+        arrival as after any trip. It is always accepted for another floor,
+        also while the cabin is moving: the cabin is then put at the new floor
+        with the passengers of the current trip, and pending requests are
+        dropped.
         """
         if floor_name not in self._floors:
             return ElevatorRequestResult.REJECTED
+
+        if instant:
+            if self.state is ElevatorState.MOVING:
+                if floor_name == self.target_floor and not self._adapter.motion_in_progress():
+                    return ElevatorRequestResult.REJECTED
+                self._pending_floors.clear()
+                self.target_floor = floor_name
+                self._adapter.begin_motion(self._floors[floor_name], instant=True)
+                return ElevatorRequestResult.ACCEPTED
+            if floor_name == self.current_floor:
+                return ElevatorRequestResult.REJECTED
+            self._start_motion(floor_name, instant=True)
+            return ElevatorRequestResult.ACCEPTED
 
         if self.state is ElevatorState.MOVING:
             if floor_name == self.target_floor:
@@ -99,10 +119,13 @@ class ElevatorStateMachine:
         self._start_motion(floor_name)
         return ElevatorRequestResult.ACCEPTED
 
-    def _start_motion(self, floor_name: str) -> None:
+    def _start_motion(self, floor_name: str, instant: bool = False) -> None:
         self._adapter.attach_platform_passengers()
         self.target_floor = floor_name
-        self._adapter.begin_motion(self._floors[floor_name])
+        if instant:
+            self._adapter.begin_motion(self._floors[floor_name], instant=True)
+        else:
+            self._adapter.begin_motion(self._floors[floor_name])
         self.state = ElevatorState.MOVING
 
     def update(self) -> bool:
