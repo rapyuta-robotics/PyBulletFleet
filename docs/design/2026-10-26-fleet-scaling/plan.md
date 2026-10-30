@@ -297,7 +297,8 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 - **着手条件:** `FleetState` は `RobotState3D[] robots` なので、rclpy では robot ごとの
   メッセージオブジェクト生成を避けられない (現状の構築 2.8 ms が下限)。P5b の前に
   「1000 台の FleetState を rclpy で構築して publish するだけ」の時間を単体で測り、
-  4 ms 以内ならブリッジは rclpy、超えるなら最初から C++ にする。
+  読み出し分 0.5 ms を足してブリッジ側の予算 8 ms に収まるならブリッジは rclpy、
+  超えるなら最初から C++ にする (判断の閾値は P5b 後の判断ポイントと同じ 8 ms)。
 - 共有メモリを読み、FleetState、`/clock`、TF、odom を publish する別ノード (別プロセス) を追加する。
   FleetState の型は変えない。必要なら、配列をそのまま載せる平坦なトピック
   (`FleetStateArray` など) を FleetState と並行して追加する (任意、既存の購読者には影響しない)。
