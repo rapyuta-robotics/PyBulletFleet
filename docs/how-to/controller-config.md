@@ -143,6 +143,7 @@ agent.controller_params.max_linear_decel = [3.0, 3.0, 0.0]
 | `navigation_2d` | `True` preserves current Z for pose trajectories. `None` and `False` follow goal Z. |
 | `default_direction` | Default `set_path()` direction for differential drive. |
 | `goal_replacement` | What a moving agent does with a goal it cannot reach from its current motion: `"brake"` (default), `"immediate"`, `"reject"` or `"wait_complete"`. See [A new goal while moving](#a-new-goal-while-moving). |
+| `stop_on_collision` | `True` stops the agent dead, as `stop()` does, on the step a collision starts that involves it or an object attached to it. See [Stopping on a collision](#stopping-on-a-collision). Default `False`. |
 
 All numeric values default to `None`, which resolves to the framework default
 when used. This lets a manager provide only the fields that an agent did not
@@ -270,6 +271,39 @@ the controller logs a warning naming the agent and brakes at the default
 braking point instead. A
 controller that does not override `brake()` from the base `Controller` cannot
 brake, and `agent.brake()` returns `False`.
+
+### Stopping on a collision
+
+A vehicle that runs into something stays where it hit; it does not brake on to
+a point further along its path. Set `stop_on_collision` to have an agent do
+that: on the step a collision starts that involves the agent, or an object
+attached to it such as a load it carries, the agent is stopped as `stop()`
+does. Its velocity is zeroed and its path dropped; a `MoveAction` it was
+executing ends `CANCELLED`. A contact between an agent and its own attached
+object does not count, and the setting belongs to each agent: in a head-on
+contact only the agents that set it stop, and an agent that is not moving when
+it is struck is left as it is. Whatever comes next -- a new goal,
+an operator resetting the agent -- is up to the application, which can listen
+for `SimEvents.COLLISION_STARTED`.
+
+It acts only on the collisions the simulation reports:
+
+- **Static objects.** With `ignore_static_collision` at its default `true`,
+  contact with a `STATIC` object -- often walls, racks and pillars -- is never
+  reported, so it never stops an agent. Set `ignore_static_collision: false`
+  to stop on those too.
+- **When it stops.** The agent stops on the step the collision is detected,
+  not at the exact point of first contact. With `collision_check_frequency`
+  below the step rate, it can move into the other object for the steps between
+  checks first; with collision checking off, it never stops.
+- **Only when a collision starts.** While the contact goes on, a new goal is
+  followed as usual, even one that leads further into the other object. That
+  is what lets the application back an agent out of a collision.
+
+```python
+agent.controller_params.stop_on_collision = True
+# Or for every agent that does not set it: PBF_CONTROLLER_STOP_ON_COLLISION=1
+```
 
 ## Batch controllers
 

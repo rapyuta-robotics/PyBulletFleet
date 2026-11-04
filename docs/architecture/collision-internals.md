@@ -413,10 +413,12 @@ ignore_static_collision: false
 
 Some touching pairs are meant to touch and should not count as collisions.
 
-- `ignore_attached_collision` (default `true`) drops contact between an
-  object and the object it is attached to with `attach_object()`. Only the
-  direct parent and child are dropped; anything else the carrier touches is
-  still reported.
+- `ignore_attached_collision` (default `true`) drops contact between objects
+  on one attachment tree built with `attach_object()`: a parent and child, two
+  loads on one carrier, and a load on a load. Contact with anything outside
+  the tree is still reported. Attaching or detaching takes effect on the next
+  collision check: an active pair that becomes excluded ends
+  (`COLLISION_ENDED`), and an excluded pair is checked again once it is not.
 - `set_collision_ignore_filter(fn)` drops every touching pair for which
   `fn(obj_a, obj_b)` returns `True`, for rules only the application knows:
 

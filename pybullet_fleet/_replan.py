@@ -234,7 +234,9 @@ def replacement_rejection(
     if across > CROSS_SPEED_ABS + CROSS_SPEED_REL * speed:
         return f"goal is off the line of motion ({across:.3g} m/s across it)"
     vmax, accel, decel = limits_along(params, orientation, unit)
-    if try_build_tpi(p0=0.0, pe=distance, vmax=vmax, accel=accel, t0=t0, v0=along, decel=decel) is None:
+    # The build that follows uses the same inputs and takes this solve.
+    feasible = try_build_tpi(p0=0.0, pe=distance, vmax=vmax, accel=accel, t0=t0, v0=along, decel=decel, keep_for_build=True)
+    if feasible is None:
         braking = along * along / (2.0 * decel)
         return f"goal is {distance:.3g} m ahead, inside the {braking:.3g} m braking distance"
     return None

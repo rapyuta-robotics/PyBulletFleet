@@ -410,7 +410,7 @@ class SimObject:
         # Note: Unlike object_id, name is NOT unique - multiple objects can share the same name.
         # For programmatic lookup/search, use object_id instead.
         # Examples: "LeftRobot_1", "Pallet_A", "Obstacle_Wall"
-        self.name: Optional[str] = name
+        self._name: Optional[str] = name
 
         # Per-entity EventBus (lazy — created on first .events access)
         self._events: Optional["EventBus"] = None
@@ -515,6 +515,35 @@ class SimObject:
     def _has_entity_events(self) -> bool:
         """Fast check: True if per-entity EventBus has been created."""
         return self._events is not None
+
+    @property
+    def name(self) -> Optional[str]:
+        """Human-readable name; duplicates allowed (use ``object_id`` to look up)."""
+        return self._name
+
+    @name.setter
+    def name(self, value: Optional[str]) -> None:
+        self._name = value
+        # The monitor caches the entity list and rebuilds it only on a change.
+        note = getattr(getattr(self, "sim_core", None), "_note_monitor_entities_changed", None)
+        if callable(note):
+            note()
+
+    def _attachment_root(self) -> "SimObject":
+        """The object at the top of this one's attachment chain (itself when not attached).
+
+        A load carried on a load carried by an agent has that agent as its
+        root. A cycle cannot be built through ``attach_object``; the walk
+        stops at the first repeated object anyway.
+        """
+        if self._attached_to is None:
+            return self  # most objects; this runs for every candidate pair
+        obj: SimObject = self
+        seen = {id(obj)}
+        while obj._attached_to is not None and id(obj._attached_to) not in seen:
+            obj = obj._attached_to
+            seen.add(id(obj))
+        return obj
 
     def set_name(self, name: Optional[str]) -> None:
         """

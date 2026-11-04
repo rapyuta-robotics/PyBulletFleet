@@ -44,6 +44,7 @@ import pybullet_data
 import yaml
 
 from pybullet_fleet._frequency import FrequencyGate
+from pybullet_fleet._monitor_frames import MonitorFrames
 from pybullet_fleet._platform import IS_MACOS
 from pybullet_fleet.camera_controller import CameraController
 from pybullet_fleet.collision_visualizer import CollisionVisualizer  # deprecated, unused
@@ -63,6 +64,7 @@ from pybullet_fleet.agent import Agent
 from pybullet_fleet.agent_manager import SimObjectManager
 from pybullet_fleet.behavior_tree_core import BehaviorTree
 from pybullet_fleet.types import CallbackPhase, SpatialHashCellSizeMode, CollisionDetectionMethod, CollisionMode
+from pybullet_fleet._defaults import MONITOR_REFRESH_HEADLESS, MONITOR_REFRESH_WITH_WINDOW
 from pybullet_fleet._defaults import SIMULATION as _SIM_D
 
 if TYPE_CHECKING:
@@ -185,10 +187,14 @@ class SimulationParams:
     #: monitor window without the PyBullet viewer is still available.
     enable_monitor_gui: Optional[bool] = _SIM_D["enable_monitor_gui"]
     #: Simulated seconds between DataMonitor refreshes while ``monitor`` is
-    #: on. ``None`` (the default) is every step while the monitor window is
-    #: open (``enable_monitor_gui``, or ``gui`` when that is ``None``), so the
-    #: window stays live, and every second otherwise. ``0`` is every step.
-    #: Read once, when the simulation is created.
+    #: on. A refresh builds :attr:`last_monitor_frame` and writes the file the
+    #: monitor window reads (every 0.5 wall seconds). ``None`` (the default)
+    #: is 0.25 s while the monitor window is open (``enable_monitor_gui``, or
+    #: ``gui`` when that is ``None``) and 1 s otherwise; ``0`` is every step.
+    #: Simulated time: at a real-time factor above 1 a short interval means
+    #: more writes per wall second. While paused, a selection, follow or pause
+    #: change, and a single step, refresh at once. Read once, when the
+    #: simulation is created.
     monitor_update_interval: Optional[float] = _SIM_D["monitor_update_interval"]
     #: Wall-clock seconds between ``[MONITOR]`` lines logged at INFO -- RTF,
     #: collision totals, step count -- independent of ``monitor``, ``gui`` and
@@ -213,10 +219,9 @@ class SimulationParams:
     enable_shadows: bool = _SIM_D["enable_shadows"]
     enable_gui_panel: bool = _SIM_D["enable_gui_panel"]
     ignore_static_collision: bool = _SIM_D["ignore_static_collision"]
-    #: Do not count contact between an object and the object it is attached
-    #: to (``attach_object``): a carried load touches its carrier by design.
-    #: Only the direct parent and child; contact with anything else the
-    #: carrier holds is still reported.
+    #: Do not count contact between objects on one attachment tree
+    #: (``attach_object``): a carrier, its loads and their loads touch one
+    #: another by design. Contact with anything outside the tree is reported.
     ignore_attached_collision: bool = _SIM_D["ignore_attached_collision"]
     enable_time_profiling: bool = _SIM_D["enable_time_profiling"]
     profiling_interval: int = _SIM_D["profiling_interval"]
@@ -468,7 +473,9 @@ class MultiRobotSimulationCore:
         self._data_monitor: Optional[DataMonitor] = None
         self._gui_commands: Queue[GuiCommand] = Queue(maxsize=32)
         self._single_step_requested: bool = False
-        self._last_monitor_frame: Optional[MonitorFrame] = None
+        # Entity-list cache and "window is behind" state of the DataMonitor
+        # (see pybullet_fleet._monitor_frames).
+        self._monitor_frames = MonitorFrames()
         self._selected_entity_id: Optional[int] = None
         self._gui_follow_enabled: bool = False
         self._pacing_rebase_requested: bool = False
@@ -614,14 +621,15 @@ class MultiRobotSimulationCore:
         self._plugins: List["SimPlugin"] = []
 
         self.setup_pybullet()
-        # DataMonitor refresh: monitor_update_interval, else every step while
-        # its window is open (enable_monitor_gui, or gui when that is None) and
-        # once a second otherwise. Set after setup_pybullet(): RECORD may turn
-        # the GUI off.
+        # DataMonitor refresh: monitor_update_interval, else
+        # MONITOR_REFRESH_WITH_WINDOW while its window is open
+        # (enable_monitor_gui, or gui when that is None; the window reads every
+        # 0.5 wall seconds) and MONITOR_REFRESH_HEADLESS otherwise.
+        # Set after setup_pybullet(): RECORD may turn the GUI off.
         interval = params.monitor_update_interval
         if interval is None:
             window = params.enable_monitor_gui if params.enable_monitor_gui is not None else params.gui
-            interval = 0.0 if window else 1.0
+            interval = MONITOR_REFRESH_WITH_WINDOW if window else MONITOR_REFRESH_HEADLESS
         self._monitor_update_gate = FrequencyGate(1.0 / interval if interval > 0 else None)
         self.setup_monitor()
 
@@ -666,7 +674,7 @@ class MultiRobotSimulationCore:
     @property
     def last_monitor_frame(self) -> Optional[MonitorFrame]:
         """Return the most recently published toolkit-neutral monitor frame."""
-        return self._last_monitor_frame
+        return self._monitor_frames.last_frame
 
     @property
     def selected_entity_id(self) -> Optional[int]:
@@ -824,6 +832,7 @@ class MultiRobotSimulationCore:
         if self._selected_entity_id == entity_id:
             return
         self._selected_entity_id = entity_id
+        self._monitor_frames.view_changed()
         if entity_id is None:
             self._gui_follow_enabled = False
         self._update_selected_nameplate(force=True)
@@ -834,6 +843,7 @@ class MultiRobotSimulationCore:
         if self._gui_follow_enabled == enabled:
             return
         self._gui_follow_enabled = enabled
+        self._monitor_frames.view_changed()
         self.events.emit("gui.follow_changed", entity_id=self._selected_entity_id, enabled=enabled)
 
     def _clear_selected_nameplate(self) -> None:
@@ -2083,7 +2093,9 @@ class MultiRobotSimulationCore:
 
     def _is_ignored_collision(self, obj_a: SimObject, obj_b: SimObject) -> bool:
         """Whether two touching objects are excluded from collision results."""
-        if self._params.ignore_attached_collision and (obj_a._attached_to is obj_b or obj_b._attached_to is obj_a):
+        # Every object on one attachment tree -- an agent, its loads, a load's
+        # loads -- belongs to one body: no contact among them is a collision.
+        if self._params.ignore_attached_collision and obj_a._attachment_root() is obj_b._attachment_root():
             return True
         return self._collision_ignore_filter is not None and bool(self._collision_ignore_filter(obj_a, obj_b))
 
@@ -2549,6 +2561,7 @@ class MultiRobotSimulationCore:
 
         self._sim_objects.append(obj)
         self._sim_objects_dict[obj.object_id] = obj
+        self._note_monitor_entities_changed()
 
         # Add to agents list if this is an Agent instance (for O(M) iteration)
         if isinstance(obj, Agent):
@@ -2617,6 +2630,7 @@ class MultiRobotSimulationCore:
             return
 
         self._sim_objects_dict.pop(obj_id, None)
+        self._note_monitor_entities_changed()
         if self._selected_entity_id == obj_id:
             self._set_selected_entity(None, source="system")
 
@@ -3337,6 +3351,27 @@ class MultiRobotSimulationCore:
         else:
             return list(pairs), None
 
+    @staticmethod
+    def _stop_on_collision(obj_a: SimObject, obj_b: SimObject) -> None:
+        """Stop the agents a new contact involves, when their ``stop_on_collision`` is set.
+
+        An object attached to an agent (a carried load) stands for that agent,
+        so a load running into something stops its carrier. A contact between
+        an agent and its own load is not a collision with anything else. An
+        agent that is not moving, such as one struck while it stands, is left
+        alone: there is no motion to stop, and an action it is running goes on.
+        """
+
+        root_a, root_b = obj_a._attachment_root(), obj_b._attachment_root()
+        if root_a is root_b:
+            # Only reached with ignore_attached_collision off, where such a
+            # pair is still reported; it is never a reason to stop.
+            return
+        for root, other in ((root_a, obj_b), (root_b, obj_a)):
+            if isinstance(root, Agent) and root.is_moving and root.controller_params._eff_stop_on_collision():
+                logger.info(f"{root.name or root.object_id} stopped on collision with {other.name or other.object_id}")
+                root.stop()
+
     def check_collisions(
         self,
         collision_color: Optional[List[float]] = None,
@@ -3599,6 +3634,8 @@ class MultiRobotSimulationCore:
                             obj_a.events.emit(SimEvents.COLLISION_STARTED, other=obj_b)
                         if obj_b._has_entity_events():
                             obj_b.events.emit(SimEvents.COLLISION_STARTED, other=obj_a)
+                        # After the events, so handlers see the motion that led to the contact.
+                        self._stop_on_collision(obj_a, obj_b)
 
                 for obj_id_i, obj_id_j in resolved_collisions:
                     obj_a = self._sim_objects_dict.get(obj_id_i)
@@ -3716,6 +3753,10 @@ class MultiRobotSimulationCore:
         elapsed = rt1 - rt0
         return (st1 - st0) / elapsed if elapsed > 0 else 0.0
 
+    def _note_monitor_entities_changed(self) -> None:
+        """An object was added, removed or renamed: rebuild the monitor's entity list."""
+        self._monitor_frames.objects_changed()
+
     def update_monitor(self) -> None:
         """Update simulation monitor with current statistics.
 
@@ -3731,10 +3772,7 @@ class MultiRobotSimulationCore:
         num_agents = len(self._agents)
         num_objects = len(self._sim_objects) - num_agents
 
-        entities = tuple(
-            MonitorEntity(object_id=obj.object_id, name=obj.name or f"entity-{obj.object_id}", kind=type(obj).__name__)
-            for obj in sorted(self._sim_objects, key=lambda item: item.object_id)
-        )
+        entities = self._monitor_frames.entities(self._sim_objects)
         selected_state = None
         selected = self._sim_objects_dict.get(self._selected_entity_id) if self._selected_entity_id is not None else None
         if selected is not None:
@@ -3772,7 +3810,6 @@ class MultiRobotSimulationCore:
             selected_entity=selected_state,
             follow_enabled=self._gui_follow_enabled,
         )
-        self._last_monitor_frame = frame
         logger.debug(
             "[MONITOR] sim_time=%.2f, real_time=%.2f, rtf=%.2f, agents=%d, objects=%d, "
             "active_collisions=%d, total_collisions=%d, steps=%d",
@@ -3790,8 +3827,23 @@ class MultiRobotSimulationCore:
             logger.info(f"NEW COLLISION: total={self._collision_count} at sim_time={sim_time:.2f}")
             self._last_logged_collision_count = self._collision_count
         # Also output to DataMonitor window
+        self._monitor_frames.built(frame)
         if self._data_monitor:
             self._data_monitor.write_frame(frame)
+
+    def flush_monitor(self) -> bool:
+        """Build and write a monitor frame now if the window is behind; return whether it did.
+
+        Running, the next refresh (``monitor_update_interval``) shows any
+        change, and :meth:`close` flushes, so only a program that stops
+        calling ``step_once()`` and keeps the simulation open needs this.
+        """
+        if not self._data_monitor:
+            return False
+        if self._monitor_frames.behind(self._step_count):
+            self.update_monitor()
+            return True
+        return False
 
     def initialize_simulation(self) -> None:
         """
@@ -3827,7 +3879,7 @@ class MultiRobotSimulationCore:
         self._monitor_update_gate.reset()
         self._last_monitor_log = None  # a fresh run logs its first step
         self._last_logged_collision_count = 0
-        self._last_monitor_frame = None
+        self._monitor_frames.reset()
         self._single_step_requested = False
         self._pacing_rebase_requested = False
         self._clear_selected_nameplate()
@@ -3916,6 +3968,7 @@ class MultiRobotSimulationCore:
         self._sim_objects.clear()
         self._sim_objects_dict.clear()
         self._agents.clear()
+        self._note_monitor_entities_changed()
 
         # Movement / collision caches
         self._moved_this_step.clear()
@@ -4526,8 +4579,17 @@ class MultiRobotSimulationCore:
         # strand the resources the later steps own -- and since _closed is
         # already set, a retry would be a no-op. The first exception is kept
         # and re-raised once everything has been given its chance.
+        def _flush_monitor() -> None:
+            # A program driving step_once() itself may stop between refreshes;
+            # leave the file at the last state it reached.
+            if self._monitor_enabled:
+                try:
+                    self.flush_monitor()
+                except Exception:  # noqa: BLE001 - a stale monitor file must not fail close()
+                    logger.debug("Final DataMonitor flush failed", exc_info=True)
+
         first_error: Optional[BaseException] = None
-        for step in (_finalise_recording, self._shutdown_plugins, _stop_monitor):
+        for step in (_flush_monitor, _finalise_recording, self._shutdown_plugins, _stop_monitor):
             try:
                 step()
             except BaseException as exc:  # noqa: BLE001 - re-raised below
@@ -4595,11 +4657,13 @@ class MultiRobotSimulationCore:
     def pause(self) -> None:
         """Pause the simulation. step_once will be skipped while paused."""
         self._simulation_paused = True
+        self._monitor_frames.view_changed()
         self.events.emit(SimEvents.PAUSED)
 
     def resume(self) -> None:
         """Resume the simulation after a pause."""
         self._simulation_paused = False
+        self._monitor_frames.view_changed()
         self.events.emit(SimEvents.RESUMED)
 
     @property
@@ -4679,7 +4743,13 @@ class MultiRobotSimulationCore:
 
         # Skip physics simulation and callbacks if paused
         if self.is_paused and not self._single_step_requested:
+            if self._monitor_enabled and self._data_monitor and self._monitor_frames.due_while_paused():
+                # Nothing refreshes the monitor while paused: still show a
+                # selection, follow or pause change.
+                self.update_monitor()
             return
+        # A single step taken while paused is shown at once, refresh due or not.
+        single_step = self.is_paused
         self._single_step_requested = False
 
         # Initialize profiling accumulators for this step (append 0.0 slot for ALL fields)
@@ -4876,7 +4946,9 @@ class MultiRobotSimulationCore:
                 t_mon0 = time.perf_counter()
 
             if self._monitor_enabled:
-                if self._monitor_update_gate.due(self._schedule_time(), self._params.timestep) is not None:
+                if self._monitor_update_gate.due(self._schedule_time(), self._params.timestep) is not None or (
+                    single_step and self._data_monitor
+                ):
                     self.update_monitor()
 
             if self._params.monitor_log_interval > 0:
