@@ -23,14 +23,12 @@ cell_index = (floor(x / cell_size), floor(y / cell_size), floor(z / cell_size))
 - `_cached_spatial_grid: Dict[Tuple[int,int,int], Set[int]]` — cell → object IDs
 - `_cached_aabbs_dict: Dict[int, Tuple]` — object ID → AABB bounds
 
-**Neighbor checking:**
-- `NORMAL_3D`: checks 27 cells (3×3×3 cube)
-- `NORMAL_2D`: checks 9 cells (3×3×1, Z=0 plane)
+**Registration and search:**
+- Every body is registered in each cell its AABB, enlarged by half the collision margin, touches (`NORMAL_2D` is not enlarged in z).
+- Candidates for a body are the bodies registered in its own cells; no neighbour cells are searched. Two bodies within the margin always share a cell.
 - `STATIC`: registered once, never re-checked for movement
 - `DISABLED`: not in grid at all
-
-**Multi-cell registration:**
-Objects larger than `multi_cell_threshold × cell_size` are registered in all cells their AABB overlaps. This prevents large objects from missing collisions with small objects in adjacent cells.
+- `multi_cell_threshold` is accepted for compatibility and not used.
 
 ## AABB Management
 
