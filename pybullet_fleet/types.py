@@ -175,20 +175,19 @@ class CollisionMode(Enum):
     Collision detection mode for individual objects.
 
     Determines how an object participates in collision detection:
-    - Spatial dimension (2D vs 3D)
+    - Clearance on the z axis (NORMAL_2D vs NORMAL_3D)
     - Movement type (static vs dynamic)
     - Collision detection enablement
 
     Attributes:
-        NORMAL_3D: Normal 3D collision detection (default)
-                   - Full 3D AABB overlap check
-                   - Checks all 27 spatial hash neighbors (3x3x3)
-                   - For dynamic/kinematic objects that move in 3D space
+        NORMAL_3D: Normal collision detection (default)
+                   - A pair is a candidate when its AABBs are within the collision clearance on every axis
+                   - For dynamic/kinematic objects
 
-        NORMAL_2D: 2D collision detection (Z-axis ignored)
-                   - 2D AABB overlap check (X, Y only)
-                   - Checks only 9 spatial hash neighbors (3x3x1, Z=0)
-                   - For ground vehicles, 2D robots
+        NORMAL_2D: As NORMAL_3D, without the clearance on the z axis (z is not ignored)
+                   - A pair involving one needs real z overlap; x and y get the clearance as for NORMAL_3D
+                   - Differs from NORMAL_3D only with a non-zero clearance (CLOSEST_POINTS / HYBRID)
+                   - For ground vehicles that pass close under or over things
 
         STATIC: Static object mode (never moves, but has collision)
                 - Registered in collision system during spawn
