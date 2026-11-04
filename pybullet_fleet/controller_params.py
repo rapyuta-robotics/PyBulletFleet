@@ -86,6 +86,13 @@ class ControllerParams:
             ``None`` → framework default, ``"brake"`` unless changed (see
             :data:`pybullet_fleet._defaults.CONTROLLER`, overridable with the
             ``PBF_CONTROLLER_GOAL_REPLACEMENT`` environment variable).
+        stop_on_collision: When ``True``, the agent stops dead (:meth:`Agent.stop
+            <pybullet_fleet.agent.Agent.stop>`: no deceleration, path dropped)
+            on the step a collision starts that involves it or an object
+            attached to it, as a vehicle that has run into something stays
+            where it hit. A contact between an agent and its own attached
+            object does not count. ``None`` → framework default, ``False``
+            unless changed (``PBF_CONTROLLER_STOP_ON_COLLISION``).
     """
 
     max_linear_vel: Optional[ScalarOrAxes] = None
@@ -97,6 +104,7 @@ class ControllerParams:
     navigation_2d: Optional[bool] = None
     default_direction: MovementDirection = MovementDirection.FORWARD
     goal_replacement: Optional[GoalReplacement] = None
+    stop_on_collision: Optional[bool] = None
 
     def __setattr__(self, name: str, value: Any) -> None:
         # The enum fields take the enum or its string value on every
@@ -156,6 +164,11 @@ class ControllerParams:
         if self.goal_replacement is not None:
             return self.goal_replacement
         return parse_goal_replacement(_CTRL_D["goal_replacement"])
+
+    def _eff_stop_on_collision(self) -> bool:
+        if self.stop_on_collision is not None:
+            return bool(self.stop_on_collision)
+        return bool(_CTRL_D["stop_on_collision"])
 
     def _eff_cmd_vel_timeout(self) -> float:
         return self.cmd_vel_timeout if self.cmd_vel_timeout is not None else _CTRL_D["cmd_vel_timeout"]

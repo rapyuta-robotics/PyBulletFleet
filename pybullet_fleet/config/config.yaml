@@ -31,6 +31,9 @@ simulation:
 
   # Enable external data monitor (true/false)
   monitor: true
+  # Simulated seconds between monitor refreshes (build and write a frame).
+  # null: 0.25 s with the monitor window open, 1 s without it. 0: every step.
+  monitor_update_interval: null
 
   # Collision check frequency (times per second)
   # collision_check_frequency: 0.1

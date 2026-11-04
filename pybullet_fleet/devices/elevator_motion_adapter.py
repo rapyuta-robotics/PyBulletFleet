@@ -13,8 +13,14 @@ class ElevatorMotionAdapter(Protocol):
     owns joints and passenger attachment mechanics.
     """
 
-    def begin_motion(self, target_height: float) -> None:
-        """Start or replace motion of the cabin toward ``target_height``."""
+    def begin_motion(self, target_height: float, instant: bool = False) -> None:
+        """Start or replace motion of the cabin toward ``target_height``.
+
+        With ``instant``, put the cabin and its attached passengers at
+        ``target_height`` before returning, so that :meth:`motion_in_progress`
+        is already False. The state machine passes it only when a request asks
+        for it.
+        """
 
     def motion_in_progress(self) -> bool:
         """Return whether the backend still reports commanded motion."""

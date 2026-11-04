@@ -49,6 +49,11 @@ class ElevatorParams(AgentSpawnParams):
         joint_name: Name of the prismatic joint that moves the platform.
         platform_link: Name of the link with the platform collision box.
         request_policy: Handling for floor requests received while moving.
+        boarding_height: Metres above the platform's top within which an
+            object counts as on board when the cabin starts moving.  Keep it
+            below the distance between two floors: an object waiting on the
+            floor above the cabin would otherwise ride along, and arrive at
+            the height it had above the platform.
         max_speed: Cabin speed in m/s.  ``None`` uses the URDF's
             ``<limit velocity="...">`` on ``joint_name``, which is where the
             speed otherwise has to be set -- so without this, two installations
@@ -65,6 +70,7 @@ class ElevatorParams(AgentSpawnParams):
     joint_name: str = "lift"
     platform_link: str = "platform"
     request_policy: ElevatorRequestPolicy | str = ElevatorRequestPolicy.REJECT
+    boarding_height: float = 1.0
     max_speed: Optional[float] = None
     max_accel: Optional[float] = None
     max_decel: Optional[float] = None
@@ -75,6 +81,8 @@ class ElevatorParams(AgentSpawnParams):
             raise TypeError("ElevatorParams requires floors (Dict[str, float])")
         if not self.initial_floor:
             self.initial_floor = next(iter(self.floors), "")
+        if self.boarding_height < 0:
+            raise ValueError(f"ElevatorParams.boarding_height must not be negative, got {self.boarding_height}")
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "ElevatorParams":
@@ -96,6 +104,20 @@ class ElevatorParams(AgentSpawnParams):
             max_decel=config.get("max_decel"),
             platform_link=config.get("platform_link", "platform"),
             request_policy=config.get("request_policy", ElevatorRequestPolicy.REJECT),
+            boarding_height=float(config.get("boarding_height", 1.0)),
+        )
+
+
+def _warn_if_boarding_reaches_next_floor(boarding_height: float, floors: Dict[str, float]) -> None:
+    """Warn when ``boarding_height`` reaches the next floor: an object waiting there would board."""
+    heights = sorted(set(floors.values()))
+    gaps = [upper - lower for lower, upper in zip(heights, heights[1:])]
+    if gaps and boarding_height >= min(gaps):
+        logger.warning(
+            "Elevator boarding_height %.3f m reaches the closest floor spacing %.3f m: an object on the next "
+            "floor up would board the cabin. Set boarding_height below the floor spacing.",
+            boarding_height,
+            min(gaps),
         )
 
 
@@ -115,7 +137,8 @@ class Elevator(Agent):
         initial_floor: L1
         joint_name: lift
         platform_link: platform
-        request_policy: queue  # reject (default), replace_next, or queue
+        request_policy: queue  # reject (default), replace_next, queue, or redirect
+        boarding_height: 1.0  # metres above the platform that count as on board
     """
 
     _spawn_params_cls = ElevatorParams
@@ -125,6 +148,8 @@ class Elevator(Agent):
     _floors: Dict[str, float]
     _joint_name: str
     _platform_link: str
+    # A class default, so an Elevator built without from_params still has one.
+    _boarding_height: float = 1.0
     _passengers: List["SimObject"]
     _state_machine: ElevatorStateMachine
 
@@ -155,6 +180,8 @@ class Elevator(Agent):
             agent._floors = spawn_params.floors  # type: ignore[assignment]
             agent._joint_name = spawn_params.joint_name
             agent._platform_link = spawn_params.platform_link
+            agent._boarding_height = float(spawn_params.boarding_height)
+            _warn_if_boarding_reaches_next_floor(agent._boarding_height, spawn_params.floors)
             agent._passengers = []  # Currently attached passengers
             if has_profile:
                 # Only the joint name is left to go wrong here, the values
@@ -239,19 +266,23 @@ class Elevator(Agent):
     # Floor request
     # ------------------------------------------------------------------
 
-    def request_floor(self, floor_name: str) -> ElevatorRequestResult:
+    def request_floor(self, floor_name: str, instant: bool = False) -> ElevatorRequestResult:
         """Request the elevator to move to the given floor.
 
         Attaches all objects on the platform, then starts the joint action.
 
         Args:
             floor_name: Name of the target floor (must exist in ``floors``).
+            instant: Put the cabin at the floor at once, passengers aboard,
+                instead of riding there (see
+                :meth:`ElevatorStateMachine.request_floor`). The next update
+                observes the arrival and releases the passengers.
 
         Returns:
             Whether the request was accepted immediately, queued, replaced, or
             rejected according to :attr:`request_policy`.
         """
-        result = self._state_machine.request_floor(floor_name)
+        result = self._state_machine.request_floor(floor_name, instant=instant)
         if result is ElevatorRequestResult.REJECTED:
             if floor_name not in self._floors:
                 logger.warning("Unknown floor: %s (available: %s)", floor_name, list(self._floors.keys()))
@@ -289,9 +320,16 @@ class Elevator(Agent):
     # ElevatorMotionAdapter implementation (PyBullet-specific mechanics)
     # ------------------------------------------------------------------
 
-    def begin_motion(self, target_height: float) -> None:
-        """Command the PyBullet lift joint to move to ``target_height``."""
+    def begin_motion(self, target_height: float, instant: bool = False) -> None:
+        """Command the PyBullet lift joint to move to ``target_height``.
+
+        With ``instant`` the joint is put there at once, carrying the attached
+        passengers (:meth:`Agent.set_joint_position`).
+        """
         self.clear_actions()
+        if instant:
+            self.set_joint_position(self._joint_name, target_height)
+            return
         self.add_action(JointAction(target_joint_positions={self._joint_name: target_height}))
 
     def motion_in_progress(self) -> bool:
@@ -357,10 +395,10 @@ class Elevator(Agent):
 
         platform_min, platform_max = self._get_platform_aabb()
 
-        # Expand platform AABB slightly upward to catch objects standing on it
-        # (robot feet may be just above the platform top surface).
+        # Expand platform AABB upward to catch objects standing on it (robot
+        # feet may be just above the platform top surface), by boarding_height.
         search_min = (platform_min[0], platform_min[1], platform_min[2])
-        search_max = (platform_max[0], platform_max[1], platform_max[2] + 1.0)
+        search_max = (platform_max[0], platform_max[1], platform_max[2] + self._boarding_height)
 
         candidates = []
         for obj in self.sim_core.sim_objects:

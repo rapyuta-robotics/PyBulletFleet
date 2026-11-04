@@ -30,7 +30,7 @@ disabled behaviour.
 | `duration` | `0` | Default `run_simulation()` duration; `0` runs until interrupted or the GUI closes. |
 | `gui` / `physics` | `true` / `false` | Open a GUI / call `p.stepSimulation()` and update physics bodies each step. |
 | `monitor` / `enable_monitor_gui` | `true` / `true` | Enable DataMonitor and its optional tkinter window. The window provides playback controls plus entity selection and camera follow; requests are applied on the simulation step thread. |
-| `monitor_update_interval` | `None` | Simulated seconds between DataMonitor refreshes while `monitor` is on. `None` refreshes every step while the monitor window is open (`enable_monitor_gui`, or `gui` when that is unset) and every second otherwise; `0` refreshes every step. |
+| `monitor_update_interval` | `None` | Simulated seconds between DataMonitor refreshes while `monitor` is on. A refresh builds `last_monitor_frame` and writes the file the monitor window reads (the window reads it every 0.5 wall seconds). `None` is 0.25 s while the monitor window is open (`enable_monitor_gui`, or `gui` when that is unset) and 1 s otherwise; `0` refreshes every step. Simulated time: at a real-time factor above 1 a short interval means more writes per wall second. While paused, a selection, follow or pause change and a single step refresh at once; the final frame of a run is written, `close()` writes the last state, and `flush_monitor()` does so on demand. |
 | `monitor_log_interval` | `1.0` | Wall-clock seconds between INFO `[MONITOR]` log lines (real-time factor, collision totals, step count), independent of `monitor`, `gui` and `monitor_update_interval`; `0` logs none. The line shows only when `log_level` is `info` or lower. |
 | `log_level` | `warn` | Python logging level applied to the process root logger. |
 | `max_steps_per_frame` | `10` | Catch-up-step limit used by the pacing loop. |
@@ -65,7 +65,7 @@ their periodic reports.
 | `spatial_hash_cell_size` | `None` | Fixed cell size in metres when mode is `constant`. |
 | `multi_cell_threshold` | `1.5` | Dimensionless cell-size multiplier for multi-cell registration. |
 | `ignore_static_collision` | `true` | Skip every pair containing an entity with `collision_mode: static`. |
-| `ignore_attached_collision` | `true` | Do not report contact between an object and the object it is attached to (`attach_object()`); only the direct parent and child. For other expected contact, see `set_collision_ignore_filter()` in the collision internals. |
+| `ignore_attached_collision` | `true` | Do not report contact between objects on one attachment tree (`attach_object()`): a carrier, the objects attached to it, and the objects attached to those, so a parent and child, two loads on one carrier, and a load on a load are all excluded. For other expected contact, see `set_collision_ignore_filter()` in the collision internals. |
 | `enable_collision_color_change` | `false` | Change object colour while a collision is active. |
 | `enable_collision_shapes` | `false` | Initially show collision-shape wireframes in the GUI. |
 | `enable_structure_transparency` | `false` | Initially render structure bodies semi-transparently. |

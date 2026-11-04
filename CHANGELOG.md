@@ -14,6 +14,48 @@ are not recommended for production use yet.
 
 ### Added
 
+- `Agent.set_joint_position(joint, position)`: put a joint at a position at
+  once, without moving it there, as `set_pose()` does for the base. The
+  position becomes the joint's target and any profile speed is dropped, so the
+  joint stays there; objects attached to the links follow, and the body counts
+  as moved for the next collision check. With physics on, `max_force` (default
+  500, as in `set_joint_target`) holds it there. A position outside the URDF
+  limits is applied with a warning; a fixed joint is refused with one.
+
+- `Agent.set_joints_positions(positions)`: the same for several joints, taking
+  a list for every joint or a dict by name or index, as `set_joints_targets`
+  does. Attached objects follow once, after all of them are placed.
+
+- `Elevator.request_floor(floor, instant=True)`: the cabin is at the floor at
+  once with its passengers aboard, instead of riding there; the next update
+  observes the arrival and releases them as after any trip. Accepted also
+  while the cabin is moving, whatever the request policy: the cabin is put at
+  the new floor with the passengers of its trip, the pending requests are
+  dropped, and the result is `REDIRECTED`.
+  `ElevatorMotionAdapter.begin_motion` takes the matching `instant` flag,
+  passed only when a request asks for it.
+
+- `ElevatorRequestPolicy.REDIRECT`: a request received while the cabin is
+  moving turns it toward the new floor at once, with its passengers, and drops
+  any pending floor, so the latest request wins (`ElevatorRequestResult.REDIRECTED`).
+  For controllers that retarget a car in motion instead of waiting for it to
+  arrive first.
+
+- `ElevatorParams.boarding_height` (default 1.0, the previous fixed value):
+  how far above the platform's top an object may be and still be attached
+  when the cabin starts moving. Keep it below the floor spacing; with 1.0 and
+  floors 0.6 m apart, a robot waiting on the floor above the cabin was taken
+  along and arrived 0.6 m above the floor it was carried to. `Elevator.from_params`
+  warns when it reaches the smallest floor spacing.
+
+- `ControllerParams.stop_on_collision`: an agent that sets it stops dead, as
+  `stop()` does, on the step a collision starts that involves it or an object
+  attached to it (a carried load stops its carrier), instead of driving or
+  braking on past the point of contact. A contact with its own attached
+  object does not count, and an agent struck while it stands is left alone.
+  Off by default; per agent, through a fleet's
+  controller config, or for every agent with `PBF_CONTROLLER_STOP_ON_COLLISION`.
+
 - `Agent.brake()`: come to rest at `max_linear_decel` along the current line of
   motion, keeping the heading and dropping the rest of the path, for
   omnidirectional and differential-drive agents (per-agent and batched) under
@@ -50,6 +92,58 @@ are not recommended for production use yet.
   checkpoint proof's record version 3.
 
 ### Changed
+
+- `ignore_attached_collision` now covers every object on one attachment tree,
+  not only a direct parent and child: two loads on one carrier and a load on a
+  load no longer count as colliding, the same rule `stop_on_collision` uses.
+
+- Setting a goal on a moving agent is cheaper: the check whether the agent
+  can continue into it and the trajectory it then follows share one solve
+  instead of solving the same trajectory twice, and the differential heading
+  computation avoids a generic cross product. Per goal, 5-45% less time
+  across per-agent and batched, omnidirectional and differential controllers
+  (`benchmark/experiments/goal_replacement_cost.py`).
+
+- The ROS 2 bridge Docker images build from the Open-RMF demos image pinned
+  by digest (`RMF_DEMOS_IMAGE` build argument) instead of the nightly
+  `jazzy-rmf-latest` tag, whose rebuilds changed the demo worlds' model URIs
+  and broke the Fuel model cache stage. The Fuel model download now always
+  creates the cache directory and fails with an explanation when the image has
+  no demo worlds or the worlds name no Fuel models (the latter can be allowed
+  with `ALLOW_NO_FUEL_MODELS=1`).
+
+- Spawning an agent no longer copies the controller's construction config a
+  second time for its spawn descriptor, and the parameter names of spawn
+  factories and controller constructors are introspected once per callable
+  instead of once per object: spawning 1000 agents takes 0.30 s instead of
+  0.36 s, as in v0.8.0. Each agent still keeps its own descriptor: a
+  controller that overrides `_construction_config()` should return a new dict
+  each call; its result is still deep-copied unless the class sets
+  `_construction_config_is_fresh = True`. That declaration is the class's
+  responsibility: the first spawn of each class only checks that two calls
+  return two dicts, and logs a warning and keeps copying if not. The
+  introspection cache holds its callables weakly and skips callables that
+  cannot be cached (an unhashable callable object, say).
+
+- The DataMonitor no longer costs more than the step in a large scene. Its
+  entity list is rebuilt only when an object is added, removed or renamed
+  (`SimObject.name` is now a property that tells the simulation), the list's
+  JSON is serialized once per change, and the file is written from its parts
+  without joining them into a new string. With the monitor window open,
+  `monitor_update_interval=None` now refreshes every 0.25 simulated seconds
+  instead of every step (the window reads the file every 0.5 s); without the
+  window it is still 1 s, and `0` is still every step. Each refresh builds
+  `last_monitor_frame` and writes the file.
+  While paused, a selection, follow or pause change and a single step
+  refresh at once; the final frame of a run is written, `close()` writes the
+  last state, and the new `flush_monitor()` does so on demand. `reset()`
+  empties the entity list. The JSON a reader sees is unchanged.
+  Median step time with 5000 static boxes and 20 moving agents (headless,
+  `target_rtf=0`, timestep 0.1, a 312 KB monitor file): 25.9 ms before with
+  the window flag on (a refresh every step), 0.84 ms now with the window
+  flag on (default, every 0.25 s), and 0.63 ms with the monitor off. A
+  refresh every step (`monitor_update_interval=0`) still writes the whole
+  file each step: 0.95 ms per step, about 0.3 ms per write on that scene.
 
 - `ControllerParams` takes either enum field -- `default_direction` and
   `goal_replacement` -- as the enum or its string value, on construction and
@@ -406,6 +500,12 @@ are not recommended for production use yet.
 - Keep replay input application and result capture in `ReplaySession`, without replay-specific mutation guards in ordinary simulation and Fleet APIs. Direct core calls are outside the recorded-input contract.
 
 ### Fixed
+
+- `REPLACE_NEXT` elevators: a request for the floor the moving cabin is
+  already heading to now drops the pending floor (`REPLACED`) instead of being
+  rejected and leaving it queued. A controller that changed its target and then
+  changed it back had the cabin leave for the abandoned floor right after
+  arriving, under a robot that was boarding.
 
 - `BatchDifferentialController` uses the agent's
   `controller_params.default_direction` for a path set without a direction, as
