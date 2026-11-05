@@ -22,7 +22,7 @@ modules as well as the stable user-facing API.
 |------|-----------------|----------|
 | Simulation and entities | `core_simulation`, `sim_object`, `agent`, `agent_manager` | `MultiRobotSimulationCore`, `SimulationParams`, `AgentSpawnParams` |
 | Controllers and actions | `controller`, `controllers`, `action` | `OmniController`, `DifferentialController`, action classes |
-| Fleet commands and state | `commands`, `fleet_api`, `states` | `FleetCommandDispatcher`, `FleetStateProvider`, command dataclasses |
+| Fleet commands and state | `commands`, `fleet_api`, `states`, `state_plane` | `FleetCommandDispatcher`, `FleetStateProvider`, `StatePlanePublisher`, `SharedStateReader` |
 | Events and plugins | `events`, `sim_plugin`, `agent_plugin`, `plugins` | `EventBus`, `SimPlugin`, `AgentPlugin` |
 | Worlds and models | `robot_models`, `sdf_loader`, `world_loader` | `resolve_model`, SDF/world loading helpers |
 | Devices and recording | `devices`, `recorder` | `Door`, `Elevator`, `SimulationRecorder` |

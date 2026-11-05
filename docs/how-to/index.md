@@ -19,6 +19,7 @@ Video capture in [Capturing Demos](capturing-demos) is a separate feature.
 | [Custom Profiling](custom-profiling) | Adding your own profiling metrics via Agent/SimulationCore subclasses |
 | [Capturing Demos](capturing-demos) | Recording demo videos, `demos.yaml` format, centralized defaults (`_defaults.py`) |
 | [Supported Kinematic Recording](supported-state-recording) | Development profile: record, restore and play back supported kinematic state |
+| [Shared-Memory State Plane](state-plane) | Publish every robot's state to other processes each step: writer, reader, delivery modes |
 
 **🔧 For PyBulletFleet Developers** — developing and debugging the framework:
 
@@ -40,6 +41,7 @@ controller-config
 custom-profiling
 capturing-demos
 supported-state-recording
+state-plane
 fleet-corridor-evaluation
 fleet-corridor-traffic-failure
 ```

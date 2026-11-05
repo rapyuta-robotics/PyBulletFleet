@@ -14,6 +14,14 @@ are not recommended for production use yet.
 
 ### Added
 
+- Shared-memory state plane (`pybullet_fleet.state_plane`): `StatePlanePublisher`
+  writes a snapshot of every agent (pose, velocity, moving flag, battery, names)
+  into a ring of slots in a `multiprocessing.shared_memory` segment after each
+  step, and `SharedStateReader` reads it from any process. `every_step` delivers
+  every snapshot to every reader (the writer waits for a slow reader up to
+  `wait_timeout`, then overwrites); `latest` never waits. Wakeups and
+  backpressure go through named pipes, so nobody busy-waits. Writing 1000 rows
+  costs about 20 us. `benchmark/state_plane_bench.py` measures it.
 - `MultiRobotSimulationCore.query_aabb(aabb_min, aabb_max)`: the objects whose
   AABB overlaps a box, looked up through the collision spatial hash, so the
   cost follows how crowded the box is rather than how many objects the
