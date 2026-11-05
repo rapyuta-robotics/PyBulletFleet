@@ -6,30 +6,48 @@
 ## Context
 
 PyBulletFleet は kinematics-first の大規模フリートシミュレータである。現状の定常状態
-(1000台が全台移動中、dt=0.1 s、衝突判定は毎ステップ、headless、ROS なし) の計測値は
-約 31-33 ms/step で、RTF は約 3.1-3.3x にとどまる (`prototype/steady_bench.py`)。
+(1000台が全台移動中、dt=0.1 s、衝突判定は毎ステップ、headless、ROS なし) の計測値は、
+#94 (broad phase の再設計) マージ後の `6ee451e` で 14.2 ms/step (RTF 7x)、#94 前の `6551125` で
+約 31-33 ms/step (RTF 3x) である (`benchmark/steady_bench.py`、P0 で追加)。
+全台が 1 個ずつ物体を運ぶと `6ee451e` でも 50.1 ms/step (2x) になる。
 
 既存の `benchmark/batch_perf.py` は、ロボットがゴールに着くと停止する構成のため、
 p50 は停止中、mean は移動中の区間を反映しており、定常状態の性能を示していない。
 
 ### 計測したコミット
 
-- **基準コミット:** upstream `6551125` (#86 まで。`rapyuta-robotics/PyBulletFleet` の `main` = `fa0c797` と同じツリー)。
-  本文書の行番号付きリンクはすべてこのコミットを指す。
-- 1000 台の計測値は 2026-10-27 に `6551125` で取り直した。10000 台の計測値と cProfile の内訳は
+- **基準コミット:** upstream `6ee451e` (2026-11-04 に [#94](https://github.com/yuokamoto/PyBulletFleet/pull/94) と
+  [#98](https://github.com/yuokamoto/PyBulletFleet/pull/98) がマージされた直後)。P0 の定常状態ベンチマーク
+  (`make bench-steady`) の値はこのコミットで 2026-11-05 に測った (3 回の中央値)。
+  行番号付きリンクは `6551125` の permalink のままである (コミット固定のリンクなので有効)。
+- 履歴: 1000 台の #94 前の値は 2026-10-27 に `6551125` (#86 まで) で測った。10000 台の計測値と cProfile の内訳は
   2026-10-26 に `9780808` (#72 ベース) で測ったものである。`9780808` → `6551125` で phase1 が
-  8-9 ms から 5.4-6.0 ms に下がった (#85 で batch controller の速度状態が配列になったため)。
-  それ以外のフェーズは変わっていない。
-- 計測時点で upstream には broad phase を変える [#94](https://github.com/yuokamoto/PyBulletFleet/pull/94) と、
-  その空間ハッシュに依存する [#98](https://github.com/yuokamoto/PyBulletFleet/pull/98) がオープンである。
-  #94 がマージされると collision_check のベースラインは下がる (#94 の計測では、半数移動の
-  現実的なシーンで 43 → 25 ms)。本計画との関係は「関連する upstream PR」の節を参照。
+  8-9 ms から 5.4-6.0 ms に下がり (#85 で batch controller の速度状態が配列になったため)、
+  `6551125` → `6ee451e` で collision_check が 18.7-19.6 ms から 1.8 ms に下がった (#94)。
 
-### 計測結果 (2026-10-27, `6551125`, WSL2, 16 cores, 1000 台, diff, batch controller, 2 回の範囲)
+### 計測結果 (2026-11-05, `6ee451e`, P0 の定常状態ベンチマーク, WSL2, diff, batch controller, 3 回の中央値)
+
+warmup 20 step の後の 150 step、step ごとの p50 の中央値。`docs/benchmarking/results.md` の
+"Steady-State Scenarios" と同じ値。
+
+| シーン | 台数 | 静的 | step p50 | RTF | phase1 (agent update) | pose flush | AABB / grid | collision | イベント |
+|---|---|---|---|---|---|---|---|---|---|
+| sparse (2 m グリッド、全台 +x) | 1000 | 0 | 14.2 ms | 7.0x | 6.1 ms | 2.0 ms | 3.7 ms | 1.8 ms | 0 |
+| dense (2 群が対向、margin 0.05 m、1 割停止) | 1000 | 0 | 13.0 ms | 7.7x | 5.4 ms | 1.9 ms | 3.2 ms | 2.0 ms | 開始 610 / 解消 610 |
+| carrying (全台が箱を 1 個アタッチ) | 1000 | 0 | 50.1 ms | 2.0x | 18.1 ms | 6.9 ms | 12.7 ms | 10.6 ms | 0 |
+| warehouse (床タイルとビンの間の通路) | 200 | 32,924 | 7.4 ms | 13.6x | 4.7 ms | 1.0 ms | 1.0 ms | 0.6 ms | 0 |
+| idle (sparse の配置、ゴールなし) | 1000 | 0 | 0.45 ms | 220x | 0.4 ms | 0 | 0 | 0.01 ms | 0 |
+
+#94 の後、1000 台移動で最大のフェーズは collision ではなく、per-object の agent update (6.1 ms)、
+AABB / grid の flush (3.7 ms)、pose flush (2.0 ms) である。アタッチした物体が 1 個あるだけで step が
+3.5 倍になる (14 → 50 ms): 子の pose 伝播がオブジェクト単位で走り、子が pose flush、AABB / grid、
+collision のすべてに加わるためである。対向交通 (15 sim 秒で 610 件の接触) は collision をほとんど増やさない。
+
+#### #94 前の内訳 (2026-10-27, `6551125`, 1000 台 sparse, 2 回の範囲)
 
 | フェーズ | mean | 主な処理 |
 |---|---|---|
-| collision_check | 18.7-19.6 ms | `filter_aabb_pairs` の Python による AABB 重なり判定ループ |
+| collision_check | 18.7-19.6 ms | `filter_aabb_pairs` の Python による AABB 重なり判定ループ (#94 で 1.8 ms に) |
 | phase1_update | 5.4-6.0 ms | `set_poses` の per-object ループ、`_apply_phase1` の per-agent ループ、全 Agent の `update()` |
 | phase3_aabb_grid_flush | 4.8-5.4 ms | per-object の `p.getAABB` と dict/set による空間グリッド更新 (グリッド更新が二重に走っている) |
 | phase2_pose_flush | 1.6-1.8 ms | per-object の `p.resetBasePositionAndOrientation` |
@@ -59,18 +77,18 @@ narrow phase (円判定) は候補ペアがほぼ空のまま走る。実装で�
 ### 倉庫型シーン: 少数の移動体と大量の静的ボディ (2026-10-30 計測)
 
 実運用のシーンは「移動するロボットは数百台、静的なボディ (床タイル、棚、ビン) は数万」という
-形になるので、`prototype/static_bench.py` で 200 台の移動ロボットと 32924 個の静的な箱
-(1 m グリッドの床タイル 23.5k + 奇数行の 3/4 に置いたビン 8.7k) を測った。ロボットは通路を
-走り、静的ボディとは z でも y でも重ならないので、衝突ペアはすべて broad phase だけで終わる。
+形になるので、200 台の移動ロボットと 32924 個の静的な箱 (1 m グリッドの床タイル 23.5k +
+奇数行の 3/4 に置いたビン 8.7k) を測った (P0 の `benchmark/steady_bench.py --scenario warehouse`)。
+ロボットは通路を走り、静的ボディとは z でも y でも重ならないので、衝突ペアはすべて broad phase だけで終わる。
 
 | | step (median) | collision | phase1 | AABB/grid | pose flush | spawn |
 |---|---|---|---|---|---|---|
-| 現行 `6551125` | 16.3-17.2 ms (6x) | 7.9-8.3 ms | 5.2-5.4 ms | 1.4 ms | 1.2 ms | 19 s |
-| #94 (`2ff0254`) | 6.2-6.3 ms (16x) | 0.5 ms | 3.8-4.0 ms | 0.8 ms | 0.8 ms | 16.5 s |
+| #94 前 `6551125` (2026-10-30, 2 回の範囲) | 16.3-17.2 ms (6x) | 7.9-8.3 ms | 5.2-5.4 ms | 1.4 ms | 1.2 ms | 19 s |
+| 基準 `6ee451e` (#94 入り, 2026-11-05, 3 回の中央値) | 7.4 ms (13.6x) | 0.6 ms | 4.7 ms | 1.0 ms | 1.0 ms | 16.8 s |
 | SoA + numpy (`prototype/soa_static.py`) | 0.8 ms (126x) | 0.75 ms | 0.04 ms | (含む) | - | - |
 
-- #94 は静的ボディが多いシーンで効く (collision 8 → 0.5 ms)。本計画が #94 を前提にする理由の一つ。
-- #94 の後に残る 3.8-4.0 ms の phase1 は、200 台しか動いていないのに 1000 台のときと同じ大きさで、
+- #94 は静的ボディが多いシーンで効く (collision 8 → 0.6 ms)。本計画が #94 を前提にする理由の一つ。
+- #94 の後に残る 4-5 ms の phase1 は、200 台しか動いていないのに 1000 台のときと同じ大きさで、
   `step_once()` の per-object ループが全 33k オブジェクトの `_needs_update` を毎ステップ見ているためである
   ([core_simulation.py#L4747](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/pybullet_fleet/core_simulation.py#L4747))。
   P3 の「Python の更新が必要なオブジェクトの集合だけを回す」で消える。
@@ -85,8 +103,8 @@ narrow phase (円判定) は候補ペアがほぼ空のまま走る。実装で�
 
 | PR | 状態 | 本計画との関係 |
 |---|---|---|
-| [#94](https://github.com/yuokamoto/PyBulletFleet/pull/94) broad phase の再設計 (margin で広げた AABB が届く全セルに登録し、自セルだけ探索) | open | **#94 を先にマージする。** P1 の配列 broad phase は #94 の意味論 (登録範囲、NORMAL_2D は z を広げない、STATIC の再登録、DISABLED の除外) をそのまま配列で再現し、parity テストの比較対象も #94 にする。#94 が入るとベースラインの collision_check は下がるが、P1 の目標値 (≤ 0.8 ms) は変わらない |
-| [#98](https://github.com/yuokamoto/PyBulletFleet/pull/98) `query_aabb()` (空間ハッシュで近傍探索) | open (#94 の上) | P1 で `_cached_spatial_grid` を消すので、`query_aabb()` は store の AABB 配列に対するベクトル化した重なり判定で提供する (N=10000 でも数十 µs)。「最後の step 以降に pose が書かれたオブジェクト」と DISABLED の扱いは #98 の仕様を保つ |
+| [#94](https://github.com/yuokamoto/PyBulletFleet/pull/94) broad phase の再設計 (margin で広げた AABB が届く全セルに登録し、自セルだけ探索) | merged 2026-11-04 (`89a88dd`) | P1 の配列 broad phase は #94 の意味論 (登録範囲、NORMAL_2D は z を広げない、STATIC の再登録、DISABLED の除外) をそのまま配列で再現し、parity テストの比較対象も #94 にする。#94 でベースラインの collision_check は 1000 台で 18.7-19.6 → 1.8 ms に下がった。P1 の目標値 (≤ 0.8 ms) は変えない |
+| [#98](https://github.com/yuokamoto/PyBulletFleet/pull/98) `query_aabb()` (空間ハッシュで近傍探索) | merged 2026-11-04 (`6ee451e`) | P1 で `_cached_spatial_grid` を消すので、`query_aabb()` は store の AABB 配列に対するベクトル化した重なり判定で提供する (N=10000 でも数十 µs)。「最後の step 以降に pose が書かれたオブジェクト」と DISABLED の扱いは #98 の仕様を保つ |
 | [#87](https://github.com/yuokamoto/PyBulletFleet/pull/87) `PathRequest` と、request の結末で終わる `MoveAction` | open | P3 の「到着イベント」は #87 の `PathRequestState` に載せる。batch カーネルが返す到着行を controller が request の FINISHED に変換し、`MoveAction` はそれで終わる。#87 が先に入る前提で P3 を書く |
 | [#96](https://github.com/yuokamoto/PyBulletFleet/pull/96) `ControllerParams.stop_on_collision` | merged (upstream `7c8f90b`) | batch controller が衝突結果を消費する。P1 以降、衝突結果は object_id の配列で controller に渡す |
 
@@ -95,7 +113,9 @@ narrow phase (円判定) は候補ペアがほぼ空のまま走る。実装で�
 1. 状態 (pose, velocity, AABB, grid cell) が `SimObject` / `Agent` の属性と core の
    dict/set に分散しており、どの処理もオブジェクト単位の Python ループになる。
 2. 衝突判定の broad phase がアルゴリズムとしては正しい (空間ハッシュ) が、
-   Python の dict/set とタプルで実装されている。
+   Python の dict/set とタプルで実装されている。#94 で 1000 台の collision は 1.8 ms まで下がり、
+   残る大きなコストは per-object の agent update (6.1 ms)、AABB / grid と pose の flush (5.7 ms)、
+   アタッチの per-object 伝播 (搬送で step が 3.5 倍) に移った。
 3. PyBullet へのミラー (pose flush, getAABB) が、GUI や PyBullet narrow phase を
    必要としない headless 実行でも全オブジェクトに対して毎ステップ走る。
 4. batch controller 管理下のエージェントも `Agent.update()` が毎ステップ呼ばれる。
@@ -255,8 +275,8 @@ PyBullet mirror (遅延同期)
 3. 密集・交差シナリオ (plan の P0 で定義) で、1000 台の mean が 4.0 ms/step 以下 (RTF 25x 以上)。
    この値は 50x の目標には含めないが、narrow phase とイベント処理が台数ではなく
    候補ペア数に比例することを確認するために置く。
-4. 搬送シナリオ (1000 台が 1 個ずつ運ぶ) で mean が 3.0 ms/step 以下。待機シナリオ (全台停止) で
-   現行の値 (約 0.37 ms/step) 以下。倉庫型シナリオ (200 台移動 + 約 33k 静的) で 2.0 ms/step 以下
+4. 搬送シナリオ (1000 台が 1 個ずつ運ぶ、現状 50.1 ms) で mean が 3.0 ms/step 以下。待機シナリオ (全台停止) で
+   現行の値 (0.45 ms/step) 以下。倉庫型シナリオ (200 台移動 + 約 33k 静的) で 2.0 ms/step 以下
    (numpy プロトタイプ 0.8 ms、#94 で 6.2 ms)。
 5. `make verify` が通る。衝突 parity テスト (イベント列と signed distance の一致)、
    `query_aabb` parity テスト、アーム + IK のテストが通る。

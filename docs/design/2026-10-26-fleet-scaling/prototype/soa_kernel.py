@@ -1,4 +1,4 @@
-"""SoA kernel prototype: same workload as steady_bench (N robots on 2m grid, all moving),
+"""SoA kernel prototype: same workload as the sparse scene of benchmark/steady_bench.py (N robots on 2m grid, all moving),
 diff-drive-ish forward motion with accel limit, AABB from pose, uniform-grid broad phase,
 circle narrow phase with margin. Pure numpy, one call per phase per step."""
 

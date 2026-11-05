@@ -1,9 +1,9 @@
 # Fleet Scaling — Implementation Plan
 
-**Date:** 2026-10-26 (2026-10-27 改訂: レビュー反映)
+**Date:** 2026-10-26 (2026-10-27 改訂: レビュー反映。2026-11-05 改訂: #94 後の基準値、P0 実装)
 **Status:** Draft (spec.md の Scope Approval 後に確定)
 **Spec:** [spec.md](spec.md)
-**基準コミット:** upstream `6551125` (行番号付きリンクはすべてこのコミット)
+**基準コミット:** upstream `6ee451e` (#94、#98 入り)。行番号付きリンクは `6551125` の permalink
 
 **Goal:**
 - コア単体: 1000 台・headless・衝突判定ありで RTF 50x 以上 (dt=0.1 で 2.0 ms/step 以下)。
@@ -15,26 +15,43 @@
 PyBullet は遅延同期のミラーにする。コストの大きいフェーズから順に置き換え、各 PR の後に
 定常状態ベンチマークで効果を確認する。
 
-**前提となる upstream PR:** #94 (broad phase) と #87 (PathRequest) を先にマージする。
-P1 は #94 の意味論を、P3 は #87 の request 状態を、それぞれ前提にする (spec の「関連する upstream PR」)。
+**前提となる upstream PR:** #94 (broad phase) と #98 (`query_aabb`) は 2026-11-04 にマージ済み。
+#87 (PathRequest) を P3 の前にマージする。P1 は #94 の意味論を、P3 は #87 の request 状態を、
+それぞれ前提にする (spec の「関連する upstream PR」)。
 
 ---
 
 ## 予算 (1000 台, 2.0 ms/step, 疎シナリオ)
 
-現状は `6551125` の 2026-10-27 の計測 (2 回の範囲)。
+現状は `6ee451e` (#94 入り) の 2026-11-05 の計測 (P0 の sparse シーン、3 回の中央値)。
+#94 前 (`6551125`) の値を括弧に残す。
 
 | フェーズ | 現状 | 目標 | 根拠 |
 |---|---|---|---|
-| collision (broad + narrow) | 18.7-19.6 ms | ≤ 0.8 ms | プロトタイプ 0.6-1.1 ms (#94 マージ後の現状値は取り直す) |
-| AABB / grid 更新 | 4.8-5.4 ms | ≤ 0.1 ms | AABB を pose から配列計算すれば、grid は broad phase 内で毎回作り直せる |
-| advance + Agent 更新 | 5.4-6.0 ms | ≤ 0.5 ms | カーネル 0.1-0.2 ms + イベント処理 |
-| pose flush (PyBullet) | 1.6-1.8 ms | ≈ 0 ms (headless) | 遅延ミラー |
+| collision (broad + narrow) | 1.8 ms (#94 前 18.7-19.6) | ≤ 0.8 ms | プロトタイプ 0.6-1.1 ms |
+| AABB / grid 更新 | 3.7 ms (4.8-5.4) | ≤ 0.1 ms | AABB を pose から配列計算すれば、grid は broad phase 内で毎回作り直せる |
+| advance + Agent 更新 | 6.1 ms (5.4-6.0) | ≤ 0.5 ms | カーネル 0.1-0.2 ms + イベント処理 |
+| pose flush (PyBullet) | 2.0 ms (1.6-1.8) | ≈ 0 ms (headless) | 遅延ミラー |
 | step の固定オーバーヘッド | 約 0.1 ms | ≤ 0.2 ms | `getConnectionInfo`、イベント emit など |
-| **合計** | **30.5-32.8 ms** | **≤ 2.0 ms** | 余裕 0.4 ms。プロトタイプにない static / mode 混在 / margin の処理をここで吸収する |
+| **合計** | **14.2 ms (7x)** (30.5-32.8) | **≤ 2.0 ms** | 余裕 0.4 ms。プロトタイプにない static / mode 混在 / margin の処理をここで吸収する |
 
+#94 の後は collision が最大のフェーズではない。残る 12 ms のうち、per-object の agent update が 6.1 ms、
+AABB / grid と pose の flush が 5.7 ms で、どちらも「オブジェクト単位の Python 処理」である。
+P1 (store と配列の flush) と P3 (per-object ループの除去) がこの 12 ms の対象になる。
 予算に余裕がないのは advance + Agent 更新である。Python の `Agent.update()` は 1 回約 1.4 µs
 なので、1000 台全員を毎ステップ呼ぶだけで 1.4 ms を使い切る。したがって P3 (イベント駆動化) は必須とする。
+
+## 予算 (1000 台, 搬送シナリオ, 3.0 ms/step)
+
+現状 (`6ee451e`): 50.1 ms (2.0x)。sparse の 3.5 倍で、子オブジェクト 1000 個が per-object に処理されている。
+
+| フェーズ | 現状 | 目標 | 根拠 |
+|---|---|---|---|
+| advance + Agent 更新 + 子の pose 伝播 | 18.1 ms | ≤ 0.7 ms | 子の pose は `parent_row` / `attach_offset` 列からカーネルが配列で計算する (P1) |
+| AABB / grid 更新 (親子 2000 体) | 12.7 ms | ≤ 0.2 ms | 配列計算 (P1) |
+| collision | 10.6 ms | ≤ 1.0 ms | 親子ペアの無視は候補ペアのマスク (P1)。候補は sparse の約 2 倍 |
+| pose flush (親子 2000 体) | 6.9 ms | ≈ 0 ms | 遅延ミラー (P2) |
+| **合計** | **50.1 ms** | **≤ 3.0 ms** | 余裕 1.1 ms |
 
 ## 予算 (1000 台, 密集・交差シナリオ, 4.0 ms/step)
 
@@ -55,9 +72,9 @@ max(sim 側, ブリッジ側) になる。予算も 2 本に分ける。
 
 | 項目 | 現状 | 目標 |
 |---|---|---|
-| step (コア) | 30.5-32.8 ms | ≤ 2 ms (上の予算) |
+| step (コア) | 14.2 ms (`6ee451e`) | ≤ 2 ms (上の予算) |
 | スナップショット書き込み (SoA → 共有メモリ) | なし (現状は in-process で `get_states` 約 6 ms + 構築約 3 ms) | ≤ 0.2 ms |
-| 合計 | 約 42 ms (2.4x 相当) | ≤ 2.5 ms |
+| 合計 | 約 23 ms (4.3x 相当) | ≤ 2.5 ms |
 
 **ブリッジ側 (ブリッジプロセス、1 publish あたり):**
 
@@ -94,35 +111,33 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 
 ### P0. 定常状態ベンチマークと計測基盤
 
-- `prototype/steady_bench.py` を `benchmark/` の正式なシナリオとして追加する
-  (`run_benchmark.py --type steady` など、既存 CLI に合わせる)。1000 台と 10000 台を計測対象にする。
-  `batch_perf._make_manager_and_agents` に依存しているので、公開関数 (`make_fleet()` など) に
-  改名してから使う。
-- シナリオは 2 つ用意する。
-  - **疎 (sparse):** 現行の steady_bench と同じ。2 m 間隔のグリッドを全台が +x に平行移動する。
-    AABB の重なりがほぼないので、broad phase とカーネルの固定費を測る。
-  - **密集・交差 (dense):** 2 群が対向してすれ違う (間隔 1 m、margin 0.05 m) のに加え、
-    1 割のロボットを停止させて他がその周りを通る。候補ペア、narrow phase の呼び出し、
-    `COLLISION_STARTED` / `COLLISION_ENDED` の数をステップあたりで記録する。
-    P4 の効果とイベント処理のコストはこのシナリオで測る。
-  - **搬送 (carrying):** 疎シナリオの全台がベースに 1 個ずつ物体をアタッチして移動する。倉庫での通常形
-    (ロボットがビンを運ぶ) で、現行では子オブジェクトの pose 伝播 (`_propagate_to_attached`、
+**実装済み (2026-11-05、ブランチ `perf/p0-steady-benchmark`、upstream `6ee451e` の上):**
+`benchmark/steady_bench.py` (ワーカー)、`run_benchmark.py --type steady` (`--scenario` / `--compare` /
+`--sweep` / `--warmup`、反復の中央値で集計)、`make bench-steady`、`batch_perf.py` のヘルパー公開
+(`make_sim` / `make_fleet` / `make_spawn_params` / `make_grid_params` / `make_manager`)、テスト 22 件、
+`docs/benchmarking/results.md` の "Steady-State Scenarios"。
+
+- シナリオ (全台を 200 m 先に送り、warmup 20 step の後の 150 step を測る。値は `6ee451e`、3 回の中央値):
+  - **疎 (sparse):** 2 m 間隔のグリッドを全台が +x に平行移動する。AABB の重なりがほぼないので、
+    broad phase とカーネルの固定費を測る。1000 台 14.2 ms (7.0x)。
+  - **密集・交差 (dense):** 2 群が 1 m 間隔の行で対向してすれ違う (margin 0.05 m)。1 割のロボットは
+    停止したまま障害物になる。`COLLISION_STARTED` / `COLLISION_ENDED` の数を計測窓で記録する。
+    P4 の効果とイベント処理のコストはこのシナリオで測る。1000 台 13.0 ms (7.7x)、接触 610 件。
+  - **搬送 (carrying):** 疎シナリオの全台がベースに 1 個ずつ箱をアタッチして移動する。倉庫での通常形
+    (ロボットがビンを運ぶ) で、子オブジェクトの pose 伝播 (`_propagate_to_attached`、
     [sim_object.py#L1412](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/pybullet_fleet/sim_object.py#L1412))
-    と子の AABB/grid 更新で phase 1-3 がほぼ倍になる。
-  - **倉庫 (warehouse):** 200 台が、1 m グリッドの床タイル 23.5k とビン 8.7k (計約 33k の静的な箱) の間の
-    通路を走る (`prototype/static_bench.py`)。静的ボディとは重ならないので broad phase の静的除外と、
-    per-object ループが静的ボディを舐めないことを測る。現状 16.3-17.2 ms、#94 で 6.2 ms、
-    numpy プロトタイプ 0.8 ms。
-  - **待機 (idle):** 1000 台が全台停止。現行は moved-only の差分判定で約 0.37 ms/step
-    (`ros2_bridge/PERFORMANCE.md` の "Core only")。P1 の配列 broad phase がこれより遅くならないことを見る。
+    と子の flush・衝突判定で step が 3.5 倍になる。1000 台 50.1 ms (2.0x)。
+  - **倉庫 (warehouse):** 200 台が、1 m グリッドの床タイル 23.5k とビン 8.7k (計 32,924 の静的な箱) の間の
+    通路を走る。静的ボディとは重ならないので broad phase の静的除外と、per-object ループが静的ボディを
+    舐めないことを測る。7.4 ms (13.6x)、#94 前は 16-17 ms、numpy プロトタイプ 0.8 ms。spawn 16.8 s。
+  - **待機 (idle):** 1000 台が全台停止。0.45 ms。P1 の配列 broad phase がこれより遅くならないことを見る。
 - 計測規約: 基準ホストは WSL2、warmup 20 steps、計測 150 steps × 3 回、中央値を採用。
-  出力は per-phase の mean と median の両方を出し、判定には 3 回の median を使う。
-- `docs/benchmarking/results.md` に現状のベースライン (spec の計測表) を記録する。
-  #94 がマージされたら、その直後のコミットで取り直す。
-- 2D OBB (SAT) の narrow phase を `prototype/soa_kernel.py` に追加し、密集シナリオでの
-  1 ペアあたりのコストを測って、上の予算表を確定する。
+  出力は per-phase の mean / median / p95 を出し、判定には 3 回の median を使う。
+- **残り:** 10000 台の sparse を同じ基盤で測る (現状 426 ms は `9780808` の値)。2D OBB (SAT) の
+  narrow phase を `prototype/soa_kernel.py` に追加し、密集シナリオでの 1 ペアあたりのコストを測って
+  密集シナリオの予算表を確定する。
 - **効果:** なし (計測の土台)。
-- **検証:** 3 回計測のばらつきを記録する。
+- **検証:** 3 回計測のばらつきを記録する (sparse の p50 は ±0.3 ms、倉庫は ±1.9 ms)。
 
 ### P1. SoA state store と配列ベースの衝突 broad phase
 
@@ -155,7 +170,8 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 - 衝突結果 (active pair の集合と、その差分) を object_id の配列で持ち、
   `stop_on_collision` (#96) など controller 側の消費もその配列で行う。
 - `_cached_aabbs_dict`、`_cached_spatial_grid`、`_cached_object_to_cell` を削除する。
-- **効果見込み:** collision と AABB/grid 更新で 24 ms → 2 ms 前後。
+- **効果見込み:** sparse で collision 1.8 + AABB/grid 3.7 → 1 ms 前後 (#94 後の値から)。
+  搬送では子の伝播と AABB/grid の配列化で 50 → 20 ms 前後 (残りは P2、P3 で落とす)。
 - **検証:** 衝突 parity テスト: スクリプト化したシーン (アタッチ/デタッチ、`CollisionMode` の変更、
   `set_collision_margin`、ignore filter、`physics: true` のボディを含む) で、#94 と
   `COLLISION_STARTED` / `COLLISION_ENDED` のイベント列 (ペアとステップ番号) と `signed_distance` が
@@ -183,7 +199,7 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 - `getAABB` を使う ROS サービス
   ([sim_services.py#L279](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/ros2_bridge/pybullet_fleet_ros/pybullet_fleet_ros/sim_services.py#L279))
   は、`body_id` アクセサ経由なので同期される。store の AABB を返す API に置き換えてもよい。
-- **効果見込み:** pose flush 1.6-1.8 ms → headless ではほぼ 0。
+- **効果見込み:** pose flush 2.0 ms (搬送 6.9 ms) → headless ではほぼ 0。
 - **follow-up (この PR には含めない):** headless でプリミティブ形状の静的ボディは Bullet にボディを作らない
   (`mirror: never` の行)。倉庫型シーンの spawn 16-19 s (ほぼ `createMultiBody`) と RSS を下げる。
   GUI や `collision_shape: pybullet` が後から必要になった行は、そのときにボディを作る。
@@ -229,7 +245,7 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
   `BatteryPlugin` は `on_batch_update` を実装し、`soc` / `is_charging` を配列で持つ。
   `FleetStateProvider` が読む `is_moving`、速度、`battery_soc`、`is_charging` は、
   すべて store か配列プラグインの列から一括で読めるようにする (P5a のスナップショットもここから作る)。
-- **効果見込み:** 5.4-6.0 ms → 0.5 ms 以下 (カーネル 0.27 ms + イベント処理)。
+- **効果見込み:** 6.1 ms (`6ee451e`、搬送では 18.1 ms) → 0.5 ms 以下 (カーネル 0.27 ms + イベント処理)。
   `MoveAction` 経由で全台を動かす構成でも同じ値になること。
 - **検証:** アクション、BT、プラグイン、ROS ブリッジのテスト。batch と per-agent で同じ軌跡になること。
   疎シナリオを `MoveAction` 経由 (BT と同じ経路) で動かした場合も予算内であること。
@@ -337,7 +353,8 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 
 ## 判断ポイント
 
-- **#94 マージ後 (P0 の途中):** ベースラインを取り直す。P1 の目標値は変えない。
+- **#94 マージ後 (P0 の途中):** ベースラインを取り直す。2026-11-05 に `6ee451e` で取り直し済み
+  (sparse 14.2 ms)。P1 の目標値は変えない。
 - **P0 の後:** 密集シナリオの OBB プロトタイプの数値で、narrow phase の予算 (≤ 1.5 ms) を確定する。
   届かなければ、円近似の適用範囲を広げる (箱の縦横比が 1.5 未満なら円) か、P6 を前倒しする。
 - **P1 の後:** 疎シナリオで collision + AABB が 2 ms 前後に下がっているか確認する。
@@ -382,17 +399,14 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 
 ## Prototype
 
-- `prototype/steady_bench.py`: 現行コアの定常状態ベンチマーク (疎シナリオ)
-  (`python3 docs/design/2026-10-26-fleet-scaling/prototype/steady_bench.py 1000 diff 60`)。
-  `benchmark/batch_perf.py` の private 関数に依存しているので、P0 で公開関数に置き換える。
+現行コアの計測スクリプト (`steady_bench.py`、`static_bench.py`) は P0 で `benchmark/steady_bench.py` に
+正式化したので、ここからは外した。
+
 - `prototype/soa_kernel.py`: 同じ負荷の SoA + numpy カーネル
   (`python3 docs/design/2026-10-26-fleet-scaling/prototype/soa_kernel.py 1000`)。
   円近似の narrow phase を使うため、PyBullet のメッシュ判定とは厳密には一致しない。
   出力は step ごとの中央値 (numba 版と同じ統計量)。
-- `prototype/static_bench.py`: 現行コアの倉庫型シーン (200 台移動 + 約 33k 静的な箱)
-  (`python3 docs/design/2026-10-26-fleet-scaling/prototype/static_bench.py 200 100`)。
-  #94 の計測は、その PR のツリーで同じスクリプトを走らせた。
-- `prototype/soa_static.py`: 同じシーンの SoA + numpy 版。静的ボディのセルキーは一度だけソートし、
+- `prototype/soa_static.py`: 倉庫型シーン (200 台移動 + 約 33k 静的な箱) の SoA + numpy 版。静的ボディのセルキーは一度だけソートし、
   毎ステップは移動体だけをキー付けして `searchsorted` で候補を引く
   (`python3 docs/design/2026-10-26-fleet-scaling/prototype/soa_static.py 200 100`)。
 - `prototype/numba_kernel.py`: 同じ負荷の Numba 版 (counting sort のグリッド + 並列の近傍探索)。

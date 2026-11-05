@@ -1,4 +1,4 @@
-"""SoA prototype of static_bench.py: N movers among M static boxes, pure numpy.
+"""SoA prototype of the warehouse scene of benchmark/steady_bench.py: N movers among M static boxes, pure numpy.
 
 Statics are keyed into the grid once (sorted cell keys). Each step re-keys only the movers,
 finds mover-static candidates by searchsorted into the static keys (3x3 neighbour cells)
