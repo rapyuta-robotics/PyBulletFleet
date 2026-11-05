@@ -21,7 +21,9 @@ are not recommended for production use yet.
   every snapshot to every reader (the writer waits for a slow reader up to
   `wait_timeout`, then overwrites); `latest` never waits. Wakeups and
   backpressure go through named pipes, so nobody busy-waits. Writing 1000 rows
-  costs about 20 us. `benchmark/state_plane_bench.py` measures it.
+  costs about 20 us; `collect_fleet_frame` gathers the agents' state as
+  columns (about 2 ms for 1000 agents). `benchmark/state_plane_bench.py`
+  measures it.
 - `MultiRobotSimulationCore.query_aabb(aabb_min, aabb_max)`: the objects whose
   AABB overlaps a box, looked up through the collision spatial hash, so the
   cost follows how crowded the box is rather than how many objects the
