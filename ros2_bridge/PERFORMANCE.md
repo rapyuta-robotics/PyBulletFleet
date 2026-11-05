@@ -81,7 +81,16 @@ hybrid overhead and compatibility debugging.
 
 Use `--target-rtf 0 --measure-rtf` when measuring the maximum observed RTF. The
 RTF value is computed from `/clock` simulation time over wall time after the
-command check has completed.
+command check has completed. By then the commanded robots have reached their
+goals, so the window measures an idle fleet. `--rtf-workload moving` instead
+sends every robot a goal `--moving-distance` metres away (500 m by default;
+rows of the spawn grid alternate direction) through `/fleet/navigate` right
+before the window, waits until every robot reports `is_moving`, and fails
+the check when the moving fraction in any `FleetState` of the window drops
+below `--min-moving-fraction` (95 %). The distance has to outlast the window
+at the measured RTF: at 10x, a 10 s window is 100 s of simulation, or 200 m
+at the template's 2 m/s. `docker/core_scale_rtf.py --moving-distance 500`
+runs the same workload without ROS for the core-only comparison.
 
 `timestep` is a core part of any RTF comparison. The current scale-check
 template does not override `simulation.timestep`, so it uses the PyBulletFleet
@@ -146,8 +155,11 @@ counts, and probe-match counts are not timings.
 | `fleet` | 1000 | none | 5 Hz | 1.0 | 0.027 s | 0.173 s | target-rate command check |
 | `fleet` | 1000 | none | 5 Hz | 0 | 0.550 s | 0.083 s | max RTF 10.98x (2026-09-01) |
 | `fleet` | 1000 | none | 10 Hz | 0 | 0.821 s | not verified | max RTF 4.28x (2026-11-05, baseline for the rows below) |
-| `fleet` + `--state-plane every_step` | 1000 | none | 10 Hz | 0 | 0.411 s | not verified | max RTF 16.70x, every snapshot published, 0.61 ms per publish (2026-11-05) |
-| `fleet` + `--state-plane latest` | 1000 | none | 10 Hz | 0 | 0.426 s | not verified | max RTF 17.11x (2026-11-05) |
+| `fleet` + `--state-plane every_step` | 1000 | none | 10 Hz | 0 | 0.214 s | not verified | max RTF 28.95x, every snapshot published, 0.68 ms per publish (2026-11-05) |
+| `fleet` + `--state-plane latest` | 1000 | none | 10 Hz | 0 | 0.217 s | not verified | max RTF 32.56x (2026-11-05) |
+| `fleet`, `--rtf-workload moving` | 1000 | none | 10 Hz | 0 | 0.744 s | 0.122 s | max RTF 2.71x with all 1000 robots moving (2026-11-05) |
+| `fleet` + `--state-plane every_step`, `--rtf-workload moving` | 1000 | none | 10 Hz | 0 | 0.214 s | 0.068 s | max RTF 5.14x with all 1000 robots moving (2026-11-05) |
+| `fleet` + `--state-plane latest`, `--rtf-workload moving` | 1000 | none | 10 Hz | 0 | 0.220 s | 0.072 s | max RTF 5.03x with all 1000 robots moving (2026-11-05) |
 | `per_robot` | 1000 | `state_publishers,tf,command_topics` | 5 Hz | 0 | publish 0.217 s | 0/1000 in 60 s | max RTF 0.64x |
 | `per_robot` | 100 | `state_publishers,tf,command_topics` | 5 Hz | 0 | publish 0.056 s | 15.033 s | 100/100 moved |
 | `hybrid` | 1000 | `state_publishers,tf,command_topics` | 5 Hz | 0 | fleet ack 7.998 s; per-robot publish 0.220 s | not verified | max RTF 0.30x |
@@ -321,6 +333,30 @@ Reproduce the core-only row with `docker/core_scale_rtf.py` and the generated
 scale YAML. For the bridge-only row, run `test_fleet_scale.sh` with
 `--command-interface none --no-state-subscription --measure-rtf`; omit
 `--no-state-subscription` for the subscribed row.
+
+The same comparison with every robot moving (2026-11-05, 1,000 `simple_cube`,
+`timestep=0.1`, `target_rtf=0`, `publish_rate=10`, `--rtf-workload moving`
+and `core_scale_rtf.py --moving-distance 500`, one wall-clock second of
+warm-up and a ten second window; the bridge cases have one `/fleet/states`
+subscriber):
+
+| Case | Observed RTF | Approx. step time | Increment over core-only |
+|------|-------------:|------------------:|-------------------------:|
+| Core only, moving | 5.66x | 17.7 ms | baseline |
+| Fleet bridge, in-process state, moving | 2.71x | 36.9 ms | 19.2 ms |
+| Fleet bridge, `--state-plane every_step`, moving | 5.14x | 19.5 ms | 1.8 ms |
+| Fleet bridge, `--state-plane latest`, moving | 5.03x | 19.9 ms | 2.2 ms |
+
+With every robot moving, the state plane costs the stepping thread about 2 ms per
+step over core-only (1.10x): that is `collect_fleet_frame`, which still reads
+each agent's pose, velocity, flags and battery one agent at a time (2 ms for
+1000 agents, down from 3.3 ms before its columns were gathered as lists and
+converted once). The shared-memory write and the ROS node residency are below
+0.1 ms together. The in-process path costs 19 ms per step at this publish
+rate, because `FleetState` is built and serialized on the stepping thread for
+every step. The remaining 2 ms goes away once the core keeps the fleet state in
+arrays and the frame is a slice of them; until then the state plane is 1.10x
+of core-only on a moving fleet, not the 1.05x the scaling plan asks for.
 
 ### Same-Host Conclusion
 

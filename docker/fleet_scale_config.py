@@ -43,6 +43,17 @@ def _parse_groups(raw: str) -> set[str]:
     return groups
 
 
+def moving_workload_direction(index: int, robot_count: int) -> float:
+    """Sign of the x travel of robot ``index`` in the moving RTF workload.
+
+    Rows of the spawn grid alternate direction, so every robot keeps moving
+    for the whole measurement while neighbouring rows pass each other and the
+    collision broad phase sees a changing set of candidate pairs.
+    """
+    side = int(math.ceil(math.sqrt(robot_count)))
+    return -1.0 if (index // side) % 2 else 1.0
+
+
 def _default_template() -> Path:
     for path in DEFAULT_TEMPLATE_CANDIDATES:
         if path.exists():

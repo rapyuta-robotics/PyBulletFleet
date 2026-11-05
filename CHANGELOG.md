@@ -14,6 +14,13 @@ are not recommended for production use yet.
 
 ### Added
 
+- `docker/test_fleet_scale.sh --rtf-workload moving` (and
+  `fleet_scale_check.py`): measure the maximum RTF with every robot moving.
+  The checker sends each robot a goal `--moving-distance` metres away (rows
+  alternate direction) just before the RTF window and fails when fewer than
+  `--min-moving-fraction` of the robots are moving in any `FleetState` of the
+  window. `docker/core_scale_rtf.py --moving-distance` runs the same workload
+  without ROS for the core-only comparison.
 - ROS 2 bridge: `state_plane` config section and the `state_publisher` node.
   With `state_plane.enabled`, the bridge writes each step's fleet state to the
   shared-memory plane instead of building `FleetState` on the stepping thread,
@@ -22,7 +29,8 @@ are not recommended for production use yet.
   arrays (byte for byte what rclpy serializes, 0.05 ms for 1000 robots
   instead of about 11 ms), so one publish costs about 0.6 ms with the DDS
   write. At 1000 robots the scale check's maximum RTF goes from 4.3-4.9x to
-  16.7x with every snapshot delivered. `bridge.launch.py state_publisher:=true`
+  29x idle with every snapshot delivered, and from 2.7x to 5.1x with every
+  robot moving (core-only: 5.7x). `bridge.launch.py state_publisher:=true`
   starts both processes; `docker/test_fleet_scale.sh --state-plane every_step|latest`
   measures them.
 - Shared-memory state plane (`pybullet_fleet.state_plane`): `StatePlanePublisher`

@@ -35,6 +35,8 @@ MANAGER_COUNT=0
 MANAGER_SUBSCRIPTION_MODE=complete
 RTF_WARMUP=1.0
 RTF_DURATION=10.0
+RTF_WORKLOAD=idle
+MOVING_DISTANCE=500.0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -152,6 +154,14 @@ while [ "$#" -gt 0 ]; do
             ;;
         --rtf-duration)
             RTF_DURATION="$2"
+            shift 2
+            ;;
+        --rtf-workload)
+            RTF_WORKLOAD="$2"
+            shift 2
+            ;;
+        --moving-distance)
+            MOVING_DISTANCE="$2"
             shift 2
             ;;
         --config-out)
@@ -318,7 +328,10 @@ if [ "$VERIFY_MOTION" = false ]; then
     CHECK_ARGS+=(--no-verify-motion)
 fi
 if [ "$MEASURE_RTF" = true ]; then
-    CHECK_ARGS+=(--measure-rtf --rtf-warmup "$RTF_WARMUP" --rtf-duration "$RTF_DURATION")
+    CHECK_ARGS+=(
+        --measure-rtf --rtf-warmup "$RTF_WARMUP" --rtf-duration "$RTF_DURATION"
+        --rtf-workload "$RTF_WORKLOAD" --moving-distance "$MOVING_DISTANCE"
+    )
 fi
 if [ "$MEASURE_TRANSPORT" = true ]; then
     CHECK_ARGS+=(--measure-transport --transport-warmup "$RTF_WARMUP" --transport-duration "$RTF_DURATION")

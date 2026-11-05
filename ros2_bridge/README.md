@@ -296,7 +296,7 @@ the bridge writes each step's fleet state to shared memory (about 20 µs for
 `state_publisher` process reads it and publishes `/clock` and `/fleet/states`.
 The publisher serializes the message straight from the arrays
 (`FleetStateEncoder`, checked byte for byte against rclpy's serialization in
-the tests) and hands the bytes to the publisher, which takes about 0.6 ms per
+the tests) and hands the bytes to the publisher, which takes about 0.7 ms per
 1000-robot message including the DDS write. The bridge then publishes neither
 `/clock` nor `/fleet/states` itself; manager-scoped state streams and
 per-robot topics are unchanged.
@@ -307,10 +307,27 @@ Measured with `docker/test_fleet_scale.sh --robots 1000 --publish-rate 10
 | State publishing | Max RTF | Delivered |
 |------------------|---------|-----------|
 | in-process (default) | 4.3-4.9x | every snapshot |
-| `--state-plane every_step` | 16.7x | every snapshot (publisher 0.6 ms each) |
-| `--state-plane latest` | 17.1x | newest snapshot; none skipped at this rate |
+| `--state-plane every_step` | 29.0x | every snapshot (publisher 0.7 ms each) |
+| `--state-plane latest` | 32.6x | newest snapshot; none skipped at this rate |
 
-At this point the simulation step, not the publishing, sets the RTF.
+At this point the simulation step, not the publishing, sets the RTF: the
+step is about 3 ms, of which 2 ms is collecting the frame from the agents
+(see the core how-to on the state plane).
+
+Those rows are an idle fleet. `--rtf-workload moving` sends every robot a
+goal 500 m away (rows alternate direction) just before the RTF window and
+fails the check if fewer than 95 % of the robots are moving in any
+`FleetState` of the window, so the step includes agent updates and
+collision checks for the whole fleet. `docker/core_scale_rtf.py
+--moving-distance 500` runs the same workload without ROS, for the
+comparison:
+
+| State publishing (1000 robots moving) | Max RTF | Step time | Over core-only |
+|---------------------------------------|---------|-----------|----------------|
+| core only (no ROS) | 5.66x | 17.7 ms | baseline |
+| in-process (default) | 2.71x | 36.9 ms | 19.2 ms |
+| `--state-plane every_step` | 5.14x | 19.5 ms | 1.8 ms |
+| `--state-plane latest` | 5.03x | 19.9 ms | 2.2 ms |
 
 ```yaml
 state_plane:

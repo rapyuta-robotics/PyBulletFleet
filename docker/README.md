@@ -655,6 +655,22 @@ docker compose run --rm --no-deps \
     --command-interface fleet_topic --publish-rate 5 --measure-transport --measure-rtf \
     --fleet-topic-repeats 10
 
+# Measure the maximum RTF with every robot moving instead of an idle fleet. The
+# checker sends each robot a goal 500 m away (--moving-distance) right before
+# the RTF window and fails if fewer than 95% of the robots are moving during it.
+# Add --state-plane every_step|latest to publish the state from a second process.
+docker compose run --rm --no-deps \
+  -v "$(pwd):/docker:ro" \
+  bridge bash /docker/test_fleet_scale.sh --robots 1000 --interface-mode fleet \
+    --publish-rate 10 --target-rtf 0 --measure-rtf --rtf-workload moving
+
+# The same workload without ROS, for the core-only comparison.
+docker compose run --rm --no-deps \
+  -v "$(pwd):/docker:ro" \
+  bridge bash -c 'python3 /docker/fleet_scale_config.py --robots 1000 --target-rtf 0 \
+    --config-out /tmp/scale.yaml && python3 /docker/core_scale_rtf.py /tmp/scale.yaml \
+    --duration 10 --moving-distance 500'
+
 # Compare manager-scoped state streams. "selective" subscribes to one manager;
 # "complete" subscribes to all of them. These are state-only checks, so the
 # helper suppresses its normal navigation command automatically.
