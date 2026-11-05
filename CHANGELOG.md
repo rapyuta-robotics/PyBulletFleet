@@ -14,6 +14,75 @@ are not recommended for production use yet.
 
 ### Added
 
+- Per-axis collision clearance (#105): `collision_margin` (in
+  `SimulationParams`, YAML and `set_collision_margin()`) also takes an
+  `(x, y, z)` triple, one clearance per world axis, for example
+  `(0.05, 0.05, 0.0)` to report bodies within 5 cm side by side but not one
+  passing close under a shelf. The triple acts on AABBs: a pair is a
+  candidate only if its AABBs, each axis enlarged by that axis's clearance,
+  overlap. `CLOSEST_POINTS` and `HYBRID` then judge the candidate by its
+  straight-line gap, querying `getClosestPoints()` with the largest component.
+  So `(m, m, m)` is the same as `m`, and `(m, m, 0)` reports exactly what
+  `CollisionMode.NORMAL_2D` with `m` did, for every pair. A scalar margin
+  behaves and costs as before; `CONTACT_POINTS` ignores the clearance as
+  before. A margin change, through the setter or `params`, rechecks
+  stationary pairs as a scalar change does.
+
+- `MultiRobotSimulationCore.query_aabb(aabb_min, aabb_max)`: the objects whose
+  AABB overlaps a box, looked up through the collision spatial hash, so the
+  cost follows how crowded the box is rather than how many objects the
+  simulation holds. Objects with collision `DISABLED` are tested directly, as
+  the hash does not track them; inside a step, a pose written but not yet
+  flushed is answered with the AABB the object had when the step began.
+  `MultiRobotSimulationCore.pickable_candidates_near(position, radius)`: the
+  same lookup for a search by base origin, which also covers pickable objects
+  whose shape is set far off their origin.
+  `SimObject.find_nearest_pickable()` and an `Elevator`'s passenger scan now
+  use them: in a scene of 22,000 static tiles, `find_nearest_pickable()` went
+  from about 55 ms to 0.02 ms, with the same result.
+
+- `Agent.set_joint_position(joint, position)`: put a joint at a position at
+  once, without moving it there, as `set_pose()` does for the base. The
+  position becomes the joint's target and any profile speed is dropped, so the
+  joint stays there; objects attached to the links follow, and the body counts
+  as moved for the next collision check. With physics on, `max_force` (default
+  500, as in `set_joint_target`) holds it there. A position outside the URDF
+  limits is applied with a warning; a fixed joint is refused with one.
+
+- `Agent.set_joints_positions(positions)`: the same for several joints, taking
+  a list for every joint or a dict by name or index, as `set_joints_targets`
+  does. Attached objects follow once, after all of them are placed.
+
+- `Elevator.request_floor(floor, instant=True)`: the cabin is at the floor at
+  once with its passengers aboard, instead of riding there; the next update
+  observes the arrival and releases them as after any trip. Accepted also
+  while the cabin is moving, whatever the request policy: the cabin is put at
+  the new floor with the passengers of its trip, the pending requests are
+  dropped, and the result is `REDIRECTED`.
+  `ElevatorMotionAdapter.begin_motion` takes the matching `instant` flag,
+  passed only when a request asks for it.
+
+- `ElevatorRequestPolicy.REDIRECT`: a request received while the cabin is
+  moving turns it toward the new floor at once, with its passengers, and drops
+  any pending floor, so the latest request wins (`ElevatorRequestResult.REDIRECTED`).
+  For controllers that retarget a car in motion instead of waiting for it to
+  arrive first.
+
+- `ElevatorParams.boarding_height` (default 1.0, the previous fixed value):
+  how far above the platform's top an object may be and still be attached
+  when the cabin starts moving. Keep it below the floor spacing; with 1.0 and
+  floors 0.6 m apart, a robot waiting on the floor above the cabin was taken
+  along and arrived 0.6 m above the floor it was carried to. `Elevator.from_params`
+  warns when it reaches the smallest floor spacing.
+
+- `ControllerParams.stop_on_collision`: an agent that sets it stops dead, as
+  `stop()` does, on the step a collision starts that involves it or an object
+  attached to it (a carried load stops its carrier), instead of driving or
+  braking on past the point of contact. A contact with its own attached
+  object does not count, and an agent struck while it stands is left alone.
+  Off by default; per agent, through a fleet's
+  controller config, or for every agent with `PBF_CONTROLLER_STOP_ON_COLLISION`.
+
 - `Agent.brake()`: come to rest at `max_linear_decel` along the current line of
   motion, keeping the heading and dropping the rest of the path, for
   omnidirectional and differential-drive agents (per-agent and batched) under
@@ -50,6 +119,80 @@ are not recommended for production use yet.
   checkpoint proof's record version 3.
 
 ### Changed
+
+- `ignore_attached_collision` now covers every object on one attachment tree,
+  not only a direct parent and child: two loads on one carrier and a load on a
+  load no longer count as colliding, the same rule `stop_on_collision` uses.
+
+- Setting a goal on a moving agent is cheaper: the check whether the agent
+  can continue into it and the trajectory it then follows share one solve
+  instead of solving the same trajectory twice, and the differential heading
+  computation avoids a generic cross product. Per goal, 5-45% less time
+  across per-agent and batched, omnidirectional and differential controllers
+  (`benchmark/experiments/goal_replacement_cost.py`).
+
+- The ROS 2 bridge Docker images build from the Open-RMF demos image pinned
+  by digest (`RMF_DEMOS_IMAGE` build argument) instead of the nightly
+  `jazzy-rmf-latest` tag, whose rebuilds changed the demo worlds' model URIs
+  and broke the Fuel model cache stage. The Fuel model download now always
+  creates the cache directory and fails with an explanation when the image has
+  no demo worlds or the worlds name no Fuel models (the latter can be allowed
+  with `ALLOW_NO_FUEL_MODELS=1`).
+
+- Spawning an agent no longer copies the controller's construction config a
+  second time for its spawn descriptor, and the parameter names of spawn
+  factories and controller constructors are introspected once per callable
+  instead of once per object: spawning 1000 agents takes 0.30 s instead of
+  0.36 s, as in v0.8.0. Each agent still keeps its own descriptor: a
+  controller that overrides `_construction_config()` should return a new dict
+  each call; its result is still deep-copied unless the class sets
+  `_construction_config_is_fresh = True`. That declaration is the class's
+  responsibility: the first spawn of each class only checks that two calls
+  return two dicts, and logs a warning and keeps copying if not. The
+  introspection cache holds its callables weakly and skips callables that
+  cannot be cached (an unhashable callable object, say).
+
+- The DataMonitor no longer costs more than the step in a large scene. Its
+  entity list is rebuilt only when an object is added, removed or renamed
+  (`SimObject.name` is now a property that tells the simulation), the list's
+  JSON is serialized once per change, and the file is written from its parts
+  without joining them into a new string. With the monitor window open,
+  `monitor_update_interval=None` now refreshes every 0.25 simulated seconds
+  instead of every step (the window reads the file every 0.5 s); without the
+  window it is still 1 s, and `0` is still every step. Each refresh builds
+  `last_monitor_frame` and writes the file.
+  While paused, a selection, follow or pause change, a pose edited from the
+  GUI or set by user code (`set_pose()` outside a step), and a single step
+  refresh at once; the final frame of a run is written, `close()` writes the
+  last state, and the new `flush_monitor()` does so on demand, also after a
+  pose set outside a step. Such a pose does not recompute collisions: contact
+  counts (`active_collisions`) stay as of the last step until the simulation
+  steps again. `reset()` empties the entity list. The JSON a reader sees is
+  unchanged.
+  Median step time with 5000 static boxes and 20 moving agents (headless,
+  `target_rtf=0`, timestep 0.1, a 312 KB monitor file): 25.9 ms before with
+  the window flag on (a refresh every step), 0.84 ms now with the window
+  flag on (default, every 0.25 s), and 0.63 ms with the monitor off. A
+  refresh every step (`monitor_update_interval=0`) still writes the whole
+  file each step: 0.95 ms per step, about 0.3 ms per write on that scene.
+
+- Collision broadphase: every collision body is registered in every
+  spatial-hash cell its AABB, enlarged by half the collision margin (not in z
+  for a NORMAL_2D body), touches, and a moved body's candidates are the bodies
+  sharing one of its cells -- no 9- or 27-cell neighbour search. Two bodies
+  within the margin always share a cell, so no pair within it is missed,
+  whatever the bodies' sizes, their collision modes (NORMAL_2D, NORMAL_3D,
+  STATIC) or the margin, 0 included (#89). The grid is rebuilt whenever the
+  effective margin changes, also when `params.collision_margin` or
+  `params.collision_detection_method` is assigned directly. `multi_cell_threshold`
+  is accepted, no longer used, and a value other than the default raises a
+  DeprecationWarning. Each moved body updates the grid once per step (physics
+  bodies were updated twice), a body switched to STATIC is re-registered, and
+  a DISABLED body that moves is no longer put in the grid. 1000 batch agents,
+  half moving, a collision check every step, automatic cell size, robots
+  0.35 x 0.57 m with bins and static scenery: NORMAL_2D 18.3 ms per step
+  (48.2 ms before, 29.3 ms in v0.8.0), NORMAL_3D 18.4 ms (56.8 ms, 32.2 ms),
+  NORMAL_2D with static collisions counted 25.0 ms (88.4 ms, 43.0 ms).
 
 - `ControllerParams` takes either enum field -- `default_direction` and
   `goal_replacement` -- as the enum or its string value, on construction and
@@ -404,8 +547,98 @@ are not recommended for production use yet.
 - Move the traffic-experiment GUI camera closer and allow arrow-key panning in
   PBF's interactive camera controller.
 - Keep replay input application and result capture in `ReplaySession`, without replay-specific mutation guards in ordinary simulation and Fleet APIs. Direct core calls are outside the recorded-input contract.
+- `SimObject.create_shared_shapes()` called without `physics_client_id` emits a
+  `DeprecationWarning`. It still falls back to PyBullet's default client (0),
+  which is the wrong client when more than one simulation runs in the process;
+  pass `physics_client_id=sim_core.client`. The fallback will be removed in a
+  future release. `load_urdf_body()` (unreleased) and the internal
+  `_create_body_from_shapes()` now require `physics_client_id`.
+
+### Deprecated
+
+- `CollisionMode.NORMAL_2D` is deprecated and will be removed in a future
+  release (#104). It differs from `NORMAL_3D` only in giving a pair with a
+  `NORMAL_2D` body no collision clearance on the z axis, which matters only
+  with `CLOSEST_POINTS` or `HYBRID` and a non-zero `collision_margin`. Setting
+  it still works but emits a `FutureWarning`, from spawn parameters
+  (including `from_dict()` and config `collision_mode: normal_2d`), object
+  constructors and `set_collision_mode()`. A `FutureWarning`, not a
+  `DeprecationWarning`, so that it is shown by default wherever the call is,
+  not only in the script being run. The warning points at the calling line
+  outside the package, so Python's default filter shows it once per line
+  however many objects that line spawns. Spawning from spawn parameters with
+  `from_params()` or the grid spawners does not warn a second time for the
+  spawned object, but it warns when the parameters were changed to
+  `NORMAL_2D` after they were built, and `NORMAL_2D` objects spawned meanwhile by an overridden
+  `from_mesh()` / `from_urdf()`, a controller or a plugin warn as usual (#129).
+  Use `NORMAL_3D`; the only difference is that near misses
+  within the clearance above or below are reported. To keep no z clearance,
+  also set `collision_margin=(m, m, 0)` (#105): it reports what `NORMAL_2D`
+  did, for every pair rather than only pairs with a `NORMAL_2D` body; the
+  warning says so. The replay v1 profile
+  keeps its `NORMAL_2D` robots, without a warning, so recorded runs replay
+  unchanged, and restoring a state recording rebuilds its `NORMAL_2D` bodies
+  without a warning. User-facing examples, configs and guides now use `NORMAL_3D`;
+  the collision-mode demo and benchmark keep `NORMAL_2D` and note the
+  deprecation, and the design plans under `docs/design/` are left as written.
 
 ### Fixed
+
+- An active `CLOSEST_POINTS` (or kinematic `HYBRID`) pair with a `NORMAL_2D`
+  body now resolves once the bodies no longer overlap in z, as a pair in that
+  position is not reported in the first place. It stayed active while their
+  straight-line gap was within `collision_margin`. The same holds for an
+  axis with a smaller clearance in a per-axis `collision_margin` (#105). A
+  scalar margin with `NORMAL_3D` bodies is unaffected.
+
+- `SimulationParams` rejects a negative or non-finite scalar
+  `collision_margin` with `ValueError`, as `set_collision_margin()` and a
+  per-axis triple already did. It was accepted, and the broad phase then
+  clamped it to 0 while `getClosestPoints` got the negative distance. A bad
+  margin assigned to `params.collision_margin` directly raises the same
+  `ValueError` when the next collision check starts, before it changes the
+  active pairs.
+
+- `import pybullet_fleet` works where the `tkinter` package is present but the
+  Tk library is not (for example a `python:*-slim` container image without
+  `tk`): importing `tkinter` there raises `ImportError`, which was not caught,
+  so the package failed to import even with the monitor off. Without Tk, a
+  headless simulation no longer logs anything about it; asking for the monitor
+  window logs why it is unavailable and falls back to writing the monitor file,
+  at the refresh rate of a run without the window. The standalone
+  `python -m pybullet_fleet.data_monitor` exits with that warning instead of
+  waiting for a window that never opens.
+
+- The monitor window on a host with Tk but no display (no `DISPLAY`, as on a
+  CI runner or an SSH session): `DataMonitor.start()` printed a `TclError`
+  traceback from the monitor thread and kept `enable_gui` and `running` set,
+  so the simulation refreshed the monitor file at the window rate. It now logs
+  why the window could not open and falls back to writing the monitor file, at
+  the refresh rate of a run without the window. `start()` waits (up to 5 s)
+  for the monitor thread to try to open the window, so `enable_gui` tells
+  whether one opened when it returns. The standalone
+  `python -m pybullet_fleet.data_monitor` exits with that warning.
+  `DataMonitor.stop()` called while the window is open no longer hangs: it
+  closed the window with Tk calls from the calling thread, which wait for the
+  Tk thread and never returned once its main loop had ended. It now asks the
+  Tk thread to close the window and waits up to 3 s for it to end, logging a
+  warning if it does not.
+
+- `Agent.from_mesh()` creates its shapes and body on the simulation's physics
+  client, as `SimObject.from_mesh()` does; it used PyBullet's default client,
+  so with a second client connected (two simulations in one process, or a
+  client left open) the agent's body landed on the wrong one. The mesh-shape
+  cache behind `create_shared_shapes()` is now kept per physics client, so it
+  no longer hands a shape created on one client to another. A client's entries
+  are dropped when its simulation connects, resets and closes, because PyBullet
+  reuses a client id after a disconnect and `resetSimulation()` removes the
+  shapes; a later simulation on the same id used to get bodies with no geometry.
+
+- `REPLACE_NEXT` elevators: a request for the floor the moving cabin is
+  already heading to now drops the pending floor (`REPLACED`) instead of being
+  rejected and leaving it queued. A controller that changed its target and then
+  changed it back had the cabin leave for the abandoned floor right after
+  arriving, under a robot that was boarding.
 
 - `BatchDifferentialController` uses the agent's
   `controller_params.default_direction` for a path set without a direction, as

@@ -173,7 +173,7 @@ benchmark/
 │   ├── README.md
 │   ├── collision_methods_config_based.py
 │   ├── collision_method_comparison.py
-│   └── collision_mode_comparison.py   # NORMAL_3D vs NORMAL_2D vs DISABLED
+│   └── collision_mode_comparison.py   # NORMAL_3D vs NORMAL_2D (deprecated) vs DISABLED
 │
 └── archive/                           # Deprecated tools (superseded scripts)
 ```

@@ -31,9 +31,9 @@ cat docs/spatial_hash_cell_size_modes.md
 Broad Phase: Spatial Hash Grid — O(N) filtering
   │
   ├── Objects hashed into cells by AABB
-  ├── Only check pairs in same/neighboring cells
-  ├── Incremental: only re-hash moved objects (_moved_this_step)
-  └── Multi-cell: large objects span multiple cells
+  ├── Each body in every cell its AABB (+ margin/2) touches
+  ├── Only check pairs sharing a cell (no neighbour search)
+  └── Incremental: only re-hash moved objects (_moved_this_step)
   │
   ▼
 Narrow Phase: PyBullet API — per-pair verification
@@ -47,18 +47,20 @@ Narrow Phase: PyBullet API — per-pair verification
 
 | Entity Type | Recommended Mode | Why |
 |------------|-----------------|-----|
-| Ground mobile robot | `NORMAL_2D` | Z-axis irrelevant, 9 vs 27 neighbors |
-| Flying drone / 3D robot | `NORMAL_3D` | Full 3D detection needed |
+| Mobile robot, drone, any moving body | `NORMAL_3D` | Default; the clearance applies on every axis |
 | Wall / shelf / structure | `STATIC` | Never moves → skip AABB/grid updates |
 | Visual marker / helper | `DISABLED` | Exclude from collision entirely |
 | Carried object (during pick) | `DISABLED` | Parent agent handles collision |
 | Conveyor belt surface | `STATIC` | Structure doesn't move |
 
+`NORMAL_2D` (no clearance in z) is deprecated and emits a `FutureWarning`; use `NORMAL_3D`, with
+`collision_margin: [m, m, 0]` if no pair should get z clearance (it reports what `NORMAL_2D` did, for every pair).
+
 ```python
 from pybullet_fleet.types import CollisionMode
 
 # Set at spawn
-params = AgentSpawnParams(collision_mode=CollisionMode.NORMAL_2D, ...)
+params = AgentSpawnParams(collision_mode=CollisionMode.NORMAL_3D, ...)
 
 # Change at runtime
 obj.set_collision_mode(CollisionMode.DISABLED)
@@ -85,7 +87,7 @@ obj.set_collision_mode(CollisionMode.DISABLED)
 | Fixed cell size | `spatial_hash_cell_size` | (auto) | 2× median object extent. Too small → many cells, too large → many objects per cell |
 | Check frequency | `collision_check_frequency` | null (every step) | null=every step, 0=disabled, N=Hz. 10Hz usually sufficient |
 | Ignore static | `ignore_static_collision` | true | Skip static-static pairs |
-| Multi-cell threshold | `multi_cell_threshold` | 1.5 | Objects >1.5× cell size span multiple cells |
+| Multi-cell threshold | `multi_cell_threshold` | 1.5 | Accepted for compatibility; not used |
 
 ## Diagnostic Flowcharts
 
@@ -94,7 +96,7 @@ obj.set_collision_mode(CollisionMode.DISABLED)
 ```
 Collision not detected?
 ├── Is CollisionMode DISABLED?
-│   └── YES → Change to NORMAL_2D/3D
+│   └── YES → Change to NORMAL_3D
 ├── Is <collision> geometry defined in URDF?
 │   └── NO → Add <collision> element
 ├── Is collision_check_frequency = 0?
@@ -117,8 +119,6 @@ Detecting collision when objects aren't touching?
 │   └── Decrease to 0.01 - 0.02
 ├── Is <collision> geometry larger than <visual>?
 │   └── Shrink collision geometry to match visual
-├── Using NORMAL_2D but objects at different Z heights?
-│   └── Switch to NORMAL_3D
 └── AABB overlap without actual geometric contact?
     └── Expected with spatial hash — narrow phase should filter
 ```
@@ -131,8 +131,6 @@ Collision too slow?
 │   └── What % of step time is collision_check?
 ├── Can objects be STATIC or DISABLED?
 │   └── Mark non-moving objects as STATIC
-├── Can NORMAL_3D be NORMAL_2D?
-│   └── Ground robots don't need 3D checking
 ├── Is collision_check_frequency too high?
 │   └── Try 10 Hz instead of every step
 ├── Is cell size appropriate?

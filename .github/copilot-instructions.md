@@ -120,7 +120,7 @@ params = AgentSpawnParams(
     initial_pose=Pose.from_xyz(0, 0, 0.1),
     motion_mode=MotionMode.OMNIDIRECTIONAL,
     max_linear_vel=2.0,
-    collision_mode=CollisionMode.NORMAL_2D,
+    collision_mode=CollisionMode.NORMAL_3D,
 )
 agent = Agent.from_params(params, sim)
 sim.register_callback(my_callback, frequency=1.0)

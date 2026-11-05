@@ -67,7 +67,7 @@ cat pybullet_fleet/__init__.py
 | `MotionMode` | OMNIDIRECTIONAL, DIFFERENTIAL | Agent navigation |
 | `MovementDirection` | FORWARD, BACKWARD | Differential drive |
 | `ActionStatus` | NOT_STARTED, IN_PROGRESS, COMPLETED, FAILED, CANCELLED | Action system |
-| `CollisionMode` | NORMAL_3D, NORMAL_2D, STATIC, DISABLED | Per-object collision |
+| `CollisionMode` | NORMAL_3D, STATIC, DISABLED (NORMAL_2D is deprecated) | Per-object collision |
 | `CollisionDetectionMethod` | CLOSEST_POINTS, CONTACT_POINTS, HYBRID | Narrow-phase |
 | `SpatialHashCellSizeMode` | CONSTANT, AUTO_ADAPTIVE, AUTO_INITIAL | Broad-phase cell sizing |
 
@@ -105,7 +105,7 @@ params = AgentSpawnParams(
     initial_pose=Pose.from_xyz(0, 0, 0.1),
     motion_mode=MotionMode.OMNIDIRECTIONAL,
     max_linear_vel=2.0,
-    collision_mode=CollisionMode.NORMAL_2D,
+    collision_mode=CollisionMode.NORMAL_3D,
 )
 ```
 

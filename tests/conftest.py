@@ -7,6 +7,7 @@ import pybullet as p
 import pybullet_data
 import pytest
 
+from pybullet_fleet._monitor_frames import MonitorFrames
 from pybullet_fleet.data_monitor import DataMonitor
 from pybullet_fleet.events import EventBus
 from pybullet_fleet.sim_object import SimObject
@@ -43,6 +44,8 @@ class MockSimCore:
         self._in_step: bool = False
         self._pending_pose_ids: set = set()
         self._link_attachment_parent_ids: set[int] = set()
+        # A pose set outside a step marks the monitor window behind.
+        self._monitor_frames: MonitorFrames = MonitorFrames()
 
     @property
     def client(self) -> int:

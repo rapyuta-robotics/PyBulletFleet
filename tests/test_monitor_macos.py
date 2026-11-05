@@ -87,6 +87,8 @@ def test_non_mac_monitor_keeps_threaded_startup(monkeypatch, platform):
     monitor.enable_gui = True
     monitor._start_process = Mock()
     thread_factory = Mock()
+    # The thread would report its window attempt; start() waits for that.
+    thread_factory.return_value.start.side_effect = lambda: monitor._window_attempted.set()
     monkeypatch.setattr(data_monitor.threading, "Thread", thread_factory)
 
     _start_monitor(monitor)

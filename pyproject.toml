@@ -137,6 +137,10 @@ addopts = [
     "--strict-config",
     "--cov=pybullet_fleet",
 ]
+# A test that sets NORMAL_2D must say so (pytest.warns or a filter).
+filterwarnings = [
+    "error:CollisionMode.NORMAL_2D is deprecated:FutureWarning",
+]
 
 [tool.coverage.run]
 source = ["pybullet_fleet"]

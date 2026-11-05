@@ -52,8 +52,8 @@ enable_time_profiling: false
 # Performance Optimization Settings
 # ========================================
 
-# 2D collision optimization is now per-object via CollisionMode enum
-# (CollisionMode.NORMAL_2D = 9 neighbors, CollisionMode.NORMAL_3D = 27 neighbors)
+# Collision mode is per object via the CollisionMode enum (default NORMAL_3D;
+# NORMAL_2D is deprecated)
 
 # ========================================
 # Logging Settings

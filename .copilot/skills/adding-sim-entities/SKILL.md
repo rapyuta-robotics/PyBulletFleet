@@ -65,7 +65,7 @@ params = AgentSpawnParams(
     max_linear_accel=5.0,
     max_angular_vel=3.0,
     max_angular_accel=10.0,
-    collision_mode=CollisionMode.NORMAL_2D,  # ground robot
+    collision_mode=CollisionMode.NORMAL_3D,
     use_fixed_base=False,
 )
 ```
@@ -93,7 +93,7 @@ your_robot:
   urdf_path: "robots/your_robot.urdf"
   max_linear_vel: 2.0
   motion_mode: "omnidirectional"
-  collision_mode: "normal_2d"
+  collision_mode: "normal_3d"
 ```
 
 Map new params in `SimulationParams.from_dict()` if needed.

@@ -142,7 +142,7 @@ def _make_sim(
                         initial_pose=Pose.from_xyz(x, y, _ROBOT_Z),
                         mass=0.0,
                         pickable=False,
-                        collision_mode=CollisionMode.NORMAL_2D,
+                        collision_mode=CollisionMode.NORMAL_3D,
                         controller={
                             "type": "omni",
                             "navigation_2d": True,
@@ -517,7 +517,7 @@ def run_policy(
                 "tasks": len(tasks),
                 "corridor_x": [-_CORRIDOR_HALF_LENGTH, _CORRIDOR_HALF_LENGTH],
                 "corridor_inner_y": [-_CORRIDOR_INNER_HALF_WIDTH, _CORRIDOR_INNER_HALF_WIDTH],
-                "robot_collision_mode": "normal_2d",
+                "robot_collision_mode": "normal_3d",
                 "collision_detection_method": "closest_points",
                 "collision_check_frequency": "every_step",
                 "physics": False,

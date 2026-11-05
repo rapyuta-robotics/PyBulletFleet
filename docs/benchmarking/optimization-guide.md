@@ -103,8 +103,7 @@ of `1 / f` simulation seconds.
 
 Set `collision_mode` per entity:
 
-- `normal_2d` for ground-constrained entities;
-- `normal_3d` for full 3D motion;
+- `normal_3d` for moving entities (`normal_2d` is deprecated);
 - `static` for fixed structures;
 - `disabled` only when an object must not participate in collision detection.
 
@@ -118,8 +117,8 @@ If collision is dominant, inspect `collision_breakdown` from
 - `auto_adaptive`: recalculate when objects are added or removed;
 - `constant`: use a measured fixed `spatial_hash_cell_size`.
 
-`multi_cell_threshold` controls when large objects occupy multiple cells.
-Choose cell size and threshold against the representative scene.
+Every body occupies each cell it reaches, so the cell size alone sets the
+trade-off: choose it against the representative scene.
 
 See [Collision Configuration](../how-to/collision-config) and
 [Collision Internals](../architecture/collision-internals).

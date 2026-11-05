@@ -88,7 +88,7 @@ def main():
             urdf_path="robots/mobile_robot.urdf",
             initial_pose=Pose.from_xyz(3, 0, 0.1),
             controller={"type": "omni", "max_linear_vel": 2.0},
-            collision_mode=CollisionMode.NORMAL_2D,
+            collision_mode=CollisionMode.NORMAL_3D,
         ),
         sim_core=sim,
     )

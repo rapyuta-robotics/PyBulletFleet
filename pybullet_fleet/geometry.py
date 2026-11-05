@@ -837,6 +837,15 @@ class Path:
 # ============================================================================
 
 
+def cross3(a: Sequence[float], b: Sequence[float]) -> np.ndarray:
+    """``np.cross`` for two 3-vectors, with the same arithmetic.
+
+    ``np.cross`` handles arbitrary shapes and broadcasting, and that overhead
+    dominated goal setting for differential drive; this is the plain formula.
+    """
+    return np.array([a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]])
+
+
 def _normalize_quat(quat: Quat) -> Quat:
     """Normalize a quaternion to unit length.
 

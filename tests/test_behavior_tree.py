@@ -167,7 +167,7 @@ def test_worker_tree_drives_an_agent_on_the_simulation_thread():
             collision_shape=ShapeParams(shape_type="box", half_extents=[0.15, 0.15, 0.4]),
             pose=Pose.from_xyz(0.0, 0.0, 0.4),
             controller={"type": "omni", "max_linear_vel": 1.0},
-            collision_mode=CollisionMode.NORMAL_2D,
+            collision_mode=CollisionMode.NORMAL_3D,
             sim_core=sim,
         )
         tree = WorkerBehaviorTree.from_file(

@@ -7,17 +7,25 @@ import copy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Tuple, Union
 import logging
+import warnings
 
 import pybullet as p
 
 from .geometry import Pose
 from .logging_utils import get_lazy_logger, get_named_lazy_logger
-from .types import CollisionMode
+from .types import (
+    CollisionMode,
+    _normal_2d_warning_already_given,
+    _spawning_from_warned_params,
+    _warn_if_new_object_is_normal_2d,
+    _warn_if_normal_2d,
+)
 from .tools import resolve_link_index
 from pybullet_fleet._defaults import SIM_OBJECT as _OBJ_D, SHAPE as _SHP_D
 from pybullet_fleet.config_utils import forward_spawn_params as _forward_spawn_params
 
 if TYPE_CHECKING:
+    from pybullet_fleet.core_simulation import MultiRobotSimulationCore
     from pybullet_fleet.events import EventBus
 
 # Standard logger for info/warning/error
@@ -103,6 +111,11 @@ class ShapeParams:
         return dataclass_from_dict(cls, d)
 
 
+def _physics_client_of(sim_core: Optional["MultiRobotSimulationCore"]) -> int:
+    """The PyBullet client a body for ``sim_core`` belongs on: its own, or the default (0) with no simulation."""
+    return sim_core.client if sim_core is not None else 0
+
+
 class LoadedUrdf(NamedTuple):
     """What both ``from_urdf`` factories need out of a loaded URDF."""
 
@@ -119,7 +132,7 @@ def load_urdf_body(
     mass: Optional[float] = None,
     use_fixed_base: bool = True,
     global_scaling: float = 1.0,
-    physics_client_id: int = 0,
+    physics_client_id: int,
 ) -> LoadedUrdf:
     """Load a URDF and settle the three things both factories need from it.
 
@@ -254,6 +267,13 @@ class SimObjectSpawnParams:
     # AgentSpawnParams and ElevatorParams, which inherit them -- is unchanged.
     urdf_path: Optional[str] = None
 
+    def __post_init__(self):
+        """Warn about a deprecated collision mode."""
+        _warn_if_normal_2d(self.collision_mode)
+        # Not a field: from_params() reads it to tell whether NORMAL_2D was set
+        # here (warned, or deliberately silenced) or assigned afterwards.
+        self._normal_2d_warned = self.collision_mode is CollisionMode.NORMAL_2D
+
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "SimObjectSpawnParams":
         """Create SimObjectSpawnParams from a configuration dictionary.
@@ -357,7 +377,7 @@ class SimObject:
         body_id: PyBullet body ID
         mass: Object mass in kg
         pickable: Whether this object can be picked by robots
-        collision_mode: Collision detection mode (NORMAL_3D, NORMAL_2D, STATIC, DISABLED)
+        collision_mode: Collision detection mode (NORMAL_3D, STATIC, DISABLED; NORMAL_2D is deprecated)
         user_data: Dictionary for custom metadata (default: empty dict)
     """
 
@@ -400,7 +420,8 @@ class SimObject:
 
         self.attached_objects: List["SimObject"] = []
         self.callbacks: List[dict] = []
-        self.pickable = pickable
+        self._pickable = pickable
+        _warn_if_new_object_is_normal_2d(self, collision_mode)
         self.collision_mode = collision_mode  # Collision detection mode
 
         # User-extensible data storage (custom metadata)
@@ -410,7 +431,7 @@ class SimObject:
         # Note: Unlike object_id, name is NOT unique - multiple objects can share the same name.
         # For programmatic lookup/search, use object_id instead.
         # Examples: "LeftRobot_1", "Pallet_A", "Obstacle_Wall"
-        self.name: Optional[str] = name
+        self._name: Optional[str] = name
 
         # Per-entity EventBus (lazy — created on first .events access)
         self._events: Optional["EventBus"] = None
@@ -516,6 +537,35 @@ class SimObject:
         """Fast check: True if per-entity EventBus has been created."""
         return self._events is not None
 
+    @property
+    def name(self) -> Optional[str]:
+        """Human-readable name; duplicates allowed (use ``object_id`` to look up)."""
+        return self._name
+
+    @name.setter
+    def name(self, value: Optional[str]) -> None:
+        self._name = value
+        # The monitor caches the entity list and rebuilds it only on a change.
+        note = getattr(getattr(self, "sim_core", None), "_note_monitor_entities_changed", None)
+        if callable(note):
+            note()
+
+    def _attachment_root(self) -> "SimObject":
+        """The object at the top of this one's attachment chain (itself when not attached).
+
+        A load carried on a load carried by an agent has that agent as its
+        root. A cycle cannot be built through ``attach_object``; the walk
+        stops at the first repeated object anyway.
+        """
+        if self._attached_to is None:
+            return self  # most objects; this runs for every candidate pair
+        obj: SimObject = self
+        seen = {id(obj)}
+        while obj._attached_to is not None and id(obj._attached_to) not in seen:
+            obj = obj._attached_to
+            seen.add(id(obj))
+        return obj
+
     def set_name(self, name: Optional[str]) -> None:
         """
         Set the object name and update the log prefix accordingly.
@@ -550,13 +600,14 @@ class SimObject:
         cls,
         visual_shape: Optional[ShapeParams] = None,
         collision_shape: Optional[ShapeParams] = None,
-        physics_client_id: int = 0,
+        physics_client_id: Optional[int] = None,
     ) -> Tuple[int, int]:
         """
         Create shared visual and collision shapes for fast object spawning.
 
-        This method caches mesh shapes by their parameters, so multiple objects with
-        identical mesh parameters will reuse the same PyBullet shape IDs.
+        This method caches mesh shapes by their parameters and physics client, so
+        multiple objects with identical mesh parameters on one client will reuse the
+        same PyBullet shape IDs.
 
         Note: Primitive shapes (box, sphere, cylinder) are NOT cached, as PyBullet
         handles them very efficiently and caching adds unnecessary overhead.
@@ -564,7 +615,11 @@ class SimObject:
         Args:
             visual_shape: ShapeParams for visual geometry
             collision_shape: ShapeParams for collision geometry
-            physics_client_id: PyBullet physics client ID
+            physics_client_id: PyBullet physics client the shapes are created
+                on; pass the simulation's ``sim_core.client``. Leaving it out
+                is deprecated: it falls back to PyBullet's default client (0)
+                with a ``DeprecationWarning``, which is the wrong client when
+                more than one simulation runs in the process.
 
         Returns:
             (visual_id, collision_id) tuple
@@ -585,6 +640,15 @@ class SimObject:
                 physics_client_id=sim_core.client
             )
         """
+        if physics_client_id is None:
+            warnings.warn(
+                "create_shared_shapes() without physics_client_id uses PyBullet's default client (0); "
+                "pass physics_client_id=sim_core.client. The default will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            physics_client_id = 0
+
         # Only cache mesh shapes (primitives are cheap to create)
         visual_needs_cache = visual_shape and visual_shape.shape_type == "mesh"
         collision_needs_cache = collision_shape and collision_shape.shape_type == "mesh"
@@ -593,7 +657,8 @@ class SimObject:
         if visual_needs_cache or collision_needs_cache:
             visual_key = cls._shape_params_to_key(visual_shape) if visual_needs_cache else "none"
             collision_key = cls._shape_params_to_key(collision_shape) if collision_needs_cache else "none"
-            shape_key = f"v:{visual_key}_c:{collision_key}"
+            # A shape id is only valid on the client that created it.
+            shape_key = f"{cls._shared_shapes_prefix(physics_client_id)}v:{visual_key}_c:{collision_key}"
 
             # Check cache
             if shape_key in cls._shared_shapes:
@@ -621,6 +686,24 @@ class SimObject:
             cls._shared_shapes[shape_key] = (visual_id, collision_id)
 
         return visual_id, collision_id
+
+    @staticmethod
+    def _shared_shapes_prefix(physics_client_id: int) -> str:
+        return f"client:{physics_client_id}_"
+
+    @classmethod
+    def _forget_shared_shapes(cls, physics_client_id: int) -> None:
+        """Drop the cached shapes of one physics client.
+
+        The cache is keyed by client id, but PyBullet reuses an id after
+        ``p.disconnect()``, and ``p.resetSimulation()`` removes a client's
+        shapes while keeping its id. Either way the cached ids now name
+        nothing, or a different shape, on that client. The simulation calls
+        this when it connects, resets and closes its client.
+        """
+        prefix = cls._shared_shapes_prefix(physics_client_id)
+        for key in [key for key in cls._shared_shapes if key.startswith(prefix)]:
+            del cls._shared_shapes[key]
 
     @staticmethod
     def _shape_params_to_key(shape: ShapeParams) -> str:
@@ -750,7 +833,8 @@ class SimObject:
         collision_id: int,
         pose: Pose,
         mass: float = 0.0,
-        physics_client_id: int = 0,
+        *,
+        physics_client_id: int,
     ) -> int:
         """
         Create a PyBullet multibody from pre-created visual and collision shapes.
@@ -827,8 +911,7 @@ class SimObject:
         if pose is None:
             pose = Pose.from_xyz(0.0, 0.0, 0.0)
 
-        # Get physics client ID from sim_core
-        physics_client_id = sim_core.client if sim_core is not None else 0
+        physics_client_id = _physics_client_of(sim_core)
 
         # Use create_shared_shapes() to get or create cached shapes
         visual_id, collision_id = cls.create_shared_shapes(
@@ -857,16 +940,17 @@ class SimObject:
         )
         # Keep the effective factory inputs for declared kinematic checkpoint
         # handlers. Direct body-id construction remains unsupported.
-        obj._checkpoint_spawn_params = SimObjectSpawnParams(
-            name=name,
-            visual_shape=copy.deepcopy(visual_shape),
-            collision_shape=copy.deepcopy(collision_shape),
-            initial_pose=copy.deepcopy(pose),
-            mass=mass,
-            pickable=pickable,
-            collision_mode=collision_mode,
-            user_data=dict(user_data) if user_data else {},
-        )
+        with _normal_2d_warning_already_given():  # __init__ above already warned
+            obj._checkpoint_spawn_params = SimObjectSpawnParams(
+                name=name,
+                visual_shape=copy.deepcopy(visual_shape),
+                collision_shape=copy.deepcopy(collision_shape),
+                initial_pose=copy.deepcopy(pose),
+                mass=mass,
+                pickable=pickable,
+                collision_mode=collision_mode,
+                user_data=dict(user_data) if user_data else {},
+            )
         if sim_core is not None:
             record_spawn = getattr(sim_core, "_record_state_spawn", None)
             if record_spawn is not None:
@@ -940,7 +1024,7 @@ class SimObject:
             mass=mass,
             use_fixed_base=use_fixed_base,
             global_scaling=global_scaling,
-            physics_client_id=sim_core.client if sim_core is not None else 0,
+            physics_client_id=_physics_client_of(sim_core),
         )
         if name is None:
             name = loaded.name
@@ -956,17 +1040,18 @@ class SimObject:
         )
         # Keep the complete effective construction for future declared URDF
         # handlers. The built-in kinematic profile still rejects URDF objects.
-        obj._checkpoint_spawn_params = _UrdfSpawnDescriptor(
-            urdf_path=loaded.path,
-            name=name,
-            initial_pose=copy.deepcopy(pose) if pose is not None else Pose.from_xyz(0.0, 0.0, 0.0),
-            mass=loaded.mass,
-            pickable=pickable,
-            collision_mode=collision_mode,
-            user_data=dict(user_data) if user_data else {},
-            use_fixed_base=use_fixed_base,
-            global_scaling=global_scaling,
-        )
+        with _normal_2d_warning_already_given():  # __init__ above already warned
+            obj._checkpoint_spawn_params = _UrdfSpawnDescriptor(
+                urdf_path=loaded.path,
+                name=name,
+                initial_pose=copy.deepcopy(pose) if pose is not None else Pose.from_xyz(0.0, 0.0, 0.0),
+                mass=loaded.mass,
+                pickable=pickable,
+                collision_mode=collision_mode,
+                user_data=dict(user_data) if user_data else {},
+                use_fixed_base=use_fixed_base,
+                global_scaling=global_scaling,
+            )
         if sim_core is not None:
             record_spawn = getattr(sim_core, "_record_state_spawn", None)
             if record_spawn is not None:
@@ -1021,7 +1106,7 @@ class SimObject:
         from pybullet_fleet.robot_models import resolve_model
 
         resolved_path = resolve_model(sdf_path)
-        pid = sim_core._client if sim_core is not None else 0
+        pid = _physics_client_of(sim_core)
 
         # Determine name prefix from filename if not provided
         if name_prefix is None:
@@ -1102,14 +1187,15 @@ class SimObject:
             obj = SimObject.from_params(params, sim_core)
         """
         factory = cls.from_urdf if spawn_params.urdf_path is not None else cls.from_mesh
-        return factory(
-            **_forward_spawn_params(
-                factory,
-                spawn_params,
-                aliases={"initial_pose": "pose"},
-                extra_kwargs={"sim_core": sim_core},
+        with _spawning_from_warned_params(cls, spawn_params):
+            return factory(
+                **_forward_spawn_params(
+                    factory,
+                    spawn_params,
+                    aliases={"initial_pose": "pose"},
+                    extra_kwargs={"sim_core": sim_core},
+                )
             )
-        )
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any], sim_core=None) -> "SimObject":
@@ -1158,9 +1244,10 @@ class SimObject:
             # Disable collision
             obj.set_collision_mode(CollisionMode.DISABLED)
 
-            # Enable 2D collision
-            obj.set_collision_mode(CollisionMode.NORMAL_2D)
+            # Enable collision again
+            obj.set_collision_mode(CollisionMode.NORMAL_3D)
         """
+        _warn_if_normal_2d(mode)
         if self.collision_mode == mode:
             return  # No change
 
@@ -1314,7 +1401,7 @@ class SimObject:
             self._log.warning(
                 "Attempting to move static object. "
                 "Static objects (CollisionMode.STATIC) should not be moved. "
-                "If this object needs to move, change collision_mode to NORMAL_3D/NORMAL_2D."
+                "If this object needs to move, change collision_mode to NORMAL_3D."
             )
             return False
 
@@ -1393,6 +1480,10 @@ class SimObject:
         # Notify sim_core if movement detected
         if moved and self.sim_core is not None:
             self.sim_core._mark_object_moved(self.object_id)
+            # Outside a step (paused, or a program that stopped stepping) no
+            # step follows to refresh the monitor window. Read only while
+            # paused and on flush; collision state stays as of the last step.
+            self.sim_core._monitor_frames.pose_edited()
 
             # Update AABB and spatial grid immediately for kinematic objects (optimization)
             # Physics objects are updated in step_once() to batch PyBullet calls
@@ -1690,6 +1781,20 @@ class SimObject:
             "relative_orientation": list(self._attach_offset.orientation),
         }
 
+    @property
+    def pickable(self) -> bool:
+        """Whether another object may attach this one (pick it up)."""
+        return self._pickable
+
+    @pickable.setter
+    def pickable(self, value: bool) -> None:
+        self._pickable = value
+        # The core tracks where pickable objects' origins lie off their shape
+        # (for find_nearest_pickable); a change of the flag starts or ends that.
+        on_change = getattr(self.sim_core, "_on_pickable_changed", None)
+        if on_change is not None:
+            on_change(self)
+
     def is_attached(self) -> bool:
         """
         Check if this object is attached to another object.
@@ -1706,6 +1811,12 @@ class SimObject:
         searches from this object's current position with the standard
         ``pickable and not attached`` filter.
 
+        Distance is measured from each object's base origin, as before. The
+        candidates come through the collision spatial hash, so the cost follows
+        how crowded the search area is rather than how many objects the
+        simulation holds; objects whose shape sits far off their origin are
+        tracked separately and are still found.
+
         Args:
             search_radius: Maximum search distance in metres (default: 1.0)
 
@@ -1717,9 +1828,14 @@ class SimObject:
         if self.sim_core is None:
             return None
 
+        # Only the objects whose origin may be near enough to qualify. A core
+        # without the lookup (a stand-in in tests) gets the full scan.
+        position = self.get_pose().position
+        near = getattr(self.sim_core, "pickable_candidates_near", None)
+        nearby = near(position, search_radius) if near is not None else self.sim_core.sim_objects
         return tools.find_nearest(
-            self.sim_core.sim_objects,
-            position=self.get_pose().position,
+            nearby,
+            position=position,
             search_radius=search_radius,
             predicate=lambda o: o.pickable and not o.is_attached(),
             exclude=self,
