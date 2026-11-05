@@ -321,8 +321,10 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
   (3.10-3.12 は `resource_tracker.register` を一時的に無効化、3.13 以降は `track=False`)。
   `unregister()` は、writer と tracker を共有するプロセス (同一プロセス、spawn した子) で writer 側の
   unlink を壊すため。
-- `collect_fleet_frame()` は現状 agent を 1 台ずつ走査する (1000 台で約 1 ms)。P3 で store の列から
-  直接作る形に置き換える。
+- `collect_fleet_frame()` は現状 agent を 1 台ずつ走査する。行ごとに numpy へ代入していた形
+  (1000 台で 3.3 ms) を、列ごとにリストで集めて 1 回で変換する形 (2 ms) にした (`d15b89f`)。残りは
+  属性の読み出しそのもの (pose、velocity のコピー、battery plugin の検索) で、P3 で store の列から
+  直接作る形に置き換えるまでこれ以上は下がらない。
 - **計測 (`benchmark/state_plane_bench.py`):** 書き込み単体 1000 行 19 µs、10000 行 41 µs。別プロセスの
   reader 1 つ (every_step) 付きでは reader のコピー時間 (0.15 ms / 0.9 ms) に律速される。
 - **検証 (済):** 書き込み中のスロットを返さないこと、コピー中に上書きされたら読み直すこと、`every_step` で欠番が
@@ -360,14 +362,34 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
   | 状態配信 | max RTF | 配信 |
   |---|---|---|
   | in-process (現行) | 4.3-4.9x | 全スナップショット |
-  | `--state-plane every_step` | 16.7x | 全スナップショット (1 publish 0.61 ms) |
-  | `--state-plane latest` | 17.1x | 最新のみ (この速度では欠落なし) |
+  | `--state-plane every_step` | 16.7x → 29.0x (`collect_fleet_frame` 改善後) | 全スナップショット (1 publish 0.7 ms) |
+  | `--state-plane latest` | 17.1x → 32.6x (同上) | 最新のみ (この速度では欠落なし) |
 
   この時点で律速は publish ではなく sim の step になった。
-- **検証 (済):** ブリッジ単体テスト 199 件 (Docker)、`docker/test_bridge_api.sh` PASSED (state plane なしの既定構成)。
-  **未:** 受け入れ条件 6 の「1000 台全台移動・衝突判定毎ステップ」での RTF (scale checker は静止ワークロードなので、
-  移動ワークロードの手順を足す)。`latest` モードでコアの step が ROS なしの 1.05 倍以内であることの確認。
-- **ブリッジを C++ にする判断:** 不要になった。rclpy + `FleetStateEncoder` で 1 publish 0.6 ms なので、
+- **移動ワークロードの計測 (受け入れ条件 6 の条件、2026-11-05、`21c2419`):** scale checker の RTF 窓は
+  コマンド検証の後に開くので、それまでの「max RTF」はすべて静止した fleet の値だった。
+  `test_fleet_scale.sh --rtf-workload moving` は窓の直前に全台へ `--moving-distance` (既定 500 m、
+  グリッドの行ごとに向きを交互) のゴールを `/fleet/navigate` で送り、全台が `is_moving` になってから
+  窓を開き、窓の中の FleetState で移動中の割合が `--min-moving-fraction` (95%) を下回ったら FAIL にする。
+  `docker/core_scale_rtf.py --moving-distance` が ROS なしで同じワークロードを走らせる。
+  1000 台、timestep 0.1 s、publish_rate 10 (= 毎ステップ)、全台移動、衝突判定毎ステップ、窓 10 s wall:
+
+  | 構成 | max RTF | step | コア単体との差 |
+  |---|---|---|---|
+  | コア単体 (ROS なし) | 5.66x | 17.7 ms | 基準 |
+  | in-process (現行) | 2.71x | 36.9 ms | +19.2 ms (毎ステップの FleetState 構築 + シリアライズ) |
+  | `--state-plane every_step` | 5.14x | 19.5 ms | +1.8 ms (1.10 倍) |
+  | `--state-plane latest` | 5.03x | 19.9 ms | +2.2 ms (1.12 倍) |
+
+  state plane の差分はほぼ `collect_fleet_frame` の 2 ms で、ROS ノードの常駐と共有メモリ書き込みは
+  合わせて 0.1 ms 未満 (`enable_time_profiling` で `events_post_step` が step の 85%、それ以外は
+  コア単体と同じ)。**受け入れ条件 6 の「1.05 倍以内」は未達 (1.10 倍)** で、残りの 2 ms は P3 で
+  フレームを store の列のスライスにするまで消えない。「10x 以上」の方はコア単体が 5.7x なので、
+  P1-P4 でコアの step が下がってから測り直す (ブリッジ側はもう律速ではない)。
+- **検証 (済):** ブリッジ単体テスト 199 件 (Docker)、`docker/test_bridge_api.sh` PASSED (state plane なしの既定構成)、
+  コア 2746 件、`make lint` / `make docs`。
+  **未:** 受け入れ条件 6 の 3 回中央値・60 s 窓での正式計測 (コアの高速化後)。
+- **ブリッジを C++ にする判断:** 不要になった。rclpy + `FleetStateEncoder` で 1 publish 0.7 ms なので、
   `every_step` のままでも 1000 台で 1500 publish/s 程度までは配信側が律速にならない。
   sim 側は共有メモリのレイアウトにしか依存しないので、必要になれば C++ の reader を後から足せる。
 - **範囲外 (follow-up):** 1 万台の全台 FleetState を毎ステップ配信すること。manager 単位のストリームに分け、

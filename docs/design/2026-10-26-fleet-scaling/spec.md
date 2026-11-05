@@ -284,6 +284,8 @@ PyBullet mirror (遅延同期)
    `publish_rate: 10`、同一ホストに FleetState の購読者を 1 つ以上置き、`/clock` から 60 s wall 以上で
    求めた RTF が 3 回の中央値で 10x 以上。`latest` モードでは、同じ条件でブリッジを起動したときの
    コアの step 時間が ROS なしの 1.05 倍以内。
+   計測手順は `docker/test_fleet_scale.sh --rtf-workload moving` と `docker/core_scale_rtf.py
+   --moving-distance` (2026-11-05 時点: 1.10 倍。残りは `collect_fleet_frame` の走査で、P3 で解消する)。
 
 ## Decisions (2026-10-26)
 
