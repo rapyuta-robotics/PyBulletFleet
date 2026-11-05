@@ -323,8 +323,10 @@ sim プロセス                                   ブリッジプロセス (rcl
   `seq`、`sim_time`、`generation`、`object_id` 列、SoA 配列 (pose、velocity、moving、battery など FleetState に
   必要な列) を含める。レイアウトはバージョン番号付きのヘッダで定義し、列の追加はバージョンを上げる。
   spawn / delete / reset で行の集合が変わるたびに `generation` を上げ、名前 ↔ object_id の対応表を書き直す。
-- **FleetState の型は変えない。** `RobotState3D[] robots` なので rclpy では robot ごとのメッセージ生成が
-  残る (1000 台で約 2.8 ms が下限)。ブリッジを rclpy にするか C++ にするかは、P5b の着手条件 (plan) で決める。
+- **FleetState の型は変えない。** `RobotState3D[] robots` なので rclpy でメッセージを組み立てると robot ごとの
+  オブジェクト生成が残る (1000 台で構築 7 ms + シリアライズ 4 ms)。P5b では、メッセージを組み立てずに
+  CDR のバイト列を配列から直接作って `Publisher.publish(bytes)` に渡す `FleetStateEncoder` でこれを回避した
+  (1000 台で 0.05 ms、rclpy のシリアライズ結果とバイト単位で一致)。C++ のブリッジは不要になった。
 - **コマンドプレーン (低頻度・双方向):** 現行の BridgeNode を sim プロセス内に残す。
   sim services 約 14 個、`simulate_steps` action、ロボット単位の actions/services、
   fleet services と数が多く、すべてを RPC 化するのは作業量に見合わない。
@@ -403,6 +405,8 @@ topic に変えても (1) と (3) は残り、ack が無くなるだけなので
   1000 台・50x・毎ステップ配信では 500 回/s になり、1 回 2 ms 以下が必要になる。
   rclpy でメッセージを配列から一括構築して届かなければ、ブリッジプロセスを C++ にする。
   sim 側は共有メモリのレイアウトだけに依存するので、ブリッジの実装言語は後から変えられる。
+  (2026-11-05: rclpy の `Publisher.publish()` はシリアライズ済みの `bytes` を受け付けるので、FleetState の
+  CDR を配列から直接組み立てる `FleetStateEncoder` を P5b で実装した。1000 台で 1 publish 0.6 ms。C++ は不要。)
 - `/clock` はスナップショットの `sim_time` から publish する。状態と時刻が必ず同じステップを指すようにする。
 - コマンドのレイテンシは sim time で見ると倍速に比例して大きくなる (現行と同じ性質)。
 

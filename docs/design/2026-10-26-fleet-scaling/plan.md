@@ -333,25 +333,43 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
   macOS (Apple Silicon) で整合性テストを手動で 1 回通す。
 
 **P5b. ブリッジプロセス (ros2_bridge 側)**
-- **着手条件:** `FleetState` は `RobotState3D[] robots` なので、rclpy では robot ごとの
-  メッセージオブジェクト生成を避けられない (現状の構築 2.8 ms が下限)。P5b の前に
-  「1000 台の FleetState を rclpy で構築して publish するだけ」の時間を単体で測り、
-  読み出し分 0.5 ms を足してブリッジ側の予算 8 ms に収まるならブリッジは rclpy、
-  超えるなら最初から C++ にする (判断の閾値は P5b 後の判断ポイントと同じ 8 ms)。
-- 共有メモリを読み、FleetState、`/clock`、TF、odom を publish する別ノード (別プロセス) を追加する。
-  FleetState の型は変えない。必要なら、配列をそのまま載せる平坦なトピック
-  (`FleetStateArray` など) を FleetState と並行して追加する (任意、既存の購読者には影響しない)。
-- 現行の BridgeNode からは状態 publish を外し、services / actions だけを残す。
-- `publish_rate` (sim time 基準) は両モードに適用する。
-- **検証:** 受け入れ条件 6 の手順 (spec): 疎シナリオと同じ 1000 台全台移動・衝突判定毎ステップ、
-  `every_step`、`publish_rate: 10`、同一ホストに FleetState の購読者 1 つ以上、`/clock` から
-  60 s wall 以上で RTF を求め、3 回の中央値で 10x 以上。`ros2_bridge/PERFORMANCE.md` の現行手順は
-  静止ワークロード・`publish_rate 5` なので、そのままでは使わない (手順を更新する)。
-  ブリッジ側の 1 publish あたりの時間を記録し、上の予算表と比べる。
-  `latest` モードで、ブリッジを起動しても sim のコアの step 時間が
-  ROS なしの 1.05 倍以内であることを確認する。`docker/test_bridge_api.sh` の bridge 統合スモークテスト。
-- **ブリッジを C++ にする判断:** rclpy で `every_step` の 1 回あたり publish コストが 8 ms に届かない場合。
-  sim 側は共有メモリのレイアウトにしか依存しないので、P5a はそのまま使える。
+
+**実装済み (2026-11-05、ブランチ `perf/p5b-state-publisher`、P5a の上):** `state_plane` 設定節、
+`state_publisher` ノード (`state_publisher_node.py`)、`FleetStateEncoder` (`fleet_state_cdr.py`)、
+`snapshot_to_fleet_state_msg`、`bridge.launch.py state_publisher:=true`、
+`docker/test_fleet_scale.sh --state-plane every_step|latest`、`docker/state_publish_profile.py`、テスト 11 件。
+
+- **着手条件の計測:** rclpy で 1000 台の FleetState を構築 7.3 ms + シリアライズ 3.8 ms = 約 11 ms で、
+  8 ms の閾値を超えた。ただし `Publisher.publish()` はシリアライズ済みの `bytes` も受け付け、その publish は
+  0.01 ms だった。そこで **C++ ではなく、FleetState の CDR を配列から直接組み立てる** `FleetStateEncoder` にした。
+  robot 名の長さだけで決まるバイト列のテンプレートを generation ごとに持ち、pose / velocity / フラグ / battery を
+  numpy で所定オフセットに書く。rclpy の `serialize_message` とバイト単位で一致することをテストで確認
+  (空、1 台、長さの違う名前、日本語名、1000 台)。1000 台で 0.05 ms。
+- `state_plane.enabled` のとき、BridgeNode は `StatePlanePublisher` を install し、`/clock` と全体の `/fleet/states` を
+  publish しない。`state_publisher` が共有メモリを読み、`/clock` (スナップショットの `sim_time`) と `/fleet/states` を
+  publish する。manager 単位のストリーム、per-robot の topic / TF は従来どおり in-process (follow-up)。
+  FleetState の型は変えていない。
+- `publish_rate` (sim time 基準) は bridge 側が plane に書く頻度として適用する。`state_publisher` 側にも同名の
+  パラメータがある。
+- 計測で見つけて直したもの: compose が `ipc: host` なので、SIGKILL された bridge のセグメントがホストの
+  `/dev/shm` に残り、次の `state_publisher` がそれに attach して止まる。writer は同名の古いセグメントを置き換え、
+  reader は `is_stale()` で置き換えを検知して再 attach、スクリプトは起動前に削除する (P5a 側に cherry-pick 済み)。
+- **計測 (`docker/test_fleet_scale.sh --robots 1000 --publish-rate 10 --target-rtf 0 --measure-rtf`、
+  静止ワークロード、同一ホストの購読者 1 つ):**
+
+  | 状態配信 | max RTF | 配信 |
+  |---|---|---|
+  | in-process (現行) | 4.3-4.9x | 全スナップショット |
+  | `--state-plane every_step` | 16.7x | 全スナップショット (1 publish 0.61 ms) |
+  | `--state-plane latest` | 17.1x | 最新のみ (この速度では欠落なし) |
+
+  この時点で律速は publish ではなく sim の step になった。
+- **検証 (済):** ブリッジ単体テスト 199 件 (Docker)、`docker/test_bridge_api.sh` PASSED (state plane なしの既定構成)。
+  **未:** 受け入れ条件 6 の「1000 台全台移動・衝突判定毎ステップ」での RTF (scale checker は静止ワークロードなので、
+  移動ワークロードの手順を足す)。`latest` モードでコアの step が ROS なしの 1.05 倍以内であることの確認。
+- **ブリッジを C++ にする判断:** 不要になった。rclpy + `FleetStateEncoder` で 1 publish 0.6 ms なので、
+  `every_step` のままでも 1000 台で 1500 publish/s 程度までは配信側が律速にならない。
+  sim 側は共有メモリのレイアウトにしか依存しないので、必要になれば C++ の reader を後から足せる。
 - **範囲外 (follow-up):** 1 万台の全台 FleetState を毎ステップ配信すること。manager 単位のストリームに分け、
   複数のブリッジプロセスで publish する構成を検討する。
 - **条件付き follow-up: コマンドリング。** PC の後も `accepted` モードで最大速度の `/fleet/navigate` の ack が 10 ms を超える場合に、
@@ -388,7 +406,8 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 - **PC の後:** `accepted` モードで最大速度の 1000 台の `/fleet/navigate` の ack が 10 ms を超えていれば、コマンドリングを
   follow-up から本計画に入れる (2026-11-05: `applied` 既定で計測済み。`accepted` の計測はスケールチェッカーに
   `ack_mode` を渡す口を足してから)。
-- **P5b の後:** ブリッジ側の 1 publish が 8 ms を超えていれば C++ 化を判断する。
+- **P5b の後:** ブリッジ側の 1 publish が 8 ms を超えていれば C++ 化を判断する
+  (2026-11-05: `FleetStateEncoder` で 0.6 ms。C++ 化は不要と判断)。
 - **案 D (フルスクラッチ) の再検討:** spec の「D を再検討する条件」に該当した時点。
 
 ## 検証方針
