@@ -146,6 +146,22 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 
 ### P1. SoA state store と配列ベースの衝突 broad phase
 
+**着手 (2026-11-06、ブランチ `perf/p1-collision-parity`、upstream `275b9f0` の上): parity テストの土台
+(`64ebf4f`)。** `tests/collision_parity/` に、スクリプト化した 10 シーン (margin 内ですれ違う 2 列、
+軸ごとの clearance と setter / `params` 経由の margin 変更、`CollisionMode` の変更、static の無視、
+アタッチ / デタッチ、ignore filter、2 ステップに 1 回の衝突判定、`CONTACT_POINTS` と `HYBRID` の物理ボディ、
+経路を走る 4 台のロボット) と、ステップごとに `COLLISION_STARTED` / `COLLISION_ENDED` のイベント、
+observation の active ペア、`signed_distance` をオブジェクト名で記録するレコーダ、`275b9f0` で記録した
+golden (`golden/*.json`、合計 100 KB) を置いた。`tests/test_collision_parity.py` は再記録と golden を比べ、
+`DOCUMENTED_DIFFERENCES` にない差と、書いてあるのに出なくなった差の両方で失敗する。
+再記録は `python -m tests.collision_parity.record` (`--check` で比較のみ)。2 回記録して同一 (物理シーン含む)、
+10 シーンの記録は合計 1 秒未満。フルスイート 2988 passed。
+golden が固定した現行の性質 (P1 で保つか、差として文書化する): DISABLED にしたボディの active ペアは
+`COLLISION_ENDED` なしに消え、戻すと `COLLISION_STARTED` が改めて出る。その場で `detach_object()` した
+carrier と load は接触したままなので、次の判定からペアとして報告される。
+**残り:** #115 のマージ後に golden を再記録する (多リンクの AABB が変わるので `agents_crossing` が変わる)、
+P0 の定常状態ベンチマークを `275b9f0` + #115 で測り直す、その上で store と配列 broad phase の実装。
+
 - core が所有する `StateStore` (pos, orn, vel, aabb, local_aabb, footprint, mode, owner, parent_row,
   attach_offset, flags, object_id ↔ row の対応) を新設する。行の追加・削除は、既存 batch controller と同じ
   「末尾行と入れ替えて詰める」方式にする。**行番号は core の外に出さない。** イベント、
