@@ -1,0 +1,1231 @@
+{
+ "scene": "physics_contact",
+ "reference": "275b9f0",
+ "steps": [
+  {
+   "step": 1,
+   "events": [],
+   "observation_step": 1,
+   "pairs": []
+  },
+  {
+   "step": 2,
+   "events": [],
+   "observation_step": 2,
+   "pairs": []
+  },
+  {
+   "step": 3,
+   "events": [],
+   "observation_step": 3,
+   "pairs": []
+  },
+  {
+   "step": 4,
+   "events": [],
+   "observation_step": 4,
+   "pairs": []
+  },
+  {
+   "step": 5,
+   "events": [],
+   "observation_step": 5,
+   "pairs": []
+  },
+  {
+   "step": 6,
+   "events": [],
+   "observation_step": 6,
+   "pairs": []
+  },
+  {
+   "step": 7,
+   "events": [],
+   "observation_step": 7,
+   "pairs": []
+  },
+  {
+   "step": 8,
+   "events": [],
+   "observation_step": 8,
+   "pairs": []
+  },
+  {
+   "step": 9,
+   "events": [],
+   "observation_step": 9,
+   "pairs": []
+  },
+  {
+   "step": 10,
+   "events": [],
+   "observation_step": 10,
+   "pairs": []
+  },
+  {
+   "step": 11,
+   "events": [],
+   "observation_step": 11,
+   "pairs": []
+  },
+  {
+   "step": 12,
+   "events": [],
+   "observation_step": 12,
+   "pairs": []
+  },
+  {
+   "step": 13,
+   "events": [],
+   "observation_step": 13,
+   "pairs": []
+  },
+  {
+   "step": 14,
+   "events": [],
+   "observation_step": 14,
+   "pairs": []
+  },
+  {
+   "step": 15,
+   "events": [],
+   "observation_step": 15,
+   "pairs": []
+  },
+  {
+   "step": 16,
+   "events": [
+    [
+     "started",
+     "drop1",
+     "floor"
+    ]
+   ],
+   "observation_step": 16,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     16
+    ]
+   ]
+  },
+  {
+   "step": 17,
+   "events": [],
+   "observation_step": 17,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     17
+    ]
+   ]
+  },
+  {
+   "step": 18,
+   "events": [],
+   "observation_step": 18,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     18
+    ]
+   ]
+  },
+  {
+   "step": 19,
+   "events": [],
+   "observation_step": 19,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     19
+    ]
+   ]
+  },
+  {
+   "step": 20,
+   "events": [],
+   "observation_step": 20,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     20
+    ]
+   ]
+  },
+  {
+   "step": 21,
+   "events": [],
+   "observation_step": 21,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     21
+    ]
+   ]
+  },
+  {
+   "step": 22,
+   "events": [
+    [
+     "started",
+     "drop1",
+     "drop2"
+    ]
+   ],
+   "observation_step": 22,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     22
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     22
+    ]
+   ]
+  },
+  {
+   "step": 23,
+   "events": [],
+   "observation_step": 23,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     23
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     23
+    ]
+   ]
+  },
+  {
+   "step": 24,
+   "events": [],
+   "observation_step": 24,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     24
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     24
+    ]
+   ]
+  },
+  {
+   "step": 25,
+   "events": [],
+   "observation_step": 25,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     25
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     25
+    ]
+   ]
+  },
+  {
+   "step": 26,
+   "events": [],
+   "observation_step": 26,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     26
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     26
+    ]
+   ]
+  },
+  {
+   "step": 27,
+   "events": [],
+   "observation_step": 27,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     27
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     27
+    ]
+   ]
+  },
+  {
+   "step": 28,
+   "events": [],
+   "observation_step": 28,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     28
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     28
+    ]
+   ]
+  },
+  {
+   "step": 29,
+   "events": [],
+   "observation_step": 29,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     29
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     29
+    ]
+   ]
+  },
+  {
+   "step": 30,
+   "events": [],
+   "observation_step": 30,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     30
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     30
+    ]
+   ]
+  },
+  {
+   "step": 31,
+   "events": [],
+   "observation_step": 31,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     31
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 32,
+   "events": [],
+   "observation_step": 32,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     32
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     32
+    ]
+   ]
+  },
+  {
+   "step": 33,
+   "events": [],
+   "observation_step": 33,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     33
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     33
+    ]
+   ]
+  },
+  {
+   "step": 34,
+   "events": [],
+   "observation_step": 34,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     34
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     34
+    ]
+   ]
+  },
+  {
+   "step": 35,
+   "events": [],
+   "observation_step": 35,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     35
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     35
+    ]
+   ]
+  },
+  {
+   "step": 36,
+   "events": [],
+   "observation_step": 36,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     36
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     36
+    ]
+   ]
+  },
+  {
+   "step": 37,
+   "events": [],
+   "observation_step": 37,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     37
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     37
+    ]
+   ]
+  },
+  {
+   "step": 38,
+   "events": [],
+   "observation_step": 38,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     38
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     38
+    ]
+   ]
+  },
+  {
+   "step": 39,
+   "events": [],
+   "observation_step": 39,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     39
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     39
+    ]
+   ]
+  },
+  {
+   "step": 40,
+   "events": [],
+   "observation_step": 40,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     40
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     40
+    ]
+   ]
+  },
+  {
+   "step": 41,
+   "events": [],
+   "observation_step": 41,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     41
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     41
+    ]
+   ]
+  },
+  {
+   "step": 42,
+   "events": [],
+   "observation_step": 42,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     42
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     42
+    ]
+   ]
+  },
+  {
+   "step": 43,
+   "events": [],
+   "observation_step": 43,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     43
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     43
+    ]
+   ]
+  },
+  {
+   "step": 44,
+   "events": [],
+   "observation_step": 44,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     44
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     44
+    ]
+   ]
+  },
+  {
+   "step": 45,
+   "events": [],
+   "observation_step": 45,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     45
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     45
+    ]
+   ]
+  },
+  {
+   "step": 46,
+   "events": [],
+   "observation_step": 46,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     46
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     46
+    ]
+   ]
+  },
+  {
+   "step": 47,
+   "events": [],
+   "observation_step": 47,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     47
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     47
+    ]
+   ]
+  },
+  {
+   "step": 48,
+   "events": [],
+   "observation_step": 48,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     48
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     48
+    ]
+   ]
+  },
+  {
+   "step": 49,
+   "events": [
+    [
+     "started",
+     "drop2",
+     "pusher"
+    ]
+   ],
+   "observation_step": 49,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     49
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     49
+    ],
+    [
+     [
+      "drop2",
+      "pusher"
+     ],
+     null,
+     49
+    ]
+   ]
+  },
+  {
+   "step": 50,
+   "events": [
+    [
+     "started",
+     "drop1",
+     "pusher"
+    ]
+   ],
+   "observation_step": 50,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     50
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     50
+    ],
+    [
+     [
+      "drop1",
+      "pusher"
+     ],
+     null,
+     50
+    ],
+    [
+     [
+      "drop2",
+      "pusher"
+     ],
+     null,
+     50
+    ]
+   ]
+  },
+  {
+   "step": 51,
+   "events": [],
+   "observation_step": 51,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     51
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     51
+    ],
+    [
+     [
+      "drop1",
+      "pusher"
+     ],
+     null,
+     51
+    ],
+    [
+     [
+      "drop2",
+      "pusher"
+     ],
+     null,
+     51
+    ]
+   ]
+  },
+  {
+   "step": 52,
+   "events": [],
+   "observation_step": 52,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     52
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     52
+    ],
+    [
+     [
+      "drop1",
+      "pusher"
+     ],
+     null,
+     52
+    ],
+    [
+     [
+      "drop2",
+      "pusher"
+     ],
+     null,
+     52
+    ]
+   ]
+  },
+  {
+   "step": 53,
+   "events": [],
+   "observation_step": 53,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     53
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     53
+    ],
+    [
+     [
+      "drop1",
+      "pusher"
+     ],
+     null,
+     53
+    ],
+    [
+     [
+      "drop2",
+      "pusher"
+     ],
+     null,
+     53
+    ]
+   ]
+  },
+  {
+   "step": 54,
+   "events": [],
+   "observation_step": 54,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     54
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     54
+    ],
+    [
+     [
+      "drop1",
+      "pusher"
+     ],
+     null,
+     54
+    ],
+    [
+     [
+      "drop2",
+      "pusher"
+     ],
+     null,
+     54
+    ]
+   ]
+  },
+  {
+   "step": 55,
+   "events": [],
+   "observation_step": 55,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     55
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     55
+    ],
+    [
+     [
+      "drop1",
+      "pusher"
+     ],
+     null,
+     55
+    ],
+    [
+     [
+      "drop2",
+      "pusher"
+     ],
+     null,
+     55
+    ]
+   ]
+  },
+  {
+   "step": 56,
+   "events": [
+    [
+     "ended",
+     "drop1",
+     "pusher"
+    ]
+   ],
+   "observation_step": 56,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     56
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     56
+    ],
+    [
+     [
+      "drop2",
+      "pusher"
+     ],
+     null,
+     56
+    ]
+   ]
+  },
+  {
+   "step": 57,
+   "events": [
+    [
+     "ended",
+     "drop2",
+     "pusher"
+    ]
+   ],
+   "observation_step": 57,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     57
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     57
+    ]
+   ]
+  },
+  {
+   "step": 58,
+   "events": [],
+   "observation_step": 58,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     58
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     58
+    ]
+   ]
+  },
+  {
+   "step": 59,
+   "events": [],
+   "observation_step": 59,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     59
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     59
+    ]
+   ]
+  },
+  {
+   "step": 60,
+   "events": [],
+   "observation_step": 60,
+   "pairs": [
+    [
+     [
+      "drop1",
+      "drop2"
+     ],
+     null,
+     60
+    ],
+    [
+     [
+      "drop1",
+      "floor"
+     ],
+     null,
+     60
+    ]
+   ]
+  }
+ ]
+}

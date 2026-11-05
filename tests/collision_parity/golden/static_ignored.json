@@ -1,0 +1,210 @@
+{
+ "scene": "static_ignored",
+ "reference": "275b9f0",
+ "steps": [
+  {
+   "step": 1,
+   "events": [],
+   "observation_step": 1,
+   "pairs": []
+  },
+  {
+   "step": 2,
+   "events": [],
+   "observation_step": 2,
+   "pairs": []
+  },
+  {
+   "step": 3,
+   "events": [],
+   "observation_step": 3,
+   "pairs": []
+  },
+  {
+   "step": 4,
+   "events": [],
+   "observation_step": 4,
+   "pairs": []
+  },
+  {
+   "step": 5,
+   "events": [],
+   "observation_step": 5,
+   "pairs": []
+  },
+  {
+   "step": 6,
+   "events": [
+    [
+     "started",
+     "a",
+     "b"
+    ]
+   ],
+   "observation_step": 6,
+   "pairs": [
+    [
+     [
+      "a",
+      "b"
+     ],
+     -0.02000000000000002,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 7,
+   "events": [],
+   "observation_step": 7,
+   "pairs": [
+    [
+     [
+      "a",
+      "b"
+     ],
+     -0.02000000000000002,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 8,
+   "events": [],
+   "observation_step": 8,
+   "pairs": [
+    [
+     [
+      "a",
+      "b"
+     ],
+     -0.02000000000000002,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 9,
+   "events": [],
+   "observation_step": 9,
+   "pairs": [
+    [
+     [
+      "a",
+      "b"
+     ],
+     -0.02000000000000002,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 10,
+   "events": [],
+   "observation_step": 10,
+   "pairs": [
+    [
+     [
+      "a",
+      "b"
+     ],
+     -0.02000000000000002,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 11,
+   "events": [],
+   "observation_step": 11,
+   "pairs": [
+    [
+     [
+      "a",
+      "b"
+     ],
+     -0.02000000000000002,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 12,
+   "events": [],
+   "observation_step": 12,
+   "pairs": [
+    [
+     [
+      "a",
+      "b"
+     ],
+     -0.02000000000000002,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 13,
+   "events": [],
+   "observation_step": 13,
+   "pairs": [
+    [
+     [
+      "a",
+      "b"
+     ],
+     -0.02000000000000002,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 14,
+   "events": [
+    [
+     "ended",
+     "a",
+     "b"
+    ]
+   ],
+   "observation_step": 14,
+   "pairs": []
+  },
+  {
+   "step": 15,
+   "events": [],
+   "observation_step": 15,
+   "pairs": []
+  },
+  {
+   "step": 16,
+   "events": [],
+   "observation_step": 16,
+   "pairs": []
+  },
+  {
+   "step": 17,
+   "events": [],
+   "observation_step": 17,
+   "pairs": []
+  },
+  {
+   "step": 18,
+   "events": [],
+   "observation_step": 18,
+   "pairs": []
+  },
+  {
+   "step": 19,
+   "events": [],
+   "observation_step": 19,
+   "pairs": []
+  },
+  {
+   "step": 20,
+   "events": [],
+   "observation_step": 20,
+   "pairs": []
+  }
+ ]
+}

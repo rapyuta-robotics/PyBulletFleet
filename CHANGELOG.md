@@ -14,6 +14,18 @@ are not recommended for production use yet.
 
 ### Added
 
+- Collision parity traces (`tests/collision_parity/`): ten small scripted
+  scenes (lanes crossing within the margin, a per-axis clearance and margin
+  changes, collision mode changes, ignored static bodies, attachment, the
+  ignore filter, a collision check every other step, `CONTACT_POINTS` and
+  `HYBRID` with physics bodies, agents on paths) are recorded step by step
+  (`COLLISION_STARTED` / `COLLISION_ENDED` events, active pairs and their
+  `signed_distance`) and compared with the traces recorded on the reference
+  revision, kept under `tests/collision_parity/golden/`.
+  `tests/test_collision_parity.py` fails on a difference that is not written
+  down in its `DOCUMENTED_DIFFERENCES`, and on a written-down difference
+  that no longer occurs. `python -m tests.collision_parity.record` records
+  the goldens again (`--check` compares without writing).
 - Per-axis collision clearance (#105): `collision_margin` (in
   `SimulationParams`, YAML and `set_collision_margin()`) also takes an
   `(x, y, z)` triple, one clearance per world axis, for example

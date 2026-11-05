@@ -1,0 +1,778 @@
+{
+ "scene": "crossing_lanes",
+ "reference": "275b9f0",
+ "steps": [
+  {
+   "step": 1,
+   "events": [
+    [
+     "started",
+     "east2",
+     "west2"
+    ]
+   ],
+   "observation_step": 1,
+   "pairs": [
+    [
+     [
+      "east2",
+      "west2"
+     ],
+     0.040000000000000036,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 2,
+   "events": [],
+   "observation_step": 2,
+   "pairs": [
+    [
+     [
+      "east2",
+      "west2"
+     ],
+     0.03999999999999998,
+     2
+    ]
+   ]
+  },
+  {
+   "step": 3,
+   "events": [
+    [
+     "ended",
+     "east2",
+     "west2"
+    ],
+    [
+     "started",
+     "east1",
+     "west2"
+    ],
+    [
+     "started",
+     "east2",
+     "west1"
+    ]
+   ],
+   "observation_step": 3,
+   "pairs": [
+    [
+     [
+      "east1",
+      "west2"
+     ],
+     0.04004759208325731,
+     3
+    ],
+    [
+     [
+      "east2",
+      "west1"
+     ],
+     0.04004759208325731,
+     3
+    ]
+   ]
+  },
+  {
+   "step": 4,
+   "events": [],
+   "observation_step": 4,
+   "pairs": [
+    [
+     [
+      "east1",
+      "west2"
+     ],
+     0.03999999999999998,
+     4
+    ],
+    [
+     [
+      "east2",
+      "west1"
+     ],
+     0.03999999999999998,
+     4
+    ]
+   ]
+  },
+  {
+   "step": 5,
+   "events": [],
+   "observation_step": 5,
+   "pairs": [
+    [
+     [
+      "east1",
+      "west2"
+     ],
+     0.03999999999999998,
+     5
+    ],
+    [
+     [
+      "east2",
+      "west1"
+     ],
+     0.03999999999999998,
+     5
+    ]
+   ]
+  },
+  {
+   "step": 6,
+   "events": [
+    [
+     "ended",
+     "east1",
+     "west2"
+    ],
+    [
+     "ended",
+     "east2",
+     "west1"
+    ]
+   ],
+   "observation_step": 6,
+   "pairs": []
+  },
+  {
+   "step": 7,
+   "events": [
+    [
+     "started",
+     "east0",
+     "west2"
+    ],
+    [
+     "started",
+     "east1",
+     "west1"
+    ],
+    [
+     "started",
+     "east2",
+     "west0"
+    ]
+   ],
+   "observation_step": 7,
+   "pairs": [
+    [
+     [
+      "east0",
+      "west2"
+     ],
+     0.03999999999999998,
+     7
+    ],
+    [
+     [
+      "east1",
+      "west1"
+     ],
+     0.03999999999999998,
+     7
+    ],
+    [
+     [
+      "east2",
+      "west0"
+     ],
+     0.03999999999999998,
+     7
+    ]
+   ]
+  },
+  {
+   "step": 8,
+   "events": [],
+   "observation_step": 8,
+   "pairs": [
+    [
+     [
+      "east0",
+      "west2"
+     ],
+     0.03999999999999998,
+     8
+    ],
+    [
+     [
+      "east1",
+      "west1"
+     ],
+     0.03999999999999998,
+     8
+    ],
+    [
+     [
+      "east2",
+      "west0"
+     ],
+     0.03999999999999998,
+     8
+    ]
+   ]
+  },
+  {
+   "step": 9,
+   "events": [],
+   "observation_step": 9,
+   "pairs": [
+    [
+     [
+      "east0",
+      "west2"
+     ],
+     0.04004759208325728,
+     9
+    ],
+    [
+     [
+      "east1",
+      "west1"
+     ],
+     0.04004759208325732,
+     9
+    ],
+    [
+     [
+      "east2",
+      "west0"
+     ],
+     0.04004759208325728,
+     9
+    ]
+   ]
+  },
+  {
+   "step": 10,
+   "events": [
+    [
+     "ended",
+     "east0",
+     "west2"
+    ],
+    [
+     "ended",
+     "east1",
+     "west1"
+    ],
+    [
+     "ended",
+     "east2",
+     "west0"
+    ],
+    [
+     "started",
+     "east0",
+     "west1"
+    ],
+    [
+     "started",
+     "east1",
+     "west0"
+    ]
+   ],
+   "observation_step": 10,
+   "pairs": [
+    [
+     [
+      "east0",
+      "west1"
+     ],
+     0.03999999999999998,
+     10
+    ],
+    [
+     [
+      "east1",
+      "west0"
+     ],
+     0.03999999999999998,
+     10
+    ]
+   ]
+  },
+  {
+   "step": 11,
+   "events": [],
+   "observation_step": 11,
+   "pairs": [
+    [
+     [
+      "east0",
+      "west1"
+     ],
+     0.03999999999999998,
+     11
+    ],
+    [
+     [
+      "east1",
+      "west0"
+     ],
+     0.03999999999999998,
+     11
+    ]
+   ]
+  },
+  {
+   "step": 12,
+   "events": [],
+   "observation_step": 12,
+   "pairs": [
+    [
+     [
+      "east0",
+      "west1"
+     ],
+     0.03999999999999999,
+     12
+    ],
+    [
+     [
+      "east1",
+      "west0"
+     ],
+     0.03999999999999999,
+     12
+    ]
+   ]
+  },
+  {
+   "step": 13,
+   "events": [
+    [
+     "ended",
+     "east0",
+     "west1"
+    ],
+    [
+     "ended",
+     "east1",
+     "west0"
+    ],
+    [
+     "started",
+     "east0",
+     "west0"
+    ]
+   ],
+   "observation_step": 13,
+   "pairs": [
+    [
+     [
+      "east0",
+      "west0"
+     ],
+     0.04004759208325735,
+     13
+    ]
+   ]
+  },
+  {
+   "step": 14,
+   "events": [],
+   "observation_step": 14,
+   "pairs": [
+    [
+     [
+      "east0",
+      "west0"
+     ],
+     0.03999999999999998,
+     14
+    ]
+   ]
+  },
+  {
+   "step": 15,
+   "events": [],
+   "observation_step": 15,
+   "pairs": [
+    [
+     [
+      "east0",
+      "west0"
+     ],
+     0.03999999999999998,
+     15
+    ]
+   ]
+  },
+  {
+   "step": 16,
+   "events": [
+    [
+     "ended",
+     "east0",
+     "west0"
+    ]
+   ],
+   "observation_step": 16,
+   "pairs": []
+  },
+  {
+   "step": 17,
+   "events": [],
+   "observation_step": 17,
+   "pairs": []
+  },
+  {
+   "step": 18,
+   "events": [
+    [
+     "started",
+     "north",
+     "wall"
+    ]
+   ],
+   "observation_step": 18,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     0.049999999999999184,
+     18
+    ]
+   ]
+  },
+  {
+   "step": 19,
+   "events": [],
+   "observation_step": 19,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -8.656270145124267e-16,
+     19
+    ]
+   ]
+  },
+  {
+   "step": 20,
+   "events": [],
+   "observation_step": 20,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.050000000000000905,
+     20
+    ]
+   ]
+  },
+  {
+   "step": 21,
+   "events": [],
+   "observation_step": 21,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.10000000000000095,
+     21
+    ]
+   ]
+  },
+  {
+   "step": 22,
+   "events": [],
+   "observation_step": 22,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.150000000000001,
+     22
+    ]
+   ]
+  },
+  {
+   "step": 23,
+   "events": [],
+   "observation_step": 23,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.19999999999973106,
+     23
+    ]
+   ]
+  },
+  {
+   "step": 24,
+   "events": [],
+   "observation_step": 24,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.19999999999979856,
+     24
+    ]
+   ]
+  },
+  {
+   "step": 25,
+   "events": [],
+   "observation_step": 25,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.1999999999998363,
+     25
+    ]
+   ]
+  },
+  {
+   "step": 26,
+   "events": [],
+   "observation_step": 26,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.19999999999979856,
+     26
+    ]
+   ]
+  },
+  {
+   "step": 27,
+   "events": [],
+   "observation_step": 27,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.19999999999973106,
+     27
+    ]
+   ]
+  },
+  {
+   "step": 28,
+   "events": [],
+   "observation_step": 28,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.14999999999999966,
+     28
+    ]
+   ]
+  },
+  {
+   "step": 29,
+   "events": [],
+   "observation_step": 29,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.09999999999999984,
+     29
+    ]
+   ]
+  },
+  {
+   "step": 30,
+   "events": [],
+   "observation_step": 30,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -0.05000000000000002,
+     30
+    ]
+   ]
+  },
+  {
+   "step": 31,
+   "events": [],
+   "observation_step": 31,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -1.9255430583342559e-16,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 32,
+   "events": [],
+   "observation_step": 32,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -1.9255430583342559e-16,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 33,
+   "events": [],
+   "observation_step": 33,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -1.9255430583342559e-16,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 34,
+   "events": [],
+   "observation_step": 34,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -1.9255430583342559e-16,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 35,
+   "events": [],
+   "observation_step": 35,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -1.9255430583342559e-16,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 36,
+   "events": [],
+   "observation_step": 36,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -1.9255430583342559e-16,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 37,
+   "events": [],
+   "observation_step": 37,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -1.9255430583342559e-16,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 38,
+   "events": [],
+   "observation_step": 38,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -1.9255430583342559e-16,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 39,
+   "events": [],
+   "observation_step": 39,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -1.9255430583342559e-16,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 40,
+   "events": [],
+   "observation_step": 40,
+   "pairs": [
+    [
+     [
+      "north",
+      "wall"
+     ],
+     -1.9255430583342559e-16,
+     31
+    ]
+   ]
+  }
+ ]
+}

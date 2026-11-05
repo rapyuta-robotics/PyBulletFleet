@@ -446,6 +446,28 @@ should be cheap.
 | Conservative | 0.05-0.10m | Extra safety for high-speed |
 | Contact detection | 0.0m | Actual touching only |
 
+### Parity Traces
+
+`tests/collision_parity/` keeps what the pipeline reports over ten small
+scripted scenes: for every step, the `COLLISION_STARTED` / `COLLISION_ENDED`
+events, the active pairs of the collision observation and each pair's
+`signed_distance`. The traces recorded on the reference revision live under
+`tests/collision_parity/golden/`, and `tests/test_collision_parity.py`
+compares a fresh recording with them. A change to the broad phase, the narrow
+phase or the pair bookkeeping that is meant to report the same thing shows it
+by passing unchanged; one that knowingly reports something else writes the
+difference, pair by pair, in the test's `DOCUMENTED_DIFFERENCES`, and the
+test also fails when a written-down difference stops occurring. Record the
+goldens again with `python -m tests.collision_parity.record` and say in the
+commit which revision they come from.
+
+Two properties of the current pipeline that the traces pin down, and that a
+rewrite should keep or document: a body set to `DISABLED` drops its active
+pairs without a `COLLISION_ENDED` event, and a pair enabled again later
+raises `COLLISION_STARTED` afresh; and a `detach_object()` in place leaves
+the former carrier and load touching, so they are reported as a pair from the
+next check on.
+
 ---
 
 ## See Also

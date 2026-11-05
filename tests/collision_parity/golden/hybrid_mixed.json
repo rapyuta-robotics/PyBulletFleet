@@ -1,0 +1,1354 @@
+{
+ "scene": "hybrid_mixed",
+ "reference": "275b9f0",
+ "steps": [
+  {
+   "step": 1,
+   "events": [
+    [
+     "started",
+     "k1",
+     "k2"
+    ]
+   ],
+   "observation_step": 1,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 2,
+   "events": [],
+   "observation_step": 2,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 3,
+   "events": [],
+   "observation_step": 3,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 4,
+   "events": [],
+   "observation_step": 4,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 5,
+   "events": [],
+   "observation_step": 5,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 6,
+   "events": [],
+   "observation_step": 6,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 7,
+   "events": [],
+   "observation_step": 7,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 8,
+   "events": [],
+   "observation_step": 8,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 9,
+   "events": [],
+   "observation_step": 9,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 10,
+   "events": [],
+   "observation_step": 10,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 11,
+   "events": [],
+   "observation_step": 11,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 12,
+   "events": [],
+   "observation_step": 12,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 13,
+   "events": [],
+   "observation_step": 13,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 14,
+   "events": [],
+   "observation_step": 14,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 15,
+   "events": [],
+   "observation_step": 15,
+   "pairs": [
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 16,
+   "events": [
+    [
+     "started",
+     "dyn",
+     "floor"
+    ]
+   ],
+   "observation_step": 16,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     16
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 17,
+   "events": [],
+   "observation_step": 17,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     17
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 18,
+   "events": [],
+   "observation_step": 18,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     18
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 19,
+   "events": [],
+   "observation_step": 19,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     19
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 20,
+   "events": [],
+   "observation_step": 20,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     20
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 21,
+   "events": [],
+   "observation_step": 21,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     21
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 22,
+   "events": [],
+   "observation_step": 22,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     22
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 23,
+   "events": [],
+   "observation_step": 23,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     23
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 24,
+   "events": [],
+   "observation_step": 24,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     24
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 25,
+   "events": [],
+   "observation_step": 25,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     25
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 26,
+   "events": [],
+   "observation_step": 26,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     26
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 27,
+   "events": [],
+   "observation_step": 27,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     27
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 28,
+   "events": [],
+   "observation_step": 28,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     28
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 29,
+   "events": [],
+   "observation_step": 29,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     29
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 30,
+   "events": [],
+   "observation_step": 30,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     30
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 31,
+   "events": [],
+   "observation_step": 31,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     31
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 32,
+   "events": [],
+   "observation_step": 32,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     32
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 33,
+   "events": [],
+   "observation_step": 33,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     33
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 34,
+   "events": [],
+   "observation_step": 34,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     34
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 35,
+   "events": [],
+   "observation_step": 35,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     35
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 36,
+   "events": [],
+   "observation_step": 36,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     36
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 37,
+   "events": [],
+   "observation_step": 37,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     37
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 38,
+   "events": [],
+   "observation_step": 38,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     38
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 39,
+   "events": [],
+   "observation_step": 39,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     39
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 40,
+   "events": [],
+   "observation_step": 40,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     40
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 41,
+   "events": [],
+   "observation_step": 41,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     41
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 42,
+   "events": [],
+   "observation_step": 42,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     42
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 43,
+   "events": [],
+   "observation_step": 43,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     43
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 44,
+   "events": [
+    [
+     "started",
+     "dyn",
+     "k3"
+    ]
+   ],
+   "observation_step": 44,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     44
+    ],
+    [
+     [
+      "dyn",
+      "k3"
+     ],
+     null,
+     44
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 45,
+   "events": [],
+   "observation_step": 45,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     45
+    ],
+    [
+     [
+      "dyn",
+      "k3"
+     ],
+     null,
+     45
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 46,
+   "events": [],
+   "observation_step": 46,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     46
+    ],
+    [
+     [
+      "dyn",
+      "k3"
+     ],
+     null,
+     46
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 47,
+   "events": [],
+   "observation_step": 47,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     47
+    ],
+    [
+     [
+      "dyn",
+      "k3"
+     ],
+     null,
+     47
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 48,
+   "events": [],
+   "observation_step": 48,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     48
+    ],
+    [
+     [
+      "dyn",
+      "k3"
+     ],
+     null,
+     48
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 49,
+   "events": [],
+   "observation_step": 49,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     49
+    ],
+    [
+     [
+      "dyn",
+      "k3"
+     ],
+     null,
+     49
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 50,
+   "events": [],
+   "observation_step": 50,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     50
+    ],
+    [
+     [
+      "dyn",
+      "k3"
+     ],
+     null,
+     50
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 51,
+   "events": [],
+   "observation_step": 51,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     51
+    ],
+    [
+     [
+      "dyn",
+      "k3"
+     ],
+     null,
+     51
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 52,
+   "events": [
+    [
+     "ended",
+     "dyn",
+     "k3"
+    ]
+   ],
+   "observation_step": 52,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     52
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 53,
+   "events": [],
+   "observation_step": 53,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     53
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 54,
+   "events": [],
+   "observation_step": 54,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     54
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 55,
+   "events": [],
+   "observation_step": 55,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     55
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 56,
+   "events": [],
+   "observation_step": 56,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     56
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 57,
+   "events": [],
+   "observation_step": 57,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     57
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 58,
+   "events": [],
+   "observation_step": 58,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     58
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 59,
+   "events": [],
+   "observation_step": 59,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     59
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 60,
+   "events": [],
+   "observation_step": 60,
+   "pairs": [
+    [
+     [
+      "dyn",
+      "floor"
+     ],
+     null,
+     60
+    ],
+    [
+     [
+      "k1",
+      "k2"
+     ],
+     0.03999999999999998,
+     1
+    ]
+   ]
+  }
+ ]
+}

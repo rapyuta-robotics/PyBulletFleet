@@ -1,0 +1,652 @@
+{
+ "scene": "attach_detach",
+ "reference": "275b9f0",
+ "steps": [
+  {
+   "step": 1,
+   "events": [
+    [
+     "started",
+     "carrier",
+     "load"
+    ],
+    [
+     "started",
+     "load",
+     "load2"
+    ]
+   ],
+   "observation_step": 1,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "load"
+     ],
+     -5.377642775528102e-17,
+     1
+    ],
+    [
+     [
+      "load",
+      "load2"
+     ],
+     1.734723475976807e-18,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 2,
+   "events": [],
+   "observation_step": 2,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "load"
+     ],
+     -5.377642775528102e-17,
+     1
+    ],
+    [
+     [
+      "load",
+      "load2"
+     ],
+     1.734723475976807e-18,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 3,
+   "events": [],
+   "observation_step": 3,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "load"
+     ],
+     -5.377642775528102e-17,
+     1
+    ],
+    [
+     [
+      "load",
+      "load2"
+     ],
+     1.734723475976807e-18,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 4,
+   "events": [],
+   "observation_step": 4,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "load"
+     ],
+     -5.377642775528102e-17,
+     1
+    ],
+    [
+     [
+      "load",
+      "load2"
+     ],
+     1.734723475976807e-18,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 5,
+   "events": [
+    [
+     "ended",
+     "carrier",
+     "load"
+    ]
+   ],
+   "observation_step": 5,
+   "pairs": [
+    [
+     [
+      "load",
+      "load2"
+     ],
+     1.734723475976807e-18,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 6,
+   "events": [],
+   "observation_step": 6,
+   "pairs": [
+    [
+     [
+      "load",
+      "load2"
+     ],
+     1.734723475976807e-18,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 7,
+   "events": [
+    [
+     "ended",
+     "load",
+     "load2"
+    ]
+   ],
+   "observation_step": 7,
+   "pairs": []
+  },
+  {
+   "step": 8,
+   "events": [],
+   "observation_step": 8,
+   "pairs": []
+  },
+  {
+   "step": 9,
+   "events": [],
+   "observation_step": 9,
+   "pairs": []
+  },
+  {
+   "step": 10,
+   "events": [],
+   "observation_step": 10,
+   "pairs": []
+  },
+  {
+   "step": 11,
+   "events": [],
+   "observation_step": 11,
+   "pairs": []
+  },
+  {
+   "step": 12,
+   "events": [],
+   "observation_step": 12,
+   "pairs": []
+  },
+  {
+   "step": 13,
+   "events": [],
+   "observation_step": 13,
+   "pairs": []
+  },
+  {
+   "step": 14,
+   "events": [],
+   "observation_step": 14,
+   "pairs": []
+  },
+  {
+   "step": 15,
+   "events": [],
+   "observation_step": 15,
+   "pairs": []
+  },
+  {
+   "step": 16,
+   "events": [],
+   "observation_step": 16,
+   "pairs": []
+  },
+  {
+   "step": 17,
+   "events": [],
+   "observation_step": 17,
+   "pairs": []
+  },
+  {
+   "step": 18,
+   "events": [],
+   "observation_step": 18,
+   "pairs": []
+  },
+  {
+   "step": 19,
+   "events": [
+    [
+     "started",
+     "carrier",
+     "post"
+    ],
+    [
+     "started",
+     "load",
+     "post"
+    ],
+    [
+     "started",
+     "load2",
+     "post"
+    ]
+   ],
+   "observation_step": 19,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "post"
+     ],
+     0.020090722034374515,
+     19
+    ],
+    [
+     [
+      "load",
+      "post"
+     ],
+     0.020090717717344768,
+     19
+    ],
+    [
+     [
+      "load2",
+      "post"
+     ],
+     0.020090717717344768,
+     19
+    ]
+   ]
+  },
+  {
+   "step": 20,
+   "events": [],
+   "observation_step": 20,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "post"
+     ],
+     0.019999999999999997,
+     20
+    ],
+    [
+     [
+      "load",
+      "post"
+     ],
+     0.01999999999999999,
+     20
+    ],
+    [
+     [
+      "load2",
+      "post"
+     ],
+     0.01999999999999999,
+     20
+    ]
+   ]
+  },
+  {
+   "step": 21,
+   "events": [],
+   "observation_step": 21,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "post"
+     ],
+     0.01999999999999999,
+     21
+    ],
+    [
+     [
+      "load",
+      "post"
+     ],
+     0.01999999999999999,
+     21
+    ],
+    [
+     [
+      "load2",
+      "post"
+     ],
+     0.01999999999999999,
+     21
+    ]
+   ]
+  },
+  {
+   "step": 22,
+   "events": [],
+   "observation_step": 22,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "post"
+     ],
+     0.01999999999999999,
+     22
+    ],
+    [
+     [
+      "load",
+      "post"
+     ],
+     0.01999999999999999,
+     22
+    ],
+    [
+     [
+      "load2",
+      "post"
+     ],
+     0.01999999999999999,
+     22
+    ]
+   ]
+  },
+  {
+   "step": 23,
+   "events": [],
+   "observation_step": 23,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "post"
+     ],
+     0.01999999999999999,
+     23
+    ],
+    [
+     [
+      "load",
+      "post"
+     ],
+     0.019999999999999983,
+     23
+    ],
+    [
+     [
+      "load2",
+      "post"
+     ],
+     0.01999999999999999,
+     23
+    ]
+   ]
+  },
+  {
+   "step": 24,
+   "events": [],
+   "observation_step": 24,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "post"
+     ],
+     0.01999999999999999,
+     24
+    ],
+    [
+     [
+      "load",
+      "post"
+     ],
+     0.01999999999999999,
+     24
+    ],
+    [
+     [
+      "load2",
+      "post"
+     ],
+     0.01999999999999999,
+     24
+    ]
+   ]
+  },
+  {
+   "step": 25,
+   "events": [],
+   "observation_step": 25,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "post"
+     ],
+     0.020090722034374557,
+     25
+    ],
+    [
+     [
+      "load",
+      "post"
+     ],
+     0.020090717717344768,
+     25
+    ],
+    [
+     [
+      "load2",
+      "post"
+     ],
+     0.020090717717344768,
+     25
+    ]
+   ]
+  },
+  {
+   "step": 26,
+   "events": [
+    [
+     "ended",
+     "carrier",
+     "post"
+    ],
+    [
+     "ended",
+     "load",
+     "post"
+    ],
+    [
+     "ended",
+     "load2",
+     "post"
+    ]
+   ],
+   "observation_step": 26,
+   "pairs": []
+  },
+  {
+   "step": 27,
+   "events": [],
+   "observation_step": 27,
+   "pairs": []
+  },
+  {
+   "step": 28,
+   "events": [],
+   "observation_step": 28,
+   "pairs": []
+  },
+  {
+   "step": 29,
+   "events": [],
+   "observation_step": 29,
+   "pairs": []
+  },
+  {
+   "step": 30,
+   "events": [
+    [
+     "started",
+     "carrier",
+     "load"
+    ]
+   ],
+   "observation_step": 30,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "load"
+     ],
+     2.3841857878584283e-08,
+     30
+    ]
+   ]
+  },
+  {
+   "step": 31,
+   "events": [],
+   "observation_step": 31,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "load"
+     ],
+     2.3841857878584283e-08,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 32,
+   "events": [],
+   "observation_step": 32,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "load"
+     ],
+     2.3841857878584283e-08,
+     32
+    ]
+   ]
+  },
+  {
+   "step": 33,
+   "events": [],
+   "observation_step": 33,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "load"
+     ],
+     2.3841857878584283e-08,
+     33
+    ]
+   ]
+  },
+  {
+   "step": 34,
+   "events": [],
+   "observation_step": 34,
+   "pairs": [
+    [
+     [
+      "carrier",
+      "load"
+     ],
+     0.0008284439835363655,
+     34
+    ]
+   ]
+  },
+  {
+   "step": 35,
+   "events": [
+    [
+     "ended",
+     "carrier",
+     "load"
+    ]
+   ],
+   "observation_step": 35,
+   "pairs": []
+  },
+  {
+   "step": 36,
+   "events": [],
+   "observation_step": 36,
+   "pairs": []
+  },
+  {
+   "step": 37,
+   "events": [],
+   "observation_step": 37,
+   "pairs": []
+  },
+  {
+   "step": 38,
+   "events": [
+    [
+     "started",
+     "load",
+     "load2"
+    ]
+   ],
+   "observation_step": 38,
+   "pairs": [
+    [
+     [
+      "load",
+      "load2"
+     ],
+     -2.3841857930625987e-08,
+     38
+    ]
+   ]
+  },
+  {
+   "step": 39,
+   "events": [],
+   "observation_step": 39,
+   "pairs": [
+    [
+     [
+      "load",
+      "load2"
+     ],
+     -2.3841857930625987e-08,
+     38
+    ]
+   ]
+  },
+  {
+   "step": 40,
+   "events": [],
+   "observation_step": 40,
+   "pairs": [
+    [
+     [
+      "load",
+      "load2"
+     ],
+     -2.3841857930625987e-08,
+     38
+    ]
+   ]
+  }
+ ]
+}

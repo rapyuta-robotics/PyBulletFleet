@@ -1,0 +1,658 @@
+{
+ "scene": "agents_crossing",
+ "reference": "275b9f0",
+ "steps": [
+  {
+   "step": 1,
+   "events": [],
+   "observation_step": 1,
+   "pairs": []
+  },
+  {
+   "step": 2,
+   "events": [],
+   "observation_step": 2,
+   "pairs": []
+  },
+  {
+   "step": 3,
+   "events": [],
+   "observation_step": 3,
+   "pairs": []
+  },
+  {
+   "step": 4,
+   "events": [],
+   "observation_step": 4,
+   "pairs": []
+  },
+  {
+   "step": 5,
+   "events": [],
+   "observation_step": 5,
+   "pairs": []
+  },
+  {
+   "step": 6,
+   "events": [],
+   "observation_step": 6,
+   "pairs": []
+  },
+  {
+   "step": 7,
+   "events": [],
+   "observation_step": 7,
+   "pairs": []
+  },
+  {
+   "step": 8,
+   "events": [],
+   "observation_step": 8,
+   "pairs": []
+  },
+  {
+   "step": 9,
+   "events": [],
+   "observation_step": 9,
+   "pairs": []
+  },
+  {
+   "step": 10,
+   "events": [],
+   "observation_step": 10,
+   "pairs": []
+  },
+  {
+   "step": 11,
+   "events": [],
+   "observation_step": 11,
+   "pairs": []
+  },
+  {
+   "step": 12,
+   "events": [],
+   "observation_step": 12,
+   "pairs": []
+  },
+  {
+   "step": 13,
+   "events": [],
+   "observation_step": 13,
+   "pairs": []
+  },
+  {
+   "step": 14,
+   "events": [],
+   "observation_step": 14,
+   "pairs": []
+  },
+  {
+   "step": 15,
+   "events": [],
+   "observation_step": 15,
+   "pairs": []
+  },
+  {
+   "step": 16,
+   "events": [
+    [
+     "started",
+     "r_east",
+     "r_north"
+    ],
+    [
+     "started",
+     "r_east",
+     "r_south"
+    ],
+    [
+     "started",
+     "r_north",
+     "r_west"
+    ],
+    [
+     "started",
+     "r_south",
+     "r_west"
+    ]
+   ],
+   "observation_step": 16,
+   "pairs": [
+    [
+     [
+      "r_east",
+      "r_north"
+     ],
+     -0.07699999999965622,
+     16
+    ],
+    [
+     [
+      "r_east",
+      "r_south"
+     ],
+     -0.07699999999977702,
+     16
+    ],
+    [
+     [
+      "r_north",
+      "r_west"
+     ],
+     -0.12599999632612582,
+     16
+    ],
+    [
+     [
+      "r_south",
+      "r_west"
+     ],
+     -0.12600055098059543,
+     16
+    ]
+   ]
+  },
+  {
+   "step": 17,
+   "events": [
+    [
+     "started",
+     "r_east",
+     "r_west"
+    ],
+    [
+     "started",
+     "r_north",
+     "r_south"
+    ]
+   ],
+   "observation_step": 17,
+   "pairs": [
+    [
+     [
+      "r_east",
+      "r_north"
+     ],
+     -0.2,
+     17
+    ],
+    [
+     [
+      "r_east",
+      "r_south"
+     ],
+     -0.19999999999999998,
+     17
+    ],
+    [
+     [
+      "r_east",
+      "r_west"
+     ],
+     -0.19999999999998827,
+     17
+    ],
+    [
+     [
+      "r_north",
+      "r_south"
+     ],
+     -1.996666720849305e-15,
+     17
+    ],
+    [
+     [
+      "r_north",
+      "r_west"
+     ],
+     -0.199999999999983,
+     17
+    ],
+    [
+     [
+      "r_south",
+      "r_west"
+     ],
+     -0.2,
+     17
+    ]
+   ]
+  },
+  {
+   "step": 18,
+   "events": [],
+   "observation_step": 18,
+   "pairs": [
+    [
+     [
+      "r_east",
+      "r_north"
+     ],
+     -0.1999999999999543,
+     18
+    ],
+    [
+     [
+      "r_east",
+      "r_south"
+     ],
+     -0.1999999999999542,
+     18
+    ],
+    [
+     [
+      "r_east",
+      "r_west"
+     ],
+     -0.19999999999977613,
+     18
+    ],
+    [
+     [
+      "r_north",
+      "r_south"
+     ],
+     -0.19999999999985102,
+     18
+    ],
+    [
+     [
+      "r_north",
+      "r_west"
+     ],
+     -0.19999999999991877,
+     18
+    ],
+    [
+     [
+      "r_south",
+      "r_west"
+     ],
+     -0.19999999999970983,
+     18
+    ]
+   ]
+  },
+  {
+   "step": 19,
+   "events": [],
+   "observation_step": 19,
+   "pairs": [
+    [
+     [
+      "r_east",
+      "r_north"
+     ],
+     -0.1999999999998507,
+     19
+    ],
+    [
+     [
+      "r_east",
+      "r_south"
+     ],
+     -0.19999999999985027,
+     19
+    ],
+    [
+     [
+      "r_east",
+      "r_west"
+     ],
+     -0.201,
+     19
+    ],
+    [
+     [
+      "r_north",
+      "r_south"
+     ],
+     -0.201,
+     19
+    ],
+    [
+     [
+      "r_north",
+      "r_west"
+     ],
+     -0.201,
+     19
+    ],
+    [
+     [
+      "r_south",
+      "r_west"
+     ],
+     -0.201,
+     19
+    ]
+   ]
+  },
+  {
+   "step": 20,
+   "events": [],
+   "observation_step": 20,
+   "pairs": [
+    [
+     [
+      "r_east",
+      "r_north"
+     ],
+     -0.201,
+     20
+    ],
+    [
+     [
+      "r_east",
+      "r_south"
+     ],
+     -0.201,
+     20
+    ],
+    [
+     [
+      "r_east",
+      "r_west"
+     ],
+     -0.19999999999987916,
+     20
+    ],
+    [
+     [
+      "r_north",
+      "r_south"
+     ],
+     -0.201,
+     20
+    ],
+    [
+     [
+      "r_north",
+      "r_west"
+     ],
+     -0.19999999999978765,
+     20
+    ],
+    [
+     [
+      "r_south",
+      "r_west"
+     ],
+     -0.19999999999968426,
+     20
+    ]
+   ]
+  },
+  {
+   "step": 21,
+   "events": [
+    [
+     "ended",
+     "r_east",
+     "r_west"
+    ]
+   ],
+   "observation_step": 21,
+   "pairs": [
+    [
+     [
+      "r_east",
+      "r_north"
+     ],
+     -0.19999999999964355,
+     21
+    ],
+    [
+     [
+      "r_east",
+      "r_south"
+     ],
+     -0.1999999999996425,
+     21
+    ],
+    [
+     [
+      "r_north",
+      "r_south"
+     ],
+     6.678685382510707e-16,
+     21
+    ],
+    [
+     [
+      "r_north",
+      "r_west"
+     ],
+     -0.0499999999999986,
+     21
+    ],
+    [
+     [
+      "r_south",
+      "r_west"
+     ],
+     -0.0499999999999986,
+     21
+    ]
+   ]
+  },
+  {
+   "step": 22,
+   "events": [
+    [
+     "ended",
+     "r_north",
+     "r_south"
+    ],
+    [
+     "ended",
+     "r_north",
+     "r_west"
+    ],
+    [
+     "ended",
+     "r_south",
+     "r_west"
+    ]
+   ],
+   "observation_step": 22,
+   "pairs": [
+    [
+     [
+      "r_east",
+      "r_north"
+     ],
+     -0.0499999999999986,
+     22
+    ],
+    [
+     [
+      "r_east",
+      "r_south"
+     ],
+     -0.0499999999999986,
+     22
+    ]
+   ]
+  },
+  {
+   "step": 23,
+   "events": [
+    [
+     "ended",
+     "r_east",
+     "r_north"
+    ],
+    [
+     "ended",
+     "r_east",
+     "r_south"
+    ]
+   ],
+   "observation_step": 23,
+   "pairs": []
+  },
+  {
+   "step": 24,
+   "events": [],
+   "observation_step": 24,
+   "pairs": []
+  },
+  {
+   "step": 25,
+   "events": [],
+   "observation_step": 25,
+   "pairs": []
+  },
+  {
+   "step": 26,
+   "events": [],
+   "observation_step": 26,
+   "pairs": []
+  },
+  {
+   "step": 27,
+   "events": [],
+   "observation_step": 27,
+   "pairs": []
+  },
+  {
+   "step": 28,
+   "events": [],
+   "observation_step": 28,
+   "pairs": []
+  },
+  {
+   "step": 29,
+   "events": [],
+   "observation_step": 29,
+   "pairs": []
+  },
+  {
+   "step": 30,
+   "events": [],
+   "observation_step": 30,
+   "pairs": []
+  },
+  {
+   "step": 31,
+   "events": [],
+   "observation_step": 31,
+   "pairs": []
+  },
+  {
+   "step": 32,
+   "events": [],
+   "observation_step": 32,
+   "pairs": []
+  },
+  {
+   "step": 33,
+   "events": [],
+   "observation_step": 33,
+   "pairs": []
+  },
+  {
+   "step": 34,
+   "events": [],
+   "observation_step": 34,
+   "pairs": []
+  },
+  {
+   "step": 35,
+   "events": [],
+   "observation_step": 35,
+   "pairs": []
+  },
+  {
+   "step": 36,
+   "events": [],
+   "observation_step": 36,
+   "pairs": []
+  },
+  {
+   "step": 37,
+   "events": [],
+   "observation_step": 37,
+   "pairs": []
+  },
+  {
+   "step": 38,
+   "events": [],
+   "observation_step": 38,
+   "pairs": []
+  },
+  {
+   "step": 39,
+   "events": [],
+   "observation_step": 39,
+   "pairs": []
+  },
+  {
+   "step": 40,
+   "events": [],
+   "observation_step": 40,
+   "pairs": []
+  },
+  {
+   "step": 41,
+   "events": [],
+   "observation_step": 41,
+   "pairs": []
+  },
+  {
+   "step": 42,
+   "events": [],
+   "observation_step": 42,
+   "pairs": []
+  },
+  {
+   "step": 43,
+   "events": [],
+   "observation_step": 43,
+   "pairs": []
+  },
+  {
+   "step": 44,
+   "events": [],
+   "observation_step": 44,
+   "pairs": []
+  },
+  {
+   "step": 45,
+   "events": [],
+   "observation_step": 45,
+   "pairs": []
+  },
+  {
+   "step": 46,
+   "events": [],
+   "observation_step": 46,
+   "pairs": []
+  },
+  {
+   "step": 47,
+   "events": [],
+   "observation_step": 47,
+   "pairs": []
+  },
+  {
+   "step": 48,
+   "events": [],
+   "observation_step": 48,
+   "pairs": []
+  },
+  {
+   "step": 49,
+   "events": [],
+   "observation_step": 49,
+   "pairs": []
+  },
+  {
+   "step": 50,
+   "events": [],
+   "observation_step": 50,
+   "pairs": []
+  }
+ ]
+}
