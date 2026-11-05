@@ -311,3 +311,47 @@ def resolve_bridge_api_config(bridge_config: Mapping[str, Any]) -> BridgeApiConf
         per_robot_api=per_robot_api,
         manager_interfaces=manager_interfaces,
     )
+
+
+@dataclass(frozen=True)
+class StatePlaneConfig:
+    """The ``state_plane`` section: publish fleet state through shared memory for another process.
+
+    When enabled, the bridge writes every step's fleet state to the plane and
+    stops publishing ``/clock`` and the global ``/fleet/states`` itself; the
+    ``state_publisher`` node reads the plane and publishes both.
+    """
+
+    enabled: bool = False
+    name: str = "pbf_state"
+    mode: str = "every_step"
+    slots: int = 8
+    wait_timeout: float = 1.0
+    capacity: int | None = None
+
+
+def resolve_state_plane_config(bridge_config: Mapping[str, Any]) -> StatePlaneConfig:
+    """Read the optional ``state_plane`` section of a bridge config."""
+    section = _optional_mapping_section(bridge_config, "state_plane")
+    if section is None:
+        return StatePlaneConfig()
+    mode = section.get("mode", "every_step")
+    if mode not in ("every_step", "latest"):
+        raise ValueError(f"state_plane.mode must be 'every_step' or 'latest', got {mode!r}")
+    slots = section.get("slots", 8)
+    if isinstance(slots, bool) or not isinstance(slots, int) or slots < 2:
+        raise ValueError(f"state_plane.slots must be an integer of at least 2, got {slots!r}")
+    wait_timeout = section.get("wait_timeout", 1.0)
+    if isinstance(wait_timeout, bool) or not isinstance(wait_timeout, (int, float)) or wait_timeout <= 0:
+        raise ValueError(f"state_plane.wait_timeout must be a positive number of seconds, got {wait_timeout!r}")
+    capacity = section.get("capacity")
+    if capacity is not None and (isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1):
+        raise ValueError(f"state_plane.capacity must be a positive integer, got {capacity!r}")
+    return StatePlaneConfig(
+        enabled=config_get_bool(section, "enabled", False),
+        name=str(section.get("name", "pbf_state")),
+        mode=str(mode),
+        slots=int(slots),
+        wait_timeout=float(wait_timeout),
+        capacity=capacity,
+    )

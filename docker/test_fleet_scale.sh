@@ -19,6 +19,7 @@ VERIFY_MOTION=true
 PER_ROBOT_PUBLISH_REPEATS=3
 PER_ROBOT_PUBLISH_BATCH_SIZE=0
 MEASURE_RTF=false
+STATE_PLANE=
 MEASURE_TRANSPORT=false
 NO_STATE_SUBSCRIPTION=false
 PROFILE=false
@@ -88,6 +89,10 @@ while [ "$#" -gt 0 ]; do
         --measure-rtf)
             MEASURE_RTF=true
             shift
+            ;;
+        --state-plane)
+            STATE_PLANE="$2"
+            shift 2
             ;;
         --measure-transport)
             MEASURE_TRANSPORT=true
@@ -206,6 +211,7 @@ TMPDIR=$(mktemp -d -t pbf_fleet_scale_XXXXXX)
 CONFIG_PATH="$TMPDIR/bridge_fleet_scale.yaml"
 
 cleanup() {
+    stop_bridge_node "${STATE_PUBLISHER_PID:-}"
     stop_bridge_node "${BRIDGE_PID:-}"
     rm -rf "$TMPDIR"
 }
@@ -228,6 +234,9 @@ if [ -n "$TEMPLATE" ]; then
 fi
 if [ "$MEASURE_TRANSPORT" = true ]; then
     CONFIG_ARGS+=(--transport-probe)
+fi
+if [ -n "$STATE_PLANE" ]; then
+    CONFIG_ARGS+=(--state-plane "$STATE_PLANE")
 fi
 if [ "$PROFILE" = true ]; then
     CONFIG_ARGS+=(--enable-time-profiling --profiling-interval "$PROFILING_INTERVAL")
@@ -258,7 +267,19 @@ if [ "$GENERATE_ONLY" = true ]; then
     exit 0
 fi
 
+if [ -n "$STATE_PLANE" ]; then
+    # A bridge killed by a previous run leaves its segment behind (host IPC namespace).
+    rm -f /dev/shm/pbf_state
+fi
 start_bridge_node "$CONFIG_PATH" "$GUI" "$PUBLISH_RATE"
+if [ -n "$STATE_PLANE" ]; then
+    # /clock and /fleet/states come from this process, read from shared memory.
+    # Run the module rather than the console script so a source tree mounted
+    # over an installed package works without rebuilding the image.
+    python3 -m pybullet_fleet_ros.state_publisher_node \
+        --ros-args -p plane_name:=pbf_state -p mode:="$STATE_PLANE" -p publish_rate:="$PUBLISH_RATE" &
+    STATE_PUBLISHER_PID=$!
+fi
 
 echo "--- Phase 2/2: run ROS scale checks ---"
 if [ "$MANAGER_COUNT" -gt 0 ]; then

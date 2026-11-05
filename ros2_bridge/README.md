@@ -286,6 +286,61 @@ fleet_api:
 Delivery attach/drop can use `/fleet/attach` in `fleet_ros` mode. Charging
 still uses per-robot services until a fleet-level charge API is added.
 
+#### Publishing fleet state from another process (`state_plane`)
+
+Building and publishing a 1000-robot `FleetState` costs about 11 ms in rclpy
+(7 ms to build the message, 4 ms to serialize it). Done on the simulation
+thread, that is more than a 10 ms step budget at 10x. With the state plane
+the bridge writes each step's fleet state to shared memory (about 20 µs for
+1000 robots; see the core how-to on the state plane) and a separate
+`state_publisher` process reads it and publishes `/clock` and `/fleet/states`.
+The publisher serializes the message straight from the arrays
+(`FleetStateEncoder`, checked byte for byte against rclpy's serialization in
+the tests) and hands the bytes to the publisher, which takes about 0.6 ms per
+1000-robot message including the DDS write. The bridge then publishes neither
+`/clock` nor `/fleet/states` itself; manager-scoped state streams and
+per-robot topics are unchanged.
+
+Measured with `docker/test_fleet_scale.sh --robots 1000 --publish-rate 10
+--target-rtf 0 --measure-rtf --no-verify-motion` (one same-host subscriber):
+
+| State publishing | Max RTF | Delivered |
+|------------------|---------|-----------|
+| in-process (default) | 4.3-4.9x | every snapshot |
+| `--state-plane every_step` | 16.7x | every snapshot (publisher 0.6 ms each) |
+| `--state-plane latest` | 17.1x | newest snapshot; none skipped at this rate |
+
+At this point the simulation step, not the publishing, sets the RTF.
+
+```yaml
+state_plane:
+  enabled: true
+  name: pbf_state      # shared-memory segment name
+  mode: every_step     # every_step (every snapshot reaches the publisher) | latest
+  slots: 8
+  wait_timeout: 1.0    # every_step: seconds the simulation waits for a slow publisher
+```
+
+```bash
+ros2 launch pybullet_fleet_ros bridge.launch.py config_yaml:=... state_publisher:=true
+# or, by hand, next to the bridge:
+ros2 run pybullet_fleet_ros state_publisher --ros-args -p plane_name:=pbf_state -p mode:=every_step
+```
+
+`state_publisher` parameters: `plane_name`, `mode`, `publish_rate` (sim-time
+Hz, 0 = every snapshot), `publish_clock`, `frame_id`, `fleet_namespace`,
+`rmf_frame_offset`, `attach_timeout` (seconds to wait for the bridge to create
+the plane). `/clock` is published from the snapshot's `sim_time`, so a state
+and its clock always name the same step. The bridge's `publish_rate`
+parameter throttles what it writes to the plane.
+
+In `every_step` mode the simulation waits for the publisher when the ring is
+full, so the simulation's RTF is capped by the publisher's throughput (about
+1500 publishes per second for 1000 robots with the encoder, or about 90 with
+`raw_cdr:=false`, which builds the message the ordinary way); in `latest`
+mode the simulation never waits and the publisher skips snapshots it cannot
+keep up with.
+
 The direct in-process `python_fleet` client is implemented for Plugin Only and
 Plugin + Bridge deployments. It uses `FleetStateProvider` and
 `FleetCommandDispatcher` directly, without ROS bridge endpoints in the RMF

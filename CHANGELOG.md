@@ -14,6 +14,17 @@ are not recommended for production use yet.
 
 ### Added
 
+- ROS 2 bridge: `state_plane` config section and the `state_publisher` node.
+  With `state_plane.enabled`, the bridge writes each step's fleet state to the
+  shared-memory plane instead of building `FleetState` on the stepping thread,
+  and the `state_publisher` process publishes `/clock` and `/fleet/states`
+  from it. `FleetStateEncoder` serializes the message straight from the
+  arrays (byte for byte what rclpy serializes, 0.05 ms for 1000 robots
+  instead of about 11 ms), so one publish costs about 0.6 ms with the DDS
+  write. At 1000 robots the scale check's maximum RTF goes from 4.3-4.9x to
+  16.7x with every snapshot delivered. `bridge.launch.py state_publisher:=true`
+  starts both processes; `docker/test_fleet_scale.sh --state-plane every_step|latest`
+  measures them.
 - Shared-memory state plane (`pybullet_fleet.state_plane`): `StatePlanePublisher`
   writes a snapshot of every agent (pose, velocity, moving flag, battery, names)
   into a ring of slots in a `multiprocessing.shared_memory` segment after each
