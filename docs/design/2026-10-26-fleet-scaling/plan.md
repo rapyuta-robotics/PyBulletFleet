@@ -15,15 +15,20 @@
 PyBullet は遅延同期のミラーにする。コストの大きいフェーズから順に置き換え、各 PR の後に
 定常状態ベンチマークで効果を確認する。
 
-**前提となる upstream PR:** #94 (broad phase) と #98 (`query_aabb`) は 2026-11-04 にマージ済み。
-#87 (PathRequest) を P3 の前にマージする。P1 は #94 の意味論を、P3 は #87 の request 状態を、
-それぞれ前提にする (spec の「関連する upstream PR」)。
+**前提となる upstream PR:** #94 (broad phase) と #98 (`query_aabb`) は 2026-11-04 に、
+#111 (NORMAL_2D の非推奨化) と #114 (軸ごとの collision clearance) は 2026-11-05 にマージ済み
+(main `275b9f0`)。#115 (多リンクボディの AABB を全リンクの和にする) は open で、P1 と同じ場所
+(AABB のキャッシュ) を変えるので P1 の前にマージする。#87 (PathRequest) を P3 の前にマージする。
+P1 は #94 + #114 の意味論を、P3 は #87 の request 状態を、それぞれ前提にする
+(spec の「関連する upstream PR」)。
 
 ---
 
 ## 予算 (1000 台, 2.0 ms/step, 疎シナリオ)
 
 現状は `6ee451e` (#94 入り) の 2026-11-05 の計測 (P0 の sparse シーン、3 回の中央値)。
+main はその後 `275b9f0` (#111、#114 入り) まで進んだが、#114 は 1000 台でノイズの範囲内
+(#114 の計測: 8.6-12.1 ms/step、前後で同じ) なので表の値は据え置き、P1 の着手時に P0 で測り直す。
 #94 前 (`6551125`) の値を括弧に残す。
 
 | フェーズ | 現状 | 目標 | 根拠 |
@@ -155,13 +160,20 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 - `SimObject` の pose キャッシュを store の行へのアクセサに置き換える。`get_pose()` / `set_pose()` の挙動は変えない。
 - `set_poses()` は配列のまま store に書き込む (per-object ループをなくす)。
 - 単一ボディのオブジェクトは、生成時に一度だけ `getAABB` でローカル AABB を取り、
-  以降は pose から配列で AABB を計算する。多リンク URDF は従来どおり `getAABB` を使う。
+  以降は pose から配列で AABB を計算する。多リンク URDF は従来どおり `getAABB` を使う
+  (#115 が入れば全リンクの和。P1 は多リンクの AABB 取得を 1 か所に閉じ込め、#115 の
+  `notify_geometry_changed()` を関節変更の入口として残す)。
 - broad phase: セルキーのソートと `searchsorted` で候補ペアを作る
-  (`prototype/soa_kernel.py` の方式)。登録範囲と探索は #94 と同じ
-  (margin/2 で広げた AABB が届く全セルに登録し、自セルだけ探索、NORMAL_2D は z を広げない)。
+  (`prototype/soa_kernel.py` の方式)。登録範囲と探索は #94 + #114 と同じ
+  (各軸をその軸の clearance の半分だけ広げた AABB が届く全セルに登録し、自セルだけ探索)。
+  clearance は `collision_margin` のスカラーまたは (x, y, z) の三つ組 (#114) で、
+  NORMAL_2D のボディを含むペアは z を 0 にし、HYBRID で物理ボディを含むペアは全軸 0 にする。
+  NORMAL_2D は #111 で非推奨 (削除は #139) なので、P1 ではこの z=0 のマスク以外に
+  NORMAL_2D 固有の経路を作らない。#114 で加わった「broad phase を経ずに再判定する active ペア
+  (動いたペア、margin 変更後の全ペア) にも軸ごとの AABB 判定を先に掛ける」動作も再現する。
   セルより大きいボディ (コンベア、エレベータの床、壁) は届くセルごとにキーを繰り返して登録する
   (`soa_kernel.py` は中心セル 1 つ + 3×3 探索なので、このままでは大きなボディのペアを落とす)。
-  static の除外、`CollisionMode` (2D/3D、DISABLED) の扱いは配列のマスクで再現する。
+  static の除外、`CollisionMode` (3D、2D の z=0、DISABLED) の扱いは配列のマスクで再現する。
   **moved-only:** グリッドのキーは持続させ、動いた行だけキーを更新して近傍探索する
   (動いた割合が閾値を超えたら全件ソートし直す)。全台停止のシナリオで現行の約 0.37 ms を下回ること。
 - `query_aabb()` (#98) は store の AABB 配列に対する重なり判定で提供する。
@@ -173,9 +185,13 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 - **効果見込み:** sparse で collision 1.8 + AABB/grid 3.7 → 1 ms 前後 (#94 後の値から)。
   搬送では子の伝播と AABB/grid の配列化で 50 → 20 ms 前後 (残りは P2、P3 で落とす)。
 - **検証:** 衝突 parity テスト: スクリプト化したシーン (アタッチ/デタッチ、`CollisionMode` の変更、
-  `set_collision_margin`、ignore filter、`physics: true` のボディを含む) で、#94 と
-  `COLLISION_STARTED` / `COLLISION_ENDED` のイベント列 (ペアとステップ番号) と `signed_distance` が
-  一致すること。「同じ結果」と「文書化した差」をテストで区別する。
+  `set_collision_margin` のスカラーと (x, y, z) の三つ組、ignore filter、`physics: true` のボディを含む) で、
+  現行 main (`275b9f0`、#94 + #114) と `COLLISION_STARTED` / `COLLISION_ENDED` のイベント列
+  (ペアとステップ番号) と `signed_distance` が一致すること。比較対象の実装は P1 で消えるので、
+  現行 main で記録したトレースを fixture (golden) として持ち、再記録のスクリプトを添える。
+  「同じ結果」と「文書化した差」をテストで区別する (差はシーンごとの許容リストに書き、
+  リストにある差が出なくなったらそれも失敗にする)。NORMAL_2D は #111 で非推奨
+  (pytest は警告をエラーにする) なので、シーンでは NORMAL_3D + `(m, m, 0)` を使う。
   `query_aabb` parity テスト (`tests/test_query_aabb.py` がそのまま通ること)。
   `tests/` の collision 系テストがすべて通ること。
 - **リスク:** 最大の PR になる。`SimObject` の pose 経路は two-phase step の契約
@@ -254,8 +270,8 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 ### P4. プリミティブ narrow phase (箱と円を既定にする)
 
 - 円・箱 (2D OBB) 同士の距離判定を numpy で実装する。`collision_margin` と signed distance を扱う。
-  判定は「z 区間の重なり (NORMAL_2D では margin なし、現行の broad phase と同じ) AND
-  xy 平面のプリミティブ距離 ≤ margin」とする。
+  判定は「z 区間の重なり (z の clearance は `collision_margin` の z 成分。#114 以降の
+  broad phase と同じ) AND xy 平面のプリミティブ距離 ≤ margin」とする。
 - 形状の割り当て: cylinder / sphere は円、box・mesh・単一ボディ URDF はローカル AABB から求めた箱。
 - オブジェクトごとに `collision_shape: primitive | pybullet` を選べるようにし、既定は `primitive` とする。
   物理オブジェクトと多リンク URDF は常に `pybullet`。
@@ -448,7 +464,8 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
   (現行契約)、遅延ミラーでは最後に同期した値を返す。この違いは文書化し、直接呼び出しは
   アクセサ経由か `sync_mirror()` に誘導する。
 - **upstream との競合:** P1 は #94 と同じ場所を変える。#94 を先に入れ、P1 はその上で書く。
-  #98 の `query_aabb()` と #87 の `MoveAction` も同じ理由で先に入れる。
+  #98 の `query_aabb()` と #87 の `MoveAction` も同じ理由で先に入れる。#111 と #114 は
+  2026-11-05 に入った。#115 (多リンクの AABB) も AABB のキャッシュを変えるので P1 の前に入れる。
 - **ベンチマークのぶれ:** WSL2 上で ±10% 以上ぶれる。判定は中央値と相対比で行う。
 - **プリミティブ近似による判定差:** 既定を箱・円にするため、mesh 形状のロボットでは判定が変わる。
   `collision_shape: pybullet` で従来の判定に戻せるようにする。

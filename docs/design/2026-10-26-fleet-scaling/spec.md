@@ -103,8 +103,11 @@ narrow phase (円判定) は候補ペアがほぼ空のまま走る。実装で�
 
 | PR | 状態 | 本計画との関係 |
 |---|---|---|
-| [#94](https://github.com/yuokamoto/PyBulletFleet/pull/94) broad phase の再設計 (margin で広げた AABB が届く全セルに登録し、自セルだけ探索) | merged 2026-11-04 (`89a88dd`) | P1 の配列 broad phase は #94 の意味論 (登録範囲、NORMAL_2D は z を広げない、STATIC の再登録、DISABLED の除外) をそのまま配列で再現し、parity テストの比較対象も #94 にする。#94 でベースラインの collision_check は 1000 台で 18.7-19.6 → 1.8 ms に下がった。P1 の目標値 (≤ 0.8 ms) は変えない |
+| [#94](https://github.com/yuokamoto/PyBulletFleet/pull/94) broad phase の再設計 (margin で広げた AABB が届く全セルに登録し、自セルだけ探索) | merged 2026-11-04 (`89a88dd`) | P1 の配列 broad phase は #94 の意味論 (登録範囲、STATIC の再登録、DISABLED の除外。z の扱いは #114 の軸ごとの clearance に置き換わった) をそのまま配列で再現し、parity テストの比較対象は #94 + #114 の main (`275b9f0`) にする。#94 でベースラインの collision_check は 1000 台で 18.7-19.6 → 1.8 ms に下がった。P1 の目標値 (≤ 0.8 ms) は変えない |
 | [#98](https://github.com/yuokamoto/PyBulletFleet/pull/98) `query_aabb()` (空間ハッシュで近傍探索) | merged 2026-11-04 (`6ee451e`) | P1 で `_cached_spatial_grid` を消すので、`query_aabb()` は store の AABB 配列に対するベクトル化した重なり判定で提供する (N=10000 でも数十 µs)。「最後の step 以降に pose が書かれたオブジェクト」と DISABLED の扱いは #98 の仕様を保つ |
+| [#111](https://github.com/yuokamoto/PyBulletFleet/pull/111) `CollisionMode.NORMAL_2D` の非推奨化 (`FutureWarning`、削除は #139) | merged 2026-11-05 (`44ae3c0`) | NORMAL_2D は「そのボディを含むペアの z clearance を 0 にする」だけで、#114 の `(m, m, 0)` と同じ。P1 は NORMAL_2D を z=0 のマスクとしてだけ扱い、固有の経路を作らない。pytest は NORMAL_2D の警告をエラーにするので、parity シーンは NORMAL_3D + `(m, m, 0)` で書く |
+| [#114](https://github.com/yuokamoto/PyBulletFleet/pull/114) 軸ごとの collision clearance (`collision_margin` に (x, y, z) の三つ組) | merged 2026-11-05 (`275b9f0`) | broad phase は各軸をその軸の clearance で広げる (登録は半分)。narrow phase は直線距離を最大成分と比べる。broad phase を経ずに再判定する active ペアにも軸ごとの AABB 判定を先に掛ける。P1 の配列 broad phase と P4 のプリミティブ narrow phase (z 区間の判定) はこの意味論を再現する。1000 台の step はノイズの範囲内なので予算は変えない |
+| [#115](https://github.com/yuokamoto/PyBulletFleet/pull/115) 多リンクボディの AABB を全リンクの和にする (`notify_geometry_changed()`) | open | P1 と同じ場所 (AABB のキャッシュ) を変えるので P1 の前に入れる。P1 では多リンクの AABB 取得を 1 か所に閉じ込め、関節変更の入口として `notify_geometry_changed()` を残す |
 | [#87](https://github.com/yuokamoto/PyBulletFleet/pull/87) `PathRequest` と、request の結末で終わる `MoveAction` | open | P3 の「到着イベント」は #87 の `PathRequestState` に載せる。batch カーネルが返す到着行を controller が request の FINISHED に変換し、`MoveAction` はそれで終わる。#87 が先に入る前提で P3 を書く |
 | [#96](https://github.com/yuokamoto/PyBulletFleet/pull/96) `ControllerParams.stop_on_collision` | merged (upstream `7c8f90b`) | batch controller が衝突結果を消費する。P1 以降、衝突結果は object_id の配列で controller に渡す |
 
@@ -202,12 +205,13 @@ PyBullet mirror (遅延同期)
 2. **カーネルはステップ単位で配列を受け渡す。** オブジェクト単位でカーネルを呼ばない。
    カーネル境界はそのまま、将来のネイティブ化の差し替え点にする。
 3. **AABB は pose とローカル形状から計算する。** 単一ボディは store 内で計算し、
-   多リンク URDF (アーム) は従来どおり PyBullet の `getAABB` を使う。
+   多リンク URDF (アーム) は従来どおり PyBullet の `getAABB` を使う (#115 以降は全リンクの和)。
 4. **narrow phase は 2 段にする。** 既定ではプリミティブ (箱または円) 同士を numpy で判定する。
    cylinder / sphere の形状は円、それ以外 (box、mesh、単一ボディの URDF) はローカル AABB から
    求めた箱 (2D OBB) で近似する。z は現行の broad phase と同じ扱いにする
-   ([core_simulation.py#L3316](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/pybullet_fleet/core_simulation.py#L3316):
-   NORMAL_2D でも z 区間の重なりは必要で、margin を z に足さないだけ)。つまり判定は
+   ([core_simulation.py#L2180](https://github.com/yuokamoto/PyBulletFleet/blob/275b9f0/pybullet_fleet/core_simulation.py#L2180):
+   z 区間の重なりは `collision_margin` の z 成分 (#114) で判定し、NORMAL_2D のボディを含むペアは
+   z 成分を 0 にする)。つまり判定は
    「z 区間の重なり AND xy 平面のプリミティブ距離 ≤ margin」で、棚上の荷物や持ち上げた
    物体のように高さが違うものは当たらない。物理オブジェクト、多リンク URDF (アーム)、および
    `collision_shape: pybullet` を明示したオブジェクトを含むペアだけを PyBullet
