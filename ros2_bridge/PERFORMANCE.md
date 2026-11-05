@@ -328,6 +328,13 @@ the reliable default preserves complete delivery semantics for ordinary local
 clients. This is a deployment decision, not a claim that the same profile is
 best across a network or with a slow subscriber.
 
+The bridge applies fleet commands on the simulation thread: inside the
+callback between steps, else at the next step boundary (`fleet_api.ack_mode`,
+see the README). In the default `applied` mode `Command ack` includes the
+application, as the rows above did, plus at most one step of waiting when the
+command arrived mid-step; in `accepted` mode it measures validation and the
+service round trip only.
+
 `Command ack` is the `/fleet/navigate` service response time. `All moved after
 ack` or `All moved after command publication` is a separate checker result based
 on observed robot state after the command is accepted or published. Ack and

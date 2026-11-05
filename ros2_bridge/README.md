@@ -286,6 +286,42 @@ fleet_api:
 Delivery attach/drop can use `/fleet/attach` in `fleet_ros` mode. Charging
 still uses per-robot services until a fleet-level charge API is added.
 
+#### Command acknowledgement (`ack_mode`)
+
+A fleet command (`navigate`, `stop`, `attach`, `execute_action`,
+`joint_command`, as a service or a topic) is validated in the ROS callback and
+applied on the simulation thread: inside the callback when that thread is
+between steps (sleeping for pacing at a target RTF, or paused), otherwise at
+the next step boundary. A callback never writes simulation state in the
+middle of a step, and at full speed it does not solve trajectories while the
+step holds the interpreter lock.
+
+- `ack_mode: applied` (default): the service answers with the outcome of the
+  application, as it always did: a goal the robot refuses or an attach with
+  nothing in reach is in `rejected_names`. When the command had to wait for a
+  step boundary, the answer takes at most one step of wall time; after
+  `ack_timeout` seconds (default 1.0) the service answers with the accepted
+  targets and the command still applies at the next step.
+- `ack_mode: accepted`: the service answers as soon as the targets resolve.
+  `accepted_names` are the robots the command will be applied to;
+  `rejected_names` are unknown, duplicate, ambiguous or out-of-scope robots,
+  plus goals in an unsupported frame. A refusal at application appears only in
+  the ack published on `/fleet/command_acks` (`pybullet_fleet_msgs/CommandAck`,
+  same `command_id`) and in a warning log. Use it when many commands per
+  second must not each wait for a step.
+
+Both keys are accepted at the top of `fleet_api` and in each
+`manager_interfaces` entry. Topics never wait. Every application's ack is
+published on `command_acks` in both modes.
+
+```yaml
+fleet_api:
+  enabled: true
+  navigate: true
+  ack_mode: accepted  # applied (default) | accepted
+  ack_timeout: 1.0    # seconds, applied mode only
+```
+
 The direct in-process `python_fleet` client is implemented for Plugin Only and
 Plugin + Bridge deployments. It uses `FleetStateProvider` and
 `FleetCommandDispatcher` directly, without ROS bridge endpoints in the RMF

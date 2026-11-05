@@ -119,6 +119,33 @@ class FleetCommandDispatcher:
             index[explicit_name] = None if explicit_name in index else agent
         self._name_index = index
 
+    def accept(
+        self,
+        names: Iterable[str],
+        *,
+        source: str = "python",
+        command_id: str | None = None,
+    ) -> CommandAck:
+        """Resolve *names* and return the ack a command would get before it is applied.
+
+        This is the validation half of a command: unknown, duplicate, ambiguous
+        and out-of-scope targets are rejected, the rest accepted. Nothing is
+        applied and no command event is emitted, so a caller can answer
+        "accepted" at once and apply the command later, on the simulation
+        thread, with the ``command_id`` this ack carries. Targets a later
+        application refuses (a goal the robot cannot take) appear only in that
+        application's own ack.
+        """
+        target_names = tuple(names)
+        accepted, rejected = self._resolve_targets(target_names)
+        return CommandAck(
+            command_id=command_id or _new_command_id(),
+            source=source,
+            sim_time=float(getattr(self.sim_core, "sim_time", 0.0)),
+            accepted_names=tuple(accepted.keys()),
+            rejected=rejected,
+        )
+
     def navigate(
         self,
         goals: Iterable[RobotGoalCommand2D | RobotGoalCommand3D],

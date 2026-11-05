@@ -70,7 +70,8 @@ except ImportError as exc:
     FleetStopSrv = None
     _FLEET_MSGS_IMPORT_ERROR = exc
 
-from .interface_config import FleetApiConfig, ManagerInterfaceConfig
+from .command_queue import DEFAULT_APPLY_TIMEOUT_S as DEFAULT_ACK_TIMEOUT_S, StepCommandQueue
+from .interface_config import ACK_MODE_ACCEPTED, ACK_MODE_APPLIED, FleetApiConfig, ManagerInterfaceConfig
 from .fleet_endpoints import FLEET_API_NAMESPACE, fleet_endpoint, normalize_fleet_namespace
 from .conversions import ros_time_to_seconds
 
@@ -105,6 +106,7 @@ class FleetRosInterface:
         namespace: str = FLEET_API_NAMESPACE,
         state_names: Iterable[str] | None = None,
         command_names: Iterable[str] | None = None,
+        command_queue: "StepCommandQueue | None" = None,
     ) -> None:
         """Create one global or manager-scoped Fleet ROS endpoint set.
 
@@ -124,8 +126,16 @@ class FleetRosInterface:
                 ``state_names``: a global endpoint may publish a filtered
                 state stream while retaining compatibility commands for every
                 Agent.
+            command_queue: Where a command callback hands the application of
+                its command to the simulation thread (see
+                :mod:`.command_queue`). ``None`` applies commands inside the
+                callback, as a test without a simulation loop needs.
         """
         self.node = node
+        self._command_queue = command_queue
+        self._ack_mode = getattr(config, "ack_mode", ACK_MODE_APPLIED)
+        self._ack_timeout = float(getattr(config, "ack_timeout", DEFAULT_ACK_TIMEOUT_S))
+        self._ack_pub = None
         self._sim_core = sim_core
         self.config = config
         self._namespace = normalize_fleet_namespace(namespace)
@@ -156,6 +166,10 @@ class FleetRosInterface:
         self.state_provider = FleetStateProvider(sim_core)
         self.command_dispatcher = FleetCommandDispatcher(sim_core, allowed_names=command_names)
         self._rmf_frame_offset = _node_frame_offset(node)
+        if any(getattr(config, name, False) for name in ("navigate", "stop", "attach", "execute_action", "joint_command")):
+            # The outcome of every applied command, for callers answered with
+            # "accepted" before the command reached the simulation.
+            self._ack_pub = node.create_publisher(CommandAck, self._endpoint("command_acks"), 10)
 
         if config.states:
             self._state_pub = node.create_publisher(FleetState, self._endpoint("states"), _fleet_state_qos(config))
@@ -275,10 +289,92 @@ class FleetRosInterface:
             self.node.destroy_publisher(self._transport_probe_pub)
             self._transport_probe_pub = None
 
+    # ------------------------------------------------------------------
+    # Accept now, apply at the step boundary
+    # ------------------------------------------------------------------
+
+    def _command_names(self, kind: str, msg) -> tuple[str, ...]:
+        if kind == "navigate":
+            return tuple(goal.name for goal in list(msg.goals_2d) + list(msg.goals_3d))
+        if kind == "stop":
+            return tuple(msg.names)
+        if kind == "attach":
+            return tuple(command.name for command in _attach_commands_from_msg(msg))
+        if kind == "execute_action":
+            return tuple(command.name for command in _action_commands_from_msg(msg))
+        if kind == "joint_command":
+            commands, _ = _joint_commands_from_msg(msg)
+            return tuple(command.name for command in commands)
+        raise ValueError(f"unknown fleet command kind {kind!r}")
+
+    def _accept(self, kind: str, msg) -> PbfCommandAck:
+        """The validation verdict on *msg*: targets resolved, nothing applied.
+
+        Gives the message its command id when it has none, so the application
+        later answers under the same id.
+        """
+        rejected: dict[str, str] = {}
+        if kind == "navigate":
+            rejected = dict(_navigation_frame_rejections(msg))
+        elif kind == "joint_command":
+            _, rejected = _joint_commands_from_msg(msg)
+            rejected = dict(rejected)
+        ack = self.command_dispatcher.accept(
+            self._command_names(kind, msg), source=_source_from_msg(msg), command_id=msg.command_id or None
+        )
+        if not msg.command_id:
+            msg.command_id = ack.command_id
+        if not rejected:
+            return ack
+        return PbfCommandAck(
+            command_id=ack.command_id,
+            source=ack.source,
+            sim_time=ack.sim_time,
+            accepted_names=tuple(name for name in ack.accepted_names if name not in rejected),
+            rejected={**dict(ack.rejected), **rejected},
+        )
+
+    def _handle(self, kind: str, msg, dispatch, *, service: bool) -> PbfCommandAck:
+        """Validate *msg* on this thread, apply it on the simulation thread, and return the ack to answer with.
+
+        Without a queue, or while nothing drives steps, the command is applied
+        here and its own ack returned. Otherwise the application is queued for
+        the next step boundary: a service answers with the validation ack
+        (``ack_mode: accepted``) or waits for the application
+        (``ack_mode: applied``); a topic never waits. Every application's ack
+        is published on ``command_acks`` and its rejections logged.
+        """
+
+        def apply() -> PbfCommandAck:
+            ack = dispatch(msg)
+            self._log_rejections(ack)
+            self._publish_ack(ack)
+            return ack
+
+        queue = self._command_queue
+        if queue is None or not queue.deferred:
+            return apply()
+        accepted = self._accept(kind, msg)
+        if service and self._ack_mode == ACK_MODE_APPLIED:
+            applied = queue.submit(apply, wait=True, timeout=self._ack_timeout)
+            if applied is not None:
+                return applied
+            self.node.get_logger().warning(
+                f"Fleet command '{accepted.command_id}' is queued but was not applied within "
+                f"{self._ack_timeout:.1f} s; answering with the accepted targets"
+            )
+            return accepted
+        queue.submit(apply)
+        self._log_rejections(accepted)
+        return accepted
+
+    def _publish_ack(self, ack: PbfCommandAck) -> None:
+        if self._ack_pub is not None:
+            self._ack_pub.publish(command_ack_to_msg(ack))
+
     def _on_navigate(self, msg: FleetNavigate) -> None:
         receive_ns = time.monotonic_ns()
-        ack = self._dispatch_navigate(msg)
-        self._log_rejections(ack)
+        ack = self._handle("navigate", msg, self._dispatch_navigate, service=False)
         if self._transport_probe_pub is not None:
             self._publish_transport_timing(
                 channel=self._endpoint("navigate_topic"),
@@ -292,7 +388,7 @@ class FleetRosInterface:
 
     def _on_navigate_service(self, request, response):
         receive_ns = time.monotonic_ns()
-        response.ack = command_ack_to_msg(self._dispatch_navigate(request))
+        response.ack = command_ack_to_msg(self._handle("navigate", request, self._dispatch_navigate, service=True))
         if self._transport_probe_pub is not None:
             self._publish_transport_timing(
                 channel=self._endpoint("navigate"),
@@ -357,10 +453,10 @@ class FleetRosInterface:
         )
 
     def _on_stop(self, msg: FleetStop) -> None:
-        self._log_rejections(self._dispatch_stop(msg))
+        self._handle("stop", msg, self._dispatch_stop, service=False)
 
     def _on_stop_service(self, request, response):
-        response.ack = command_ack_to_msg(self._dispatch_stop(request))
+        response.ack = command_ack_to_msg(self._handle("stop", request, self._dispatch_stop, service=True))
         return response
 
     def _dispatch_stop(self, msg: FleetStop) -> PbfCommandAck:
@@ -371,10 +467,10 @@ class FleetRosInterface:
         )
 
     def _on_attach(self, msg: FleetAttach) -> None:
-        self._log_rejections(self._dispatch_attach(msg))
+        self._handle("attach", msg, self._dispatch_attach, service=False)
 
     def _on_attach_service(self, request, response):
-        response.ack = command_ack_to_msg(self._dispatch_attach(request))
+        response.ack = command_ack_to_msg(self._handle("attach", request, self._dispatch_attach, service=True))
         return response
 
     def _dispatch_attach(self, msg: FleetAttach) -> PbfCommandAck:
@@ -385,10 +481,10 @@ class FleetRosInterface:
         )
 
     def _on_execute_action(self, msg: FleetExecuteAction) -> None:
-        self._log_rejections(self._dispatch_execute_action(msg))
+        self._handle("execute_action", msg, self._dispatch_execute_action, service=False)
 
     def _on_execute_action_service(self, request, response):
-        response.ack = command_ack_to_msg(self._dispatch_execute_action(request))
+        response.ack = command_ack_to_msg(self._handle("execute_action", request, self._dispatch_execute_action, service=True))
         return response
 
     def _dispatch_execute_action(self, msg: FleetExecuteAction) -> PbfCommandAck:
@@ -399,10 +495,10 @@ class FleetRosInterface:
         )
 
     def _on_joint_command(self, msg: FleetJointCommand) -> None:
-        self._log_rejections(self._dispatch_joint_command(msg))
+        self._handle("joint_command", msg, self._dispatch_joint_command, service=False)
 
     def _on_joint_command_service(self, request, response):
-        response.ack = command_ack_to_msg(self._dispatch_joint_command(request))
+        response.ack = command_ack_to_msg(self._handle("joint_command", request, self._dispatch_joint_command, service=True))
         return response
 
     def _dispatch_joint_command(self, msg: FleetJointCommand) -> PbfCommandAck:

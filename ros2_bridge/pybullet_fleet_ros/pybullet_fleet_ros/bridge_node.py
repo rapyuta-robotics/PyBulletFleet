@@ -30,6 +30,7 @@ from pybullet_fleet.controller import OmniController
 from pybullet_fleet.types import MotionMode
 
 from .bridge_plugin import BridgePlugin
+from .command_queue import StepCommandQueue
 from .conversions import sim_time_to_ros_time
 from .fleet_ros_interface import FleetRosInterface
 from .fleet_endpoints import manager_fleet_namespace
@@ -261,12 +262,16 @@ class BridgeNode(Node):
                 formatted = ", ".join(sorted(overlap))
                 raise ValueError(f"Agent(s) {formatted} belong to more than one exposed manager interface")
             claimed_names.update(names)
+        # Commands from ROS callbacks are applied on the simulation thread at
+        # PRE_STEP; the callbacks only validate and answer. See command_queue.py.
+        self.command_queue = StepCommandQueue(self.sim)
         self._fleet_ros = FleetRosInterface(
             self,
             self.sim,
             self._api_config.fleet_api,
             # Preserve ``None`` for the all-Agent global compatibility stream.
             state_names=global_state_names,
+            command_queue=self.command_queue,
         )
         self._manager_fleet_ros = [
             FleetRosInterface(
@@ -276,6 +281,7 @@ class BridgeNode(Node):
                 namespace=manager_fleet_namespace(entry.manager),
                 state_names=agents_by_manager[entry.manager],
                 command_names=agents_by_manager[entry.manager],
+                command_queue=self.command_queue,
             )
             for entry in self._api_config.manager_interfaces
         ]
@@ -310,10 +316,12 @@ class BridgeNode(Node):
         if enable_sim_services:
             from .sim_services import SimServices
 
-            self._sim_services = SimServices(self, self.sim, self)
+            self._sim_services = SimServices(self, self.sim, self, command_queue=self.command_queue)
 
         # Start simulation loop on a daemon thread.
         # rclpy.spin() runs on the main thread for action server callbacks.
+        # From here on, ROS callbacks hand their commands to the loop's PRE_STEP.
+        self.command_queue.activate()
         self._sim_thread = threading.Thread(target=self._run_simulation_loop, daemon=True, name="sim_loop")
         self._sim_thread.start()
 
@@ -502,6 +510,10 @@ class BridgeNode(Node):
         with self._shutdown_lock:
             if self._shutdown_requested:
                 return
+            # Commands accepted by ROS callbacks since the last step, applied
+            # before any handler or the step itself reads them. The step lock
+            # stays held until POST_STEP, so a callback arriving mid-step queues.
+            self.command_queue.begin_step()
             stamp = sim_time_to_ros_time(sim_time)
             with self._handler_lock:
                 handlers = list(self._pre_step_handlers)
@@ -511,12 +523,18 @@ class BridgeNode(Node):
 
     def _on_post_step(self, dt, sim_time, **kwargs) -> None:
         """POST_STEP — publish /clock and delegate to handler.post_step()."""
-        if getattr(self, "_shutdown_requested", False):
-            return
-        with self._shutdown_lock:
-            if self._shutdown_requested:
+        # A stub without __init__ (tests) has no queue; a real node always does.
+        queue = getattr(self, "command_queue", None)
+        try:
+            if getattr(self, "_shutdown_requested", False):
                 return
-            self._on_post_step_active(dt, sim_time)
+            with self._shutdown_lock:
+                if self._shutdown_requested:
+                    return
+                self._on_post_step_active(dt, sim_time)
+        finally:
+            if queue is not None:
+                queue.end_step()
 
     def _on_post_step_active(self, dt, sim_time) -> None:
         """Publish post-step state while ROS handles are known to be live."""
@@ -562,6 +580,8 @@ class BridgeNode(Node):
             if self._shutdown_requested:
                 return False
             self._shutdown_requested = True
+        # No step will apply the queue any more; release anyone waiting on it.
+        self.command_queue.deactivate()
         return super().destroy_node()
 
     def reset(self) -> None:

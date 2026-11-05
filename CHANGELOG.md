@@ -14,6 +14,18 @@ are not recommended for production use yet.
 
 ### Added
 
+- ROS 2 bridge: fleet commands (`navigate`, `stop`, `attach`, `execute_action`,
+  `joint_command`) are validated in the ROS callback and applied on the
+  simulation thread (`StepCommandQueue`): inside the callback while that
+  thread is between steps, else at the next step boundary. A callback no
+  longer writes simulation state mid-step or solves 1000 trajectories while
+  the step holds the interpreter lock. A command service answers after the
+  application (`fleet_api.ack_mode: applied`, the default, with
+  `ack_timeout`) or as soon as its targets resolve (`ack_mode: accepted`);
+  every application's outcome is published on
+  `<fleet namespace>/command_acks`. `/sim/set_entity_state` applies its pose
+  the same way. `FleetCommandDispatcher.accept()` gives the validation ack
+  without applying anything.
 - `MultiRobotSimulationCore.query_aabb(aabb_min, aabb_max)`: the objects whose
   AABB overlaps a box, looked up through the collision spatial hash, so the
   cost follows how crowded the box is rather than how many objects the

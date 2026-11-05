@@ -18,6 +18,7 @@ from .conversions import pbf_pose_to_ros, ros_pose_to_pbf
 from .uri_utils import resolve_uri
 
 if TYPE_CHECKING:
+    from .command_queue import StepCommandQueue
     from pybullet_fleet.core_simulation import MultiRobotSimulationCore
     from rclpy.node import Node
 
@@ -82,10 +83,14 @@ class SimServices:
         node: "Node",
         sim: "MultiRobotSimulationCore",
         bridge: "BridgeNode",
+        command_queue: "StepCommandQueue | None" = None,
     ) -> None:
         self._node = node
         self._sim = sim
         self._bridge = bridge
+        # Pose writes go to the simulation thread at the step boundary when a
+        # loop is running; without a queue they apply inline, as before.
+        self._command_queue = command_queue
 
         # Create services
         node.create_service(GetSimulatorFeatures, "/sim/get_simulator_features", self._get_features)
@@ -235,7 +240,12 @@ class SimServices:
             return response
         if getattr(request, "set_pose", True):
             new_pose = ros_pose_to_pbf(request.state.pose)
-            obj.set_pose(new_pose)
+            if self._command_queue is None:
+                obj.set_pose(new_pose)
+            elif self._command_queue.submit(lambda: obj.set_pose(new_pose) or True, wait=True) is None:
+                response.result.result = _FAILED
+                response.result.error_message = f"Pose of '{request.entity}' queued but not applied within the step timeout"
+                return response
         response.result.result = _OK
         return response
 

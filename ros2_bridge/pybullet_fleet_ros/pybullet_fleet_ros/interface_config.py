@@ -13,6 +13,17 @@ from typing import Any
 
 from pybullet_fleet.config_utils import config_get_bool, config_get_str_list
 
+# A command is applied on the simulation thread: inline when that thread is
+# between steps, else at the next step boundary. "applied" (the default) has the
+# service wait for that and answer with the outcome, so a refused goal or a
+# failed attach is still in the response; "accepted" answers as soon as the
+# targets resolve and leaves the outcome to the command_acks topic.
+ACK_MODE_APPLIED = "applied"
+ACK_MODE_ACCEPTED = "accepted"
+ACK_MODES = frozenset({ACK_MODE_ACCEPTED, ACK_MODE_APPLIED})
+# How long an "applied" answer waits for the step boundary, in wall seconds.
+DEFAULT_ACK_TIMEOUT_S = 1.0
+
 try:
     from rclpy.qos import DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
 except ImportError:  # pragma: no cover - exercised by core-only configuration tests
@@ -67,6 +78,10 @@ class FleetApiConfig:
     attach: bool = False
     charging: bool = False
     transport_probe: bool = False
+    # How a command service answers: "accepted" once its targets resolve, with the
+    # command applied at the next step boundary, or "applied" after that application.
+    ack_mode: str = ACK_MODE_APPLIED
+    ack_timeout: float = DEFAULT_ACK_TIMEOUT_S
     state_scope: StateScope = StateScope.ALL_AGENTS
     state_include_managers: tuple[str, ...] = field(default_factory=tuple)
     # The scale checker writes this internal setting into its temporary bridge
@@ -90,6 +105,8 @@ class ManagerInterfaceConfig:
     stop: bool = False
     execute_action: bool = False
     attach: bool = False
+    ack_mode: str = ACK_MODE_APPLIED
+    ack_timeout: float = DEFAULT_ACK_TIMEOUT_S
 
 
 @dataclass(frozen=True)
@@ -152,6 +169,8 @@ def _fleet_api_from_dict(config: Mapping[str, Any], base: FleetApiConfig) -> Fle
         attach=config_get_bool(config, "attach", base.attach),
         charging=config_get_bool(config, "charging", base.charging),
         transport_probe=config_get_bool(config, "transport_probe", base.transport_probe),
+        ack_mode=_ack_mode_from_dict(config, "fleet_api", base.ack_mode),
+        ack_timeout=_ack_timeout_from_dict(config, "fleet_api", base.ack_timeout),
         state_scope=state_scope,
         state_include_managers=state_include_managers,
         state_qos=state_qos,
@@ -278,9 +297,25 @@ def _manager_interfaces_from_dict(config: Mapping[str, Any]) -> tuple[ManagerInt
                 stop=config_get_bool(raw_entry, "stop", False),
                 execute_action=config_get_bool(raw_entry, "execute_action", False),
                 attach=config_get_bool(raw_entry, "attach", False),
+                ack_mode=_ack_mode_from_dict(raw_entry, f"fleet_api.manager_interfaces[{index}]", ACK_MODE_APPLIED),
+                ack_timeout=_ack_timeout_from_dict(raw_entry, f"fleet_api.manager_interfaces[{index}]", DEFAULT_ACK_TIMEOUT_S),
             )
         )
     return tuple(entries)
+
+
+def _ack_mode_from_dict(config: Mapping[str, Any], where: str, default: str) -> str:
+    mode = config.get("ack_mode", default)
+    if mode not in ACK_MODES:
+        raise ValueError(f"{where}.ack_mode must be one of {sorted(ACK_MODES)}, got {mode!r}")
+    return str(mode)
+
+
+def _ack_timeout_from_dict(config: Mapping[str, Any], where: str, default: float) -> float:
+    timeout = config.get("ack_timeout", default)
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        raise ValueError(f"{where}.ack_timeout must be a positive number of seconds, got {timeout!r}")
+    return float(timeout)
 
 
 def _optional_mapping_section(config: Mapping[str, Any], key: str) -> Mapping[str, Any] | None:

@@ -490,3 +490,30 @@ def test_a_goal_refused_after_the_command_event_is_not_acknowledged():
     assert ack.rejected == {"robot0": "goal is behind the motion"}
     assert set(recorded[0]["accepted"]) == {"robot1"}
     assert recorded[0]["rejected"] == {"robot0": "goal is behind the motion"}
+
+
+def test_dispatcher_accept_resolves_targets_without_applying_or_emitting():
+    robot0 = FakeAgent("robot0", 1)
+    sim = FakeSim([robot0, FakeAgent("dup", 2), FakeAgent("dup", 3)])
+    events = []
+    sim.events.on(FLEET_COMMAND_EVENT, lambda **kwargs: events.append(kwargs["command_event"]))
+    dispatcher = FleetCommandDispatcher(sim)
+
+    ack = dispatcher.accept(["robot0", "missing", "dup"], source="ros", command_id="cmd-accept")
+
+    assert ack.command_id == "cmd-accept"
+    assert ack.source == "ros"
+    assert ack.sim_time == 12.5
+    assert ack.accepted_names == ("robot0",)
+    assert ack.rejected == {"missing": "unknown robot", "dup": "ambiguous robot name"}
+    assert robot0.goal_calls == []
+    assert events == []
+    assert dispatcher.command_events == []
+
+
+def test_dispatcher_accept_mints_a_command_id_when_none_is_given():
+    dispatcher = FleetCommandDispatcher(FakeSim([FakeAgent("robot0", 1)]))
+    first = dispatcher.accept(["robot0"])
+    second = dispatcher.accept(["robot0"])
+    assert first.command_id and second.command_id
+    assert first.command_id != second.command_id
