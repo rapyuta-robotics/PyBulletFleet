@@ -392,9 +392,9 @@ class _Sim:
 
 
 def test_collect_fleet_frame_reads_agents():
-    frame = collect_fleet_frame(_Sim([_Agent("a", 1, soc=0.8), _Agent("b", 2)]))
+    frame = collect_fleet_frame(_Sim([_Agent("a", 1, soc=0.8), _Agent("", 2)]))
     assert frame.sim_time == 3.5 and frame.step == 35
-    assert frame.names == ("a", "b")
+    assert frame.names == ("a", "agent_2")  # an unnamed agent is named as FleetStateProvider names it
     np.testing.assert_array_equal(frame.object_id, [1, 2])
     np.testing.assert_array_equal(frame.pos[:, 0], [1.0, 2.0])
     np.testing.assert_array_equal(frame.lin_vel[:, 0], [1.0, 1.0])
@@ -433,3 +433,36 @@ def test_has_battery_flag_marks_rows_with_a_battery(writer, plane_name):
     writer.write(_frame(3))
     flags = writer._slot_rows[0]["flags"][:3]
     assert list(flags & FLAG_HAS_BATTERY) == [FLAG_HAS_BATTERY, 0, 0]
+
+
+def test_writer_replaces_a_segment_left_behind_by_a_dead_writer(plane_name):
+    from multiprocessing import shared_memory
+
+    stale = shared_memory.SharedMemory(name=plane_name, create=True, size=4096)
+    stale.close()  # not unlinked: as after a SIGKILL
+    writer = SharedStateWriter(plane_name, capacity=2)
+    try:
+        assert writer.layout.total_bytes > 4096
+        writer.write(_frame(1))
+        with SharedStateReader(plane_name) as reader:
+            assert reader.read_latest(timeout=1.0).seq == 0
+    finally:
+        writer.close()
+
+
+def test_reader_notices_when_the_writer_replaced_the_segment(plane_name):
+    first = SharedStateWriter(plane_name, capacity=2)
+    reader = SharedStateReader(plane_name)
+    try:
+        assert not reader.is_stale()
+        first.close()
+        assert reader.is_stale()  # gone
+        second = SharedStateWriter(plane_name, capacity=2)
+        try:
+            assert reader.is_stale()  # a different segment under the same name
+            with SharedStateReader(plane_name) as fresh:
+                assert not fresh.is_stale()
+        finally:
+            second.close()
+    finally:
+        reader.close()
