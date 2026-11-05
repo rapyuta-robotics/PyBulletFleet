@@ -270,20 +270,29 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 
 設計は spec の「コマンドの受理と適用の分離」を参照。小さな PR で、順序に関係なく最初に入れられる。
 
-- fleet services (`navigate`、`stop`、`attach`、`joint_command`) と per-robot の goal 系のハンドラを、
-  「検証してキューに積み、`accepted` の ack を返す」形にする。
-  sim スレッドは `step_once()` の先頭 (PRE_STEP の前) でキューをまとめて適用する。
-- 適用時の拒否 (`set_goal_pose()` が `False` など) は、コマンド ID 付きのイベント (`/fleet/command_events` など) で通知する。
-- `ack: applied` オプション (適用まで `Event` で待つ) を残し、RMF アダプタなど ack の結果で分岐するクライアントは
-  これを使う。既定は `accepted`。
-- sim の状態を直接変える services (`set_entity_state`、`reset_simulation`、`spawn_entity`、`delete_entity`) も
-  同じキューを通し、別スレッドから step の途中で状態を書き換えないようにする。
-- **効果見込み:** 最大速度で 1000 台の `/fleet/navigate` の ack が 0.55 s → 数 ms (ハンドラの中身が検証だけになる)。
+**実装済み (2026-11-05、ブランチ `perf/pc-accept-then-apply`、upstream `6ee451e` の上):**
+`StepCommandQueue` (`ros2_bridge/.../command_queue.py`)、`FleetCommandDispatcher.accept()`、
+`fleet_api.ack_mode` / `ack_timeout`、`<namespace>/command_acks`、テスト 20 件、ブリッジ README と PERFORMANCE.md。
+
+- fleet services と topic (`navigate`、`stop`、`attach`、`execute_action`、`joint_command`) のコールバックは
+  検証 (`accept()`: 名前解決とフレーム・配列長の検査) だけを行い、適用は sim スレッドに渡す。
+  sim スレッドが step の合間 (pacing の sleep 中、一時停止中、ループ未起動) にいればコールバック内で即時適用し、
+  step 中なら PRE_STEP の先頭でまとめて適用する (step ロックを PRE_STEP から POST_STEP まで保持する)。
+- **既定は `ack_mode: applied`** (計画からの変更)。スモークテストで、対象物が無い `/fleet/attach` が
+  `accepted` では「accepted」と返ることが分かった。適用時の拒否 (`set_goal_pose()` が `False`、attach 対象なし) を
+  service の応答で受け取る既存クライアント (RMF アダプタも `rejected_names` を見る) の意味を変えないため、
+  既定は適用結果を返す。待ちは step 中に届いた場合だけで、最大 1 step の wall time (`ack_timeout` 既定 1.0 s)。
+  `accepted` は大量コマンド向けのオプションで、適用結果は両モードとも `command_acks` に publish する。
+- `set_entity_state` も同じ経路。`reset_simulation`、`spawn_entity`、`delete_entity` はハンドラの登録・破棄を伴うので
+  従来どおりコールバック内で実行する (follow-up)。per-robot のハンドラも対象外 (1000 台では使わない構成)。
+- **計測 (`docker/test_fleet_scale.sh`、1000 台、5 リクエストの合計 ack):** target_rtf 1.0 で 0.79 → 0.62 s、
+  最大速度で 2.23 → 0.67 s。最大速度での差 (3.3 倍) が GIL の競合の分。残る約 0.6 s は 1000 台ぶんの軌道生成
+  (`set_goal_pose` 約 0.5 ms × 1000) そのもので、P1 / P3 で batch controller の配列化と一緒に下げる。
   hybrid モードの 8 s はエンドポイント数が原因なので、この PR では直らない (使わない構成として文書化済み)。
-- **検証:** `ros2_bridge/PERFORMANCE.md` の fleet モードの手順で、1000 台・最大速度の ack を before/after で記録。
-  `docker/test_bridge_api.sh` の bridge 統合スモークテスト。RMF デモ (`ros2_bridge/pybullet_fleet_rmf`) が
-  `ack: applied` で従来どおり動くこと。
-- **判断:** この PR の後も最大速度で ack が 10 ms を超えるなら、コマンドリング (下記 follow-up) に着手する。
+- **検証:** ブリッジ単体テスト 207 件 (Docker)、`docker/test_bridge_api.sh` PASSED。
+  `test_bridge_launch` / `test_config_launch` の 2 件は main でも落ちる既存の問題 (rclpy の `Context.init()` 二重呼び出し)。
+- **判断:** コマンドリング (下記 follow-up) の条件は「`accepted` モードで最大速度の ack が 10 ms を超える」に読み替える。
+  `applied` の ack は軌道生成の時間を含むので、その短縮は P1 / P3 の対象。
 
 ### P5. ROS ブリッジの状態配信を共有メモリ経由の別プロセスにする
 
@@ -331,7 +340,7 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
   sim 側は共有メモリのレイアウトにしか依存しないので、P5a はそのまま使える。
 - **範囲外 (follow-up):** 1 万台の全台 FleetState を毎ステップ配信すること。manager 単位のストリームに分け、
   複数のブリッジプロセスで publish する構成を検討する。
-- **条件付き follow-up: コマンドリング。** PC の後も最大速度で `/fleet/navigate` の ack が 10 ms を超える場合に、
+- **条件付き follow-up: コマンドリング。** PC の後も `accepted` モードで最大速度の `/fleet/navigate` の ack が 10 ms を超える場合に、
   コマンドも共有メモリ (ブリッジ → sim の要求リングと、sim → ブリッジの応答リング) に移し、
   sim プロセスから ROS を外す。コストは spec の「コマンドの受理と適用の分離」に列挙したとおりで、
   in-process モードは残す。
@@ -362,7 +371,9 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 - **P3 の後:** 1000 台で 2.0 ms/step、10000 台で 20 ms/step を満たしているか確認する。
   満たしていれば P4、P5 は機能要件 (ROS、密集シーン) のために進める。
   満たしていなければ、P6 を前倒しするか検討する。
-- **PC の後:** 最大速度で 1000 台の `/fleet/navigate` の ack が 10 ms を超えていれば、コマンドリングを follow-up から本計画に入れる。
+- **PC の後:** `accepted` モードで最大速度の 1000 台の `/fleet/navigate` の ack が 10 ms を超えていれば、コマンドリングを
+  follow-up から本計画に入れる (2026-11-05: `applied` 既定で計測済み。`accepted` の計測はスケールチェッカーに
+  `ack_mode` を渡す口を足してから)。
 - **P5b の後:** ブリッジ側の 1 publish が 8 ms を超えていれば C++ 化を判断する。
 - **案 D (フルスクラッチ) の再検討:** spec の「D を再検討する条件」に該当した時点。
 
