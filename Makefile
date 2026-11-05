@@ -38,6 +38,10 @@ bench-smoke:  ## Quick benchmark (~10 seconds)
 bench-full:  ## Full benchmark sweep
 	python benchmark/run_benchmark.py --sweep 100 500 1000
 
+bench-steady:  ## Steady-state scenes (fleet keeps moving): 1000 robots sparse/dense/carrying/idle, 200 in a warehouse
+	python benchmark/run_benchmark.py --type steady --compare sparse dense carrying idle --agents 1000 --repetitions 3
+	python benchmark/run_benchmark.py --type steady --scenario warehouse --agents 200 --repetitions 3
+
 bench-release:  ## Release benchmark sweep for docs refresh
 	python benchmark/run_benchmark.py --sweep 100 250 500 1000 2000 --duration 10 --repetitions 3
 	python benchmark/run_benchmark.py --type mobile_control_path --controller per_agent batch --command-interface per_agent fleet --sweep 100 500 1000 --steps 600 --repetitions 3

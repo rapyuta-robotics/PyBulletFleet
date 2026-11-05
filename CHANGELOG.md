@@ -14,6 +14,15 @@ are not recommended for production use yet.
 
 ### Added
 
+- Steady-state fleet benchmark: `benchmark/steady_bench.py` and
+  `run_benchmark.py --type steady` measure a fixed window of steps in which
+  every robot keeps moving, with the per-phase step time, the collision event
+  counts and the RTF from the median step. Five scenes: `sparse` (2 m grid),
+  `dense` (two groups driving head-on through each other, every tenth robot
+  stopped), `carrying` (a box attached to every robot), `warehouse` (robots in
+  the aisles of tens of thousands of static boxes) and `idle`.
+  `make bench-steady` runs the reference set. `batch_perf.py`'s scene helpers
+  are public (`make_sim`, `make_fleet`, ...) so the workers share them.
 - `MultiRobotSimulationCore.query_aabb(aabb_min, aabb_max)`: the objects whose
   AABB overlaps a box, looked up through the collision spatial hash, so the
   cost follows how crowded the box is rather than how many objects the

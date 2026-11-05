@@ -61,7 +61,9 @@ from pybullet_fleet.fleet_api import FleetCommandDispatcher, FleetStateProvider
 from pybullet_fleet.types import CollisionMode, SpatialHashCellSizeMode
 
 
-def _make_sim(collision_freq: int, gui: bool = False) -> MultiRobotSimulationCore:
+def make_sim(collision_freq: int, gui: bool = False, *, collision_margin: float | None = None) -> MultiRobotSimulationCore:
+    """The headless, kinematic, dt=0.1 simulation every fleet benchmark runs in."""
+    extra = {} if collision_margin is None else {"collision_margin": collision_margin}
     return MultiRobotSimulationCore(
         SimulationParams(
             gui=gui,
@@ -73,11 +75,12 @@ def _make_sim(collision_freq: int, gui: bool = False) -> MultiRobotSimulationCor
             spatial_hash_cell_size=2.0,
             log_level="warning",
             enable_time_profiling=False,
+            **extra,
         )
     )
 
 
-def _make_grid_params(n: int, spacing: float = 2.0) -> GridSpawnParams:
+def make_grid_params(n: int, spacing: float = 2.0) -> GridSpawnParams:
     side = int(np.ceil(np.sqrt(n)))
     return GridSpawnParams(
         x_min=0,
@@ -89,7 +92,8 @@ def _make_grid_params(n: int, spacing: float = 2.0) -> GridSpawnParams:
     )
 
 
-def _make_spawn_params(mode: str) -> AgentSpawnParams:
+def make_spawn_params(mode: str) -> AgentSpawnParams:
+    """A simple_cube agent with the benchmark's velocity limits, omni or differential."""
     ctrl: dict = {"max_linear_vel": 1.5, "max_linear_accel": 2.0}
     if mode == "diff":
         ctrl["max_angular_vel"] = 2.0
@@ -111,20 +115,27 @@ def _build_waypoints(start: Pose, mode: str) -> list[Pose]:
     return [Pose.from_xyz(start.x + leg * i, start.y + leg * (1 if i % 2 else -1), start.z) for i in range(1, 4)]
 
 
-def _make_manager_and_agents(
+def make_manager(sim: MultiRobotSimulationCore, mode: str, controller: str) -> AgentManager:
+    """An AgentManager with the batch controller for *mode*, or none for per-agent control."""
+    batch_controller = None
+    if controller == "batch":
+        batch_controller = "batch_omni" if mode == "omni" else "batch_differential"
+    return AgentManager(sim_core=sim, fleet_controller={"type": batch_controller} if batch_controller else None)
+
+
+def make_fleet(
     n: int,
     collision_freq: int,
     mode: str,
     controller: str,
     *,
     gui: bool = False,
+    collision_margin: float | None = None,
 ) -> tuple[MultiRobotSimulationCore, AgentManager, list[Agent]]:
-    sim = _make_sim(collision_freq, gui=gui)
-    batch_controller = None
-    if controller == "batch":
-        batch_controller = "batch_omni" if mode == "omni" else "batch_differential"
-    mgr = AgentManager(sim_core=sim, fleet_controller={"type": batch_controller} if batch_controller else None)
-    agents = mgr.spawn_agents_grid(n, _make_grid_params(n), _make_spawn_params(mode), name_prefix="robot")
+    """N agents on a 2 m grid in a fresh simulation: the shared starting point of the fleet benchmarks."""
+    sim = make_sim(collision_freq, gui=gui, collision_margin=collision_margin)
+    mgr = make_manager(sim, mode, controller)
+    agents = mgr.spawn_agents_grid(n, make_grid_params(n), make_spawn_params(mode), name_prefix="robot")
     return sim, mgr, agents
 
 
@@ -175,7 +186,7 @@ def bench_case(
     *,
     gui: bool = False,
 ) -> dict:
-    sim, mgr, agents = _make_manager_and_agents(n, collision_freq, mode, controller_impl, gui=gui)
+    sim, mgr, agents = make_fleet(n, collision_freq, mode, controller_impl, gui=gui)
 
     state_snapshot_s = 0.0
     state_count = 0

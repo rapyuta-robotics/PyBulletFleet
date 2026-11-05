@@ -143,6 +143,43 @@ WSL2 host.
 
 ---
 
+## Steady-State Scenarios
+
+**Script:** `make bench-steady` (`run_benchmark.py --type steady`, worker
+`benchmark/steady_bench.py`). Every robot is sent 200 m away, so the whole
+fleet is still moving during the measured window: 20 warmup steps, then 150
+measured steps, dt = 0.1 s, differential drive, batch controller, collision
+check every step, headless. Values are the median over 3 repetitions of each
+run's median step; the RTF is derived from that step. Measured in the
+environment above at commit 6ee451e (after #94 and #98), 2026-11-05.
+
+| Scene | Agents | Static bodies | Step p50 | RTF | phase1 (agent update) | pose flush | AABB / grid | collision | Collision events in window |
+|-------|--------|---------------|----------|-----|-----------------------|------------|-------------|-----------|----------------------------|
+| sparse (2 m grid, all driving +x) | 1000 | 0 | 14.2 ms | 7.0x | 6.1 ms | 2.0 ms | 3.7 ms | 1.8 ms | 0 |
+| dense (two groups head-on, 0.05 m margin, every tenth robot stopped) | 1000 | 0 | 13.0 ms | 7.7x | 5.4 ms | 1.9 ms | 3.2 ms | 2.0 ms | 610 started, 610 ended |
+| carrying (one box attached to every robot) | 1000 | 0 | 50.1 ms | 2.0x | 18.1 ms | 6.9 ms | 12.7 ms | 10.6 ms | 0 |
+| warehouse (aisles between floor tiles and bins) | 200 | 32,924 | 7.4 ms | 13.6x | 4.7 ms | 1.0 ms | 1.0 ms | 0.6 ms | 0 |
+| idle (sparse layout, no goals) | 1000 | 0 | 0.45 ms | 220x | 0.4 ms | 0 | 0 | 0.01 ms | 0 |
+
+What the scenes show:
+
+- After #94 the collision check is no longer the largest phase at 1000 moving
+  robots (1.8 ms); the per-object agent update (6.1 ms), the AABB / grid flush
+  (3.7 ms) and the pose flush (2.0 ms) are.
+- An attached object per robot more than triples the step (14 to 50 ms): the
+  child pose is propagated per object, and every child joins the pose flush,
+  the AABB / grid flush and the collision check.
+- With 33k static bodies and 200 movers, the agent update is still 4.7 ms:
+  the per-object loop visits every static body each step. The spawn of that
+  scene takes 16.8 s.
+- Head-on traffic (610 contacts in 15 simulated seconds) adds little to the
+  collision phase here; the narrow phase is cheap next to the broad phase.
+
+Raw results: `benchmark/results/steady_sparse_dense_carrying_idle_1000agents.json`
+and `benchmark/results/steady_warehouse_200agents.json`.
+
+---
+
 ## Step Time Component Breakdown
 
 **Script:** supplemental profiling with 1000 agents, 50% moving,

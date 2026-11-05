@@ -203,3 +203,79 @@ class TestRunMultipleWithResults:
         assert result["collision_freq"] == 0
         assert result["setup_s"]["median"] == 0.01
         assert result["accepted"]["median"] == 10
+
+
+def _make_steady_result(**overrides):
+    """Return a minimal steady-worker result dict."""
+    base = {
+        "warmup": 20,
+        "steps": 150,
+        "wall_s": 0.3,
+        "mean_ms": 2.0,
+        "p50_ms": 1.8,
+        "p95_ms": 2.5,
+        "max_ms": 3.0,
+        "rtf": 55.0,
+        "phases": {"collision_check": (0.8, 0.7, 1.0), "total": (2.0, 1.8, 2.5)},
+        "collision_started": 3,
+        "collision_ended": 2,
+        "active_pairs_end": 1,
+        "scenario": "sparse",
+        "num_agents": 10,
+        "num_static": 0,
+        "mode": "diff",
+        "collision_freq": 60,
+        "spawn_s": 0.1,
+        "accepted": 10,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestSteadyWorker:
+    @patch("run_benchmark.subprocess.run")
+    def test_forwards_scene_steps_and_warmup(self, mock_run):
+        mock_run.return_value = _Completed()
+        run_worker(10, 0.0, "steady", scenario="warehouse", steps=50, warmup=5, collision_freq=0)
+        argv = mock_run.call_args.args[0]
+        assert argv[argv.index("--scenario") + 1] == "warehouse"
+        assert argv[argv.index("--steps") + 1] == "50"
+        assert argv[argv.index("--warmup") + 1] == "5"
+        assert argv[argv.index("--collision-freq") + 1] == "0"
+        assert "--json" in argv
+
+    @patch("run_benchmark.subprocess.run")
+    def test_defaults_to_sparse_150_steps_20_warmup(self, mock_run):
+        mock_run.return_value = _Completed()
+        run_worker(10, 0.0, "steady")
+        argv = mock_run.call_args.args[0]
+        assert argv[argv.index("--scenario") + 1] == "sparse"
+        assert argv[argv.index("--steps") + 1] == "150"
+        assert argv[argv.index("--warmup") + 1] == "20"
+
+
+class TestSteadyAggregation:
+    @patch("run_benchmark.run_worker")
+    def test_medians_over_repetitions_and_per_phase(self, mock_worker):
+        mock_worker.side_effect = [
+            _make_steady_result(p50_ms=1.0, phases={"collision_check": (0.5, 0.4, 0.6), "total": (1.0, 1.0, 1.2)}),
+            _make_steady_result(p50_ms=3.0, phases={"collision_check": (0.9, 0.8, 1.0), "total": (3.0, 3.0, 3.5)}),
+            _make_steady_result(p50_ms=2.0, phases={"collision_check": (0.7, 0.6, 0.8), "total": (2.0, 2.0, 2.4)}),
+        ]
+        agg = run_multiple(10, 0.0, 3, "steady", scenario="dense", steps=30, warmup=5)
+        assert agg["benchmark_type"] == "steady"
+        assert agg["scenario"] == "dense"
+        assert agg["steps"] == 30
+        assert agg["num_reps"] == 3
+        assert agg["p50_step_time_ms"]["median"] == 2.0
+        assert agg["phases_p50_ms"]["collision_check"]["median"] == 0.6
+        assert agg["phases_p50_ms"]["total"]["median"] == 2.0
+        assert agg["collision_started"]["median"] == 3
+
+    @patch("run_benchmark.run_worker")
+    def test_empty_results_do_not_raise(self, mock_worker):
+        mock_worker.side_effect = []
+        agg = run_multiple(10, 0.0, 0, "steady")
+        assert agg["num_reps"] == 0
+        assert agg["p50_step_time_ms"]["median"] == 0.0
+        assert agg["phases_p50_ms"] == {}

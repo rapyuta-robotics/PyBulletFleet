@@ -57,12 +57,19 @@ _WORKER_SCRIPTS = {
     "mobile": "mobile_benchmark.py",
     "arm": "arm_benchmark.py",
     "mobile_control_path": "batch_perf.py",
+    "steady": "steady_bench.py",
     # Phase 5 will add an arm_control_path worker after fleet joint-command
     # dispatch is implemented. Keep control-path workers explicit so they can
     # use command-oriented CLI options instead of the duration/scenario worker API.
 }
 
 _CONTROL_PATH_BENCHMARK_TYPES = {"mobile_control_path"}
+# Workers measured over a fixed number of steps (--steps) rather than a duration.
+_STEP_AXIS_BENCHMARK_TYPES = _CONTROL_PATH_BENCHMARK_TYPES | {"steady"}
+
+_STEADY_SCENARIOS = ("sparse", "dense", "carrying", "warehouse", "idle")
+_STEADY_DEFAULT_STEPS = 150
+_STEADY_DEFAULT_WARMUP = 20
 
 
 def _parse_worker_json(stdout: str) -> dict:
@@ -118,16 +125,18 @@ def run_worker(
     collision_freq: Optional[int] = None,
     controller: Optional[str] = None,
     command_interface: Optional[str] = None,
+    warmup: Optional[int] = None,
 ) -> dict:
     """Run benchmark worker in isolated child process.
 
     Args:
         num_agents: Number of agents/arms.
         duration: Simulation duration.
-        benchmark_type: ``"mobile"``, ``"arm"``, or internal ``"mobile_control_path"``.
+        benchmark_type: ``"mobile"``, ``"arm"``, ``"steady"``, or internal ``"mobile_control_path"``.
         gui: Enable GUI (mobile only).
         config_path: Path to config file.
-        scenario: Scenario name (e.g., ``"physics"``, ``"kinematic"``).
+        scenario: Scenario name (e.g., ``"physics"``, ``"kinematic"``; a steady scene name for ``"steady"``).
+        warmup: Steps before the measured window (steady only).
 
     Returns:
         Benchmark results dictionary.
@@ -135,7 +144,25 @@ def run_worker(
     script = _WORKER_SCRIPTS[benchmark_type]
     script_path = os.path.join(os.path.dirname(__file__), script)
 
-    if benchmark_type in _CONTROL_PATH_BENCHMARK_TYPES:
+    if benchmark_type == "steady":
+        cmd = [
+            sys.executable,
+            script_path,
+            "--agents",
+            str(num_agents),
+            "--scenario",
+            scenario or "sparse",
+            "--steps",
+            str(_STEADY_DEFAULT_STEPS if steps is None else steps),
+            "--warmup",
+            str(_STEADY_DEFAULT_WARMUP if warmup is None else warmup),
+            "--mode",
+            mode,
+            "--collision-freq",
+            str(60 if collision_freq is None else collision_freq),
+            "--json",
+        ]
+    elif benchmark_type in _CONTROL_PATH_BENCHMARK_TYPES:
         effective_steps = 600 if steps is None else steps
         effective_collision_freq = 60 if collision_freq is None else collision_freq
         cmd = [
@@ -208,11 +235,17 @@ def run_multiple(
     collision_freq: Optional[int] = None,
     controller: Optional[str] = None,
     command_interface: Optional[str] = None,
+    warmup: Optional[int] = None,
 ) -> dict:
     """Run benchmark multiple times and compute statistics."""
     results = []
 
-    if benchmark_type in _CONTROL_PATH_BENCHMARK_TYPES:
+    if benchmark_type == "steady":
+        effective_steps = _STEADY_DEFAULT_STEPS if steps is None else steps
+        effective_collision_freq = 60 if collision_freq is None else collision_freq
+        effective_controller = controller
+        effective_command_interface = command_interface
+    elif benchmark_type in _CONTROL_PATH_BENCHMARK_TYPES:
         effective_steps = 600 if steps is None else steps
         effective_collision_freq = 60 if collision_freq is None else collision_freq
         effective_controller = controller or "batch"
@@ -224,9 +257,11 @@ def run_multiple(
         effective_command_interface = command_interface
 
     entity_label = "arms" if benchmark_type == "arm" else "agents"
-    duration_label = f"{effective_steps} steps" if benchmark_type in _CONTROL_PATH_BENCHMARK_TYPES else f"{duration}s"
+    duration_label = f"{effective_steps} steps" if benchmark_type in _STEP_AXIS_BENCHMARK_TYPES else f"{duration}s"
     label_parts = [f"{num_agents} {entity_label}", duration_label]
-    if benchmark_type in _CONTROL_PATH_BENCHMARK_TYPES:
+    if benchmark_type == "steady":
+        label_parts.append(f"scenario={scenario or 'sparse'}")
+    elif benchmark_type in _CONTROL_PATH_BENCHMARK_TYPES:
         label_parts.append(f"controller={effective_controller}")
         label_parts.append(f"command_interface={effective_command_interface}")
     elif scenario:
@@ -250,6 +285,7 @@ def run_multiple(
             collision_freq=collision_freq,
             controller=controller,
             command_interface=command_interface,
+            warmup=warmup,
         )
         results.append(r)
         print(" done")
@@ -265,6 +301,32 @@ def run_multiple(
             "max": max(xs),
         }
 
+    if benchmark_type == "steady":
+        # Per-phase: the median over repetitions of each repetition's own median.
+        phase_keys = sorted({k for r in results for k in r.get("phases", {})})
+        return {
+            "num_agents": num_agents,
+            "benchmark_type": benchmark_type,
+            "scenario": scenario or "sparse",
+            "steps": effective_steps,
+            "warmup": results[0].get("warmup", warmup) if results else warmup,
+            "mode": mode,
+            "collision_freq": effective_collision_freq,
+            "num_reps": num_reps,
+            "num_static": results[0].get("num_static", 0) if results else 0,
+            "spawn_s": stats([r["spawn_s"] for r in results]),
+            "accepted": stats([r["accepted"] for r in results]),
+            "wall_s": stats([r["wall_s"] for r in results]),
+            "avg_step_time_ms": stats([r["mean_ms"] for r in results]),
+            "p50_step_time_ms": stats([r["p50_ms"] for r in results]),
+            "p95_step_time_ms": stats([r["p95_ms"] for r in results]),
+            "max_step_time_ms": stats([r["max_ms"] for r in results]),
+            "rtf": stats([r["rtf"] for r in results]),
+            "collision_started": stats([r["collision_started"] for r in results]),
+            "collision_ended": stats([r["collision_ended"] for r in results]),
+            "active_pairs_end": stats([r["active_pairs_end"] for r in results]),
+            "phases_p50_ms": {k: stats([r["phases"][k][1] for r in results if k in r.get("phases", {})]) for k in phase_keys},
+        }
     if benchmark_type in _CONTROL_PATH_BENCHMARK_TYPES:
         return {
             "num_agents": num_agents,
@@ -316,7 +378,7 @@ def run_multiple(
             aggregated["collision_check_frequency"] = results[0].get("collision_check_frequency")
 
     # Mobile-specific: expected_steps
-    if results and benchmark_type not in _CONTROL_PATH_BENCHMARK_TYPES and "expected_steps" in results[0]:
+    if results and benchmark_type not in _STEP_AXIS_BENCHMARK_TYPES and "expected_steps" in results[0]:
         aggregated["expected_steps"] = results[0]["expected_steps"]
 
     # Arm-specific: total_joints, mode (from worker result)
@@ -333,9 +395,70 @@ def run_multiple(
 # ---------------------------------------------------------------------------
 
 
+_STEADY_PHASE_ORDER = [
+    "phase1_update",
+    "agent_update",
+    "phase2_pose_flush",
+    "phase3_aabb_grid_flush",
+    "collision_check",
+    "total",
+]
+
+
+def _print_steady_results(results: dict) -> None:
+    print("\n" + "=" * 70)
+    print("Results")
+    print("=" * 70)
+    print("\nConfiguration:")
+    print(f"  Scenario: {results['scenario']}")
+    print(f"  Agents: {results['num_agents']}, static bodies: {results['num_static']}")
+    print(f"  Steps: {results['steps']} measured after {results['warmup']} warmup, mode={results['mode']}")
+    print(f"  Collision frequency: {results['collision_freq']}")
+    print(f"  Repetitions: {results['num_reps']}")
+    print("\nPerformance (median over repetitions):")
+    print(f"  Step p50: {results['p50_step_time_ms']['median']:.3f}ms (±{results['p50_step_time_ms']['stdev']:.3f})")
+    print(f"  Step mean: {results['avg_step_time_ms']['median']:.3f}ms, p95: {results['p95_step_time_ms']['median']:.3f}ms")
+    print(f"  RTF (from p50): {results['rtf']['median']:.1f}x")
+    print(f"  Spawn: {results['spawn_s']['median']:.2f}s")
+    print(
+        f"  Collisions: started={results['collision_started']['median']:.0f}, "
+        f"ended={results['collision_ended']['median']:.0f}, active at end={results['active_pairs_end']['median']:.0f}"
+    )
+    phases = results.get("phases_p50_ms", {})
+    if phases:
+        print("\nPhase p50 (ms):")
+        seen = set(_STEADY_PHASE_ORDER)
+        for key in _STEADY_PHASE_ORDER + sorted(k for k in phases if k not in seen):
+            if key in phases:
+                print(f"  {key:<24} {phases[key]['median']:8.3f} (±{phases[key]['stdev']:.3f})")
+    print("=" * 70)
+
+
+def _print_steady_summary(all_results: List[dict]) -> None:
+    print("\n" + "=" * 90)
+    print("STEADY-STATE SUMMARY (median over repetitions)")
+    print("=" * 90)
+    header = f"{'Agents':<8} {'Statics':<8} {'Scenario':<11} {'Step p50 (ms)':<15} {'RTF':<8} "
+    print(f"\n{header}{'Collision (ms)':<15} {'Phase1 (ms)':<12}")
+    print("-" * 90)
+    for r in all_results:
+        phases = r.get("phases_p50_ms", {})
+        col = phases.get("collision_check", {}).get("median", 0.0)
+        ph1 = phases.get("phase1_update", {}).get("median", 0.0)
+        print(
+            f"{r['num_agents']:<8} {r['num_static']:<8} {r['scenario']:<11} "
+            f"{r['p50_step_time_ms']['median']:>7.3f}±{r['p50_step_time_ms']['stdev']:<6.3f} "
+            f"{r['rtf']['median']:>6.1f}x  {col:>8.3f}        {ph1:>8.3f}"
+        )
+    print("=" * 90)
+
+
 def print_results(results: dict):
     """Print formatted benchmark results."""
     benchmark_type = results.get("benchmark_type", "mobile")
+    if benchmark_type == "steady":
+        _print_steady_results(results)
+        return
     entity = "Arms" if benchmark_type == "arm" else "Agents"
 
     print("\n" + "=" * 70)
@@ -404,6 +527,9 @@ def print_results(results: dict):
 def print_sweep_summary(all_results: List[dict]):
     """Print summary table for sweep results."""
     benchmark_type = all_results[0].get("benchmark_type", "mobile") if all_results else "mobile"
+    if benchmark_type == "steady":
+        _print_steady_summary(all_results)
+        return
     entity = "Arms" if benchmark_type == "arm" else "Agents"
 
     if benchmark_type in _CONTROL_PATH_BENCHMARK_TYPES:
@@ -483,7 +609,7 @@ Use --config to point at a custom YAML file.
 
     parser.add_argument(
         "--type",
-        choices=["mobile", "arm", "mobile_control_path"],
+        choices=["mobile", "arm", "mobile_control_path", "steady"],
         default="mobile",
         help="Benchmark type: mobile agents, arm robots, or mobile control-path comparison (default: mobile)",
     )
@@ -502,7 +628,8 @@ Use --config to point at a custom YAML file.
     parser.add_argument("--gui", action="store_true", help="Enable GUI (mobile only)")
     parser.add_argument("--config", type=str, default=None, help="Path to benchmark config file")
     parser.add_argument("--scenario", type=str, default=None, help="Scenario name from config")
-    parser.add_argument("--steps", type=int, default=None, help="Measurement steps for control-path runs")
+    parser.add_argument("--steps", type=int, default=None, help="Measurement steps for control-path and steady runs")
+    parser.add_argument("--warmup", type=int, default=None, help="Steps before the measured window (steady only; default 20)")
     parser.add_argument("--mode", choices=["omni", "diff"], default="diff", help="Motion mode for mobile control-path runs")
     parser.add_argument(
         "--collision-freq",
@@ -547,10 +674,14 @@ def _effective_benchmark_type(args) -> str:
 
 
 def _validate_time_axis(args, effective_type: str) -> None:
-    if effective_type in _CONTROL_PATH_BENCHMARK_TYPES and args.duration is not None:
-        raise SystemExit("--duration is not supported for control-path benchmarks; use --steps")
-    if effective_type not in _CONTROL_PATH_BENCHMARK_TYPES and args.steps is not None:
-        raise SystemExit(f"--steps is only supported for control-path benchmarks; use --duration for --type {args.type}")
+    if effective_type in _STEP_AXIS_BENCHMARK_TYPES and args.duration is not None:
+        raise SystemExit(f"--duration is not supported for --type {effective_type}; use --steps")
+    if effective_type not in _STEP_AXIS_BENCHMARK_TYPES and args.steps is not None:
+        raise SystemExit(
+            f"--steps is only supported for control-path and steady benchmarks; use --duration for --type {args.type}"
+        )
+    if effective_type != "steady" and args.warmup is not None:
+        raise SystemExit("--warmup is only supported for --type steady")
 
 
 def get_output_dir(config_path: Optional[str]) -> str:
@@ -801,6 +932,54 @@ def _run_mobile_control_path_benchmark(args):
 
 
 # ---------------------------------------------------------------------------
+# Steady-state benchmark logic
+# ---------------------------------------------------------------------------
+
+
+def _run_steady_benchmark(args):
+    """Run the steady-state scenes: a fixed window of steps with the whole fleet moving.
+
+    ``--scenario`` picks one scene, ``--compare`` several; ``--sweep`` repeats them
+    for each agent count. Every result is the median over ``--repetitions`` runs.
+    """
+    scenarios = args.compare or [args.scenario or "sparse"]
+    unknown = [s for s in scenarios if s not in _STEADY_SCENARIOS]
+    if unknown:
+        raise SystemExit(f"unknown steady scenario(s) {unknown}; choose from {list(_STEADY_SCENARIOS)}")
+    counts = args.sweep or [args.agents or 1000]
+    output_dir = get_output_dir(args.config)
+    all_results = []
+    for n in counts:
+        for scenario in scenarios:
+            all_results.append(
+                run_multiple(
+                    num_agents=n,
+                    duration=0.0,
+                    num_reps=args.repetitions,
+                    benchmark_type="steady",
+                    scenario=scenario,
+                    steps=args.steps,
+                    mode=args.mode,
+                    collision_freq=args.collision_freq,
+                    warmup=args.warmup,
+                )
+            )
+
+    if len(all_results) > 1:
+        print_sweep_summary(all_results)
+    else:
+        print_results(all_results[0])
+
+    if args.sweep or args.compare:
+        output_file = os.path.join(output_dir, f"steady_{'_'.join(scenarios)}_{'_'.join(str(c) for c in counts)}agents.json")
+    else:
+        output_file = os.path.join(output_dir, f"steady_{scenarios[0]}_{counts[0]}agents.json")
+    with open(output_file, "w") as f:
+        json.dump(all_results, f, indent=2)
+    print(f"\nResults saved to: {output_file}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -814,6 +993,7 @@ def main():
         "arm": "Arm Robot",
         "mobile": "Mobile Agent",
         "mobile_control_path": "Mobile Control-Path",
+        "steady": "Steady-State Fleet",
     }[effective_type]
     print("=" * 70)
     print(f"PyBullet Fleet - {type_label} Benchmark Runner")
@@ -823,6 +1003,8 @@ def main():
         _run_arm_benchmark(args)
     elif args.type == "mobile_control_path":
         _run_mobile_control_path_benchmark(args)
+    elif args.type == "steady":
+        _run_steady_benchmark(args)
     else:
         _run_mobile_benchmark(args)
 
