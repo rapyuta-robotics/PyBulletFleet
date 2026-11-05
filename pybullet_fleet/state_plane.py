@@ -218,8 +218,9 @@ def collect_fleet_frame(sim_core: Any, agents: Optional[Sequence[Any]] = None) -
     names = []
     for i, agent in enumerate(agents):
         pose = agent.get_pose()
-        names.append(str(getattr(agent, "name", "") or ""))
         object_id[i] = int(getattr(agent, "object_id", -1))
+        # The same fallback as FleetStateProvider, so both name a robot alike.
+        names.append(str(getattr(agent, "name", None) or f"agent_{object_id[i]}"))
         pos[i] = pose.position
         orn[i] = pose.orientation
         velocity = getattr(agent, "velocity", None)
@@ -320,6 +321,50 @@ def _wait(fd: int, timeout: Optional[float]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _attach_untracked(name: str) -> shared_memory.SharedMemory:
+    """Attach to an existing segment without the resource tracker taking it over.
+
+    The writer owns the segment. On Python 3.10-3.12 an attaching process also
+    registers it with its resource tracker, which then unlinks the segment when
+    that process exits (python/cpython#82300), and an explicit unregister
+    confuses a tracker shared with the writer's process. Attaching with the
+    registration disabled sidesteps both; 3.13 has ``track=False`` for this.
+    """
+    try:
+        return shared_memory.SharedMemory(name=name, create=False, track=False)  # type: ignore[call-arg]
+    except TypeError:
+        pass
+    register = resource_tracker.register
+    resource_tracker.register = lambda *args, **kwargs: None  # type: ignore[assignment]
+    try:
+        return shared_memory.SharedMemory(name=name, create=False)
+    finally:
+        resource_tracker.register = register  # type: ignore[assignment]
+
+
+def _create_segment(name: str, size: int) -> shared_memory.SharedMemory:
+    """Create the segment, replacing one left behind by a writer that did not close.
+
+    A simulation killed with SIGKILL leaves its segment in /dev/shm. The next
+    writer of the same name takes it over, with a warning; two live writers
+    sharing a name is a configuration error this does not detect.
+    """
+    try:
+        return shared_memory.SharedMemory(name=name, create=True, size=size)
+    except FileExistsError:
+        _warn_logger.warning("state plane %s: a segment of that name exists; replacing it", name)
+        stale = _attach_untracked(name)
+        stale.close()
+        # unlink() unregisters the name with the resource tracker; register it first so
+        # the tracker does not complain about a name it never saw.
+        try:
+            resource_tracker.register(stale._name, "shared_memory")  # type: ignore[attr-defined]
+        except Exception:  # pragma: no cover - tracker variants
+            pass
+        stale.unlink()
+        return shared_memory.SharedMemory(name=name, create=True, size=size)
+
+
 class SharedStateWriter:
     """Create the segment and write one :class:`FleetFrame` per call.
 
@@ -350,7 +395,7 @@ class SharedStateWriter:
         self.mode = mode
         self.wait_timeout = float(wait_timeout)
         self.layout = StateLayout(slots=slots, capacity=capacity, name_width=name_width, reader_slots=reader_slots)
-        self._shm = shared_memory.SharedMemory(name=name, create=True, size=self.layout.total_bytes)
+        self._shm = _create_segment(name, self.layout.total_bytes)
         self._buf = self._shm.buf
         self._header = np.ndarray((), dtype=_HEADER_DTYPE, buffer=self._buf, offset=0)
         self._readers = np.ndarray(
@@ -561,27 +606,6 @@ class SharedStateWriter:
 # ---------------------------------------------------------------------------
 
 
-def _attach_untracked(name: str) -> shared_memory.SharedMemory:
-    """Attach to an existing segment without the resource tracker taking it over.
-
-    The writer owns the segment. On Python 3.10-3.12 an attaching process also
-    registers it with its resource tracker, which then unlinks the segment when
-    that process exits (python/cpython#82300), and an explicit unregister
-    confuses a tracker shared with the writer's process. Attaching with the
-    registration disabled sidesteps both; 3.13 has ``track=False`` for this.
-    """
-    try:
-        return shared_memory.SharedMemory(name=name, create=False, track=False)  # type: ignore[call-arg]
-    except TypeError:
-        pass
-    register = resource_tracker.register
-    resource_tracker.register = lambda *args, **kwargs: None  # type: ignore[assignment]
-    try:
-        return shared_memory.SharedMemory(name=name, create=False)
-    finally:
-        resource_tracker.register = register  # type: ignore[assignment]
-
-
 class SharedStateReader:
     """Attach to a writer's segment by name and read snapshots.
 
@@ -661,6 +685,25 @@ class SharedStateReader:
     def tail(self) -> int:
         """Sequence number of the last snapshot this reader took."""
         return int(self._readers[self.index]["tail"])
+
+    def is_stale(self) -> bool:
+        """Whether the writer has replaced the segment this reader attached to.
+
+        A writer that starts while an older segment of the same name is still
+        in place unlinks it and creates a new one; a reader attached to the old
+        one keeps a mapping nobody writes to. Compare the attached segment with
+        the one the name now resolves to.
+        """
+        try:
+            current = _attach_untracked(self.name)
+        except FileNotFoundError:
+            return True
+        try:
+            return os.fstat(current._fd).st_ino != os.fstat(self._shm._fd).st_ino  # type: ignore[attr-defined]
+        except (AttributeError, OSError):  # pragma: no cover - platform without fds
+            return False
+        finally:
+            current.close()
 
     # -- reading ------------------------------------------------------------
 
