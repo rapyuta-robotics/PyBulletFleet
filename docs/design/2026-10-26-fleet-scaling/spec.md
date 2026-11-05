@@ -366,12 +366,12 @@ topic に変えても (1) と (3) は残り、ack が無くなるだけなので
   登録し、終了時に外す。各スロットには `seq` を書き込み前後で進める seqlock も残し、
   reader は読み取り後に `seq` が一致しなければ読み直す (整合性の確認用)。
 - **待ち合わせ:** `every_step` で `head - min(tail) == K` のとき、sim は reader が進めるまで待つ。
-  待ちは Python 側の seqlock では実現できないので、スロットの引き渡しに
-  OS の同期プリミティブ (`multiprocessing` の `Semaphore` / `Condition`、
-  または名前付き POSIX セマフォ) を使い、ビジーウェイトはしない。
-  このプリミティブの acquire / release がメモリバリアを兼ねるので、Python の numpy 書き込みに
+  待ちは Python 側の seqlock では実現できないので、スロットの引き渡しに OS の同期プリミティブを使い、
+  ビジーウェイトはしない。実装 (P5a) では名前付きパイプ (reader ごとに 1 本、writer に 1 本) を使う:
+  `multiprocessing` のセマフォは無関係のプロセスから名前で attach できず、POSIX セマフォは標準ライブラリに
+  ないため。パイプの `select` / `read` / `write` の syscall がメモリバリアを兼ねるので、Python の numpy 書き込みに
   フェンスがない問題 (x86 では実用上動くが ARM では保証されない) もここで解決する。
-  `latest` でも通知にはセマフォを使い、reader は最新の確定スロットだけを読む。
+  `latest` でも通知は同じパイプで、reader は最新の確定スロットだけを読む。
 - **ブリッジ不在の扱い:** reader が 1 つも登録されていなければ、`every_step` でも sim は待たない
   (書くだけ)。`every_step` の待ちには `wait_timeout` (既定 1.0 s wall) を設け、超えたら
   WARNING を 1 回出して `latest` 相当で進み、reader の `tail` が追いつけば `every_step` に戻る。
@@ -380,8 +380,9 @@ topic に変えても (1) と (3) は残り、ack が無くなるだけなので
 - **ライフサイクル:** セグメントの作成と unlink は sim プロセスが行う。Python 3.10-3.12 では、
   attach しただけの reader の `resource_tracker` が終了時にセグメントを unlink する既知の問題
   ([python/cpython#82300](https://github.com/python/cpython/issues/82300)) があるので、
-  reader 側では attach 後に `resource_tracker.unregister()` で追跡を外す。
-  Python 3.13 以降では `SharedMemory(name, track=False)` を使う。
+  reader 側は tracker に登録させずに attach する (3.10-3.12 は attach の間だけ
+  `resource_tracker.register` を無効化、3.13 以降は `SharedMemory(name, track=False)`)。
+  attach 後の `unregister()` は、writer と tracker を共有するプロセスで writer 側の unlink を壊すので使わない。
 - **対象プラットフォーム:** Linux x86_64 を第一とし、macOS (Apple Silicon) では
   P5a の整合性テスト (書き込み中の読み取り、破損スナップショットの検出) を CI 外で確認する。
   Windows ネイティブは対象外 (WSL2 を使う)。

@@ -300,22 +300,36 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
 分ける理由は、P5a が ROS に依存しない core 側の変更で、P5b が ROS 側の変更だからである。
 
 **P5a. 共有メモリのスナップショット (core 側、ROS 非依存)**
-- `multiprocessing.shared_memory` 上のリングバッファ (K スロット、既定 8) に、毎ステップ SoA の
-  スナップショット (`seq`、`sim_time`、`generation`、`object_id` 列、状態列) を書く publisher を core に追加する。
-  レイアウト (列名、dtype、ヘッダ) をバージョン付きで定義する。spawn / delete / reset
-  (`/sim/spawn_entity` など) で行の集合が変わるたびに `generation` を上げ、名前と object_id の対応表
-  ブロックを書き直す。reader は `generation` が変わったら対応表を読み直す。
-- 同期は spec の「共有メモリの同期」のとおり: ヘッダの `head` / reader ごとの `tail`、
-  スロットの引き渡しは OS のセマフォ (メモリバリアを兼ねる)、スロットごとの seqlock は整合性確認用。
-- 配信モード `every_step` (既定、満杯なら sim が待つ。`wait_timeout` 既定 1.0 s、
-  超過時は WARNING を出して `latest` 相当で進む) と `latest` (待たない) を実装する。
-  reader の heartbeat と、reader 不在時に待たないことを含む。
-- reader 側の `resource_tracker` 対策 (3.10-3.12 は `unregister()`、3.13 以降は `track=False`)。
-- Python の reader API も用意する。ROS を使わない Python のツールやビューアも、同じ reader で状態を読めるようにする。
-- **効果見込み:** sim 側の書き込みコストは 1000 台で数十 µs、1 万台で約 0.2 ms。
-- **検証:** reader が破損したスナップショットを読まないこと (書き込み中の読み取りを含むテスト)。
-  `every_step` で欠番がないこと。`latest` で sim が待たないこと。reader を kill しても sim が
-  `wait_timeout` 以内に進むこと。reader 不在で sim が待たないこと。
+**実装済み (2026-11-05、ブランチ `perf/p5a-state-plane`、upstream `6ee451e` の上):**
+`pybullet_fleet/state_plane.py` (`SharedStateWriter` / `SharedStateReader` / `StatePlanePublisher` /
+`collect_fleet_frame`)、テスト 22 件 (別プロセスの reader を含む)、`benchmark/state_plane_bench.py`、
+`docs/how-to/state-plane.md`。
+
+- `multiprocessing.shared_memory` 上のリングバッファ (K スロット、既定 8) に、毎ステップ
+  スナップショット (`seq`、`sim_time`、`step`、`generation`、`object_id`、pose、velocity、moving / charging /
+  has_battery のフラグ、battery) を書く。レイアウトはヘッダの `version` 付き。行の集合か名前が変わるたびに
+  `generation` を上げ、名前表 (64 バイト固定幅) を書き直す。reader は `generation` が変わったら名前表を読み直す。
+- 同期: ヘッダの `head` / reader ごとの `tail` と heartbeat、スロットごとの seqlock (`seq_begin` / `seq_end`)。
+  **スロットの引き渡しはセマフォではなく名前付きパイプ** (reader ごとに 1 本 + writer に 1 本) にした。
+  `multiprocessing` のセマフォは無関係のプロセスから名前で attach できず、POSIX セマフォは標準ライブラリに
+  ないため。パイプの `select` / `read` は OS の待ちで、syscall がメモリバリアを兼ねる点は同じ。
+- 配信モード `every_step` (既定。満杯なら `wait_timeout` 既定 1.0 s まで待ち、超えたら WARNING 1 回で
+  上書きを続け、追いつけば復帰) と `latest` (待たない)。reader 不在時は待たない。heartbeat が
+  `2 × wait_timeout` 途絶えた reader は外し、その reader は次の read で再登録する。
+  後から attach した reader は、その時点の最新スナップショットから読み始める。
+- reader 側の `resource_tracker` 対策は `unregister()` ではなく「登録させずに attach」にした
+  (3.10-3.12 は `resource_tracker.register` を一時的に無効化、3.13 以降は `track=False`)。
+  `unregister()` は、writer と tracker を共有するプロセス (同一プロセス、spawn した子) で writer 側の
+  unlink を壊すため。
+- `collect_fleet_frame()` は現状 agent を 1 台ずつ走査する (1000 台で約 1 ms)。P3 で store の列から
+  直接作る形に置き換える。
+- **計測 (`benchmark/state_plane_bench.py`):** 書き込み単体 1000 行 19 µs、10000 行 41 µs。別プロセスの
+  reader 1 つ (every_step) 付きでは reader のコピー時間 (0.15 ms / 0.9 ms) に律速される。
+- **検証 (済):** 書き込み中のスロットを返さないこと、コピー中に上書きされたら読み直すこと、`every_step` で欠番が
+  ないこと (スレッドと別プロセスの両方)、`latest` で sim が待たないこと、遅い reader で `wait_timeout` 後に
+  上書きに切り替わり追いつけば復帰すること、reader 不在と close 後に待たないこと、heartbeat 切れの除外と
+  再登録、reader プロセスの終了後もセグメントが残ること、`generation` と名前表。
+  **未:** macOS (Apple Silicon) での整合性テスト。
   macOS (Apple Silicon) で整合性テストを手動で 1 回通す。
 
 **P5b. ブリッジプロセス (ros2_bridge 側)**
