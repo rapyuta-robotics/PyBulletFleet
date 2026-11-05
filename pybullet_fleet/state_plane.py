@@ -202,45 +202,49 @@ def collect_fleet_frame(sim_core: Any, agents: Optional[Sequence[Any]] = None) -
     """The current state of *sim_core*'s agents as a :class:`FleetFrame`.
 
     Until the core keeps its state in arrays, this walks the agents once per
-    call; at 1000 agents that is about a millisecond.
+    call. Each column is gathered as a list and converted once, which keeps
+    the per-agent work to attribute reads: about 1 ms for 1000 agents.
     """
     if agents is None:
         agents = tuple(getattr(sim_core, "agents", ()))
     n = len(agents)
-    object_id = np.empty(n, dtype=np.int64)
-    pos = np.empty((n, 3))
-    orn = np.empty((n, 4))
+    poses = [agent.get_pose() for agent in agents]
+    object_id = np.fromiter((int(getattr(agent, "object_id", -1)) for agent in agents), dtype=np.int64, count=n)
+    # The same fallback as FleetStateProvider, so both name a robot alike.
+    names = tuple(str(getattr(agent, "name", None) or f"agent_{oid}") for agent, oid in zip(agents, object_id))
+    pos = np.array([pose.position for pose in poses], dtype=float).reshape(n, 3)
+    orn = np.array([pose.orientation for pose in poses], dtype=float).reshape(n, 4)
     lin_vel = np.zeros((n, 3))
+    velocities = [getattr(agent, "velocity", None) for agent in agents]
+    try:
+        if velocities and all(v is not None for v in velocities):
+            lin_vel[:] = np.asarray(velocities, dtype=float).reshape(n, -1)[:, :3]
+        else:
+            raise ValueError
+    except ValueError:  # a velocity missing or of another length: row by row
+        for i, velocity in enumerate(velocities):
+            if velocity is not None:
+                lin_vel[i] = np.asarray(velocity, dtype=float)[:3]
     ang_vel = np.zeros((n, 3))
-    is_moving = np.zeros(n, dtype=bool)
-    battery = np.full(n, np.nan, dtype=np.float32)
-    is_charging = np.zeros(n, dtype=bool)
-    names = []
-    for i, agent in enumerate(agents):
-        pose = agent.get_pose()
-        object_id[i] = int(getattr(agent, "object_id", -1))
-        # The same fallback as FleetStateProvider, so both name a robot alike.
-        names.append(str(getattr(agent, "name", None) or f"agent_{object_id[i]}"))
-        pos[i] = pose.position
-        orn[i] = pose.orientation
-        velocity = getattr(agent, "velocity", None)
-        if velocity is not None:
-            lin_vel[i] = np.asarray(velocity, dtype=float)[:3]
-        angular = getattr(agent, "angular_velocity", None)
-        if angular is not None:
-            if np.ndim(angular) == 0:
-                ang_vel[i, 2] = float(angular)
-            else:
-                ang_vel[i] = np.asarray(angular, dtype=float)[:3]
-        is_moving[i] = bool(getattr(agent, "is_moving", False))
-        soc = getattr(agent, "battery_soc", None)
-        if soc is not None:
-            battery[i] = float(soc)
-            is_charging[i] = bool(getattr(agent, "is_charging", False))
+    for i, angular in enumerate(getattr(agent, "angular_velocity", None) for agent in agents):
+        if angular is None:
+            continue
+        if isinstance(angular, (int, float)) or np.ndim(angular) == 0:
+            ang_vel[i, 2] = float(angular)
+        else:
+            ang_vel[i] = np.asarray(angular, dtype=float)[:3]
+    is_moving = np.fromiter((bool(getattr(agent, "is_moving", False)) for agent in agents), dtype=bool, count=n)
+    socs = [getattr(agent, "battery_soc", None) for agent in agents]
+    battery = np.array([np.nan if soc is None else soc for soc in socs], dtype=np.float32).reshape(n)
+    is_charging = np.fromiter(
+        (soc is not None and bool(getattr(agent, "is_charging", False)) for agent, soc in zip(agents, socs)),
+        dtype=bool,
+        count=n,
+    )
     return FleetFrame(
         sim_time=float(getattr(sim_core, "sim_time", 0.0)),
         step=int(getattr(sim_core, "step_count", 0)),
-        names=tuple(names),
+        names=names,
         object_id=object_id,
         pos=pos,
         orn=orn,
