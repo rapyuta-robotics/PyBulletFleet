@@ -1,0 +1,842 @@
+{
+ "scene": "link_contact",
+ "reference": "2e2a86a",
+ "steps": [
+  {
+   "step": 1,
+   "events": [
+    [
+     "started",
+     "arm",
+     "overhead"
+    ],
+    [
+     "started",
+     "arm",
+     "pedestal"
+    ]
+   ],
+   "observation_step": 1,
+   "pairs": [
+    [
+     [
+      "arm",
+      "overhead"
+     ],
+     -0.07999999999999997,
+     1
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 2,
+   "events": [],
+   "observation_step": 2,
+   "pairs": [
+    [
+     [
+      "arm",
+      "overhead"
+     ],
+     -0.07999999999999997,
+     1
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 3,
+   "events": [],
+   "observation_step": 3,
+   "pairs": [
+    [
+     [
+      "arm",
+      "overhead"
+     ],
+     -0.07999999999999997,
+     1
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 4,
+   "events": [],
+   "observation_step": 4,
+   "pairs": [
+    [
+     [
+      "arm",
+      "overhead"
+     ],
+     -0.07999999999999997,
+     1
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 5,
+   "events": [],
+   "observation_step": 5,
+   "pairs": [
+    [
+     [
+      "arm",
+      "overhead"
+     ],
+     -0.07999999999999997,
+     1
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     1
+    ]
+   ]
+  },
+  {
+   "step": 6,
+   "events": [
+    [
+     "ended",
+     "arm",
+     "overhead"
+    ],
+    [
+     "started",
+     "arm",
+     "beside"
+    ]
+   ],
+   "observation_step": 6,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08999987317236399,
+     6
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 7,
+   "events": [],
+   "observation_step": 7,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08999987317236399,
+     6
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 8,
+   "events": [],
+   "observation_step": 8,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08999987317236399,
+     6
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 9,
+   "events": [],
+   "observation_step": 9,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08999987317236399,
+     6
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 10,
+   "events": [],
+   "observation_step": 10,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08999987317236399,
+     6
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 11,
+   "events": [],
+   "observation_step": 11,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08999987317236399,
+     6
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 12,
+   "events": [],
+   "observation_step": 12,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08999987317236399,
+     6
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 13,
+   "events": [],
+   "observation_step": 13,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08999987317236399,
+     6
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 14,
+   "events": [],
+   "observation_step": 14,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08999987317236399,
+     6
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 15,
+   "events": [],
+   "observation_step": 15,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08999987317236399,
+     6
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     6
+    ]
+   ]
+  },
+  {
+   "step": 16,
+   "events": [],
+   "observation_step": 16,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08972923661939933,
+     16
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     16
+    ]
+   ]
+  },
+  {
+   "step": 17,
+   "events": [],
+   "observation_step": 17,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.08090718046537522,
+     17
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     17
+    ]
+   ]
+  },
+  {
+   "step": 18,
+   "events": [],
+   "observation_step": 18,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.0665672706884328,
+     18
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     18
+    ]
+   ]
+  },
+  {
+   "step": 19,
+   "events": [],
+   "observation_step": 19,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.05228364364974848,
+     19
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     19
+    ]
+   ]
+  },
+  {
+   "step": 20,
+   "events": [],
+   "observation_step": 20,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.03807480893080013,
+     20
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     20
+    ]
+   ]
+  },
+  {
+   "step": 21,
+   "events": [],
+   "observation_step": 21,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.02395917919268721,
+     21
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     21
+    ]
+   ]
+  },
+  {
+   "step": 22,
+   "events": [],
+   "observation_step": 22,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     -0.009955046315899233,
+     22
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     22
+    ]
+   ]
+  },
+  {
+   "step": 23,
+   "events": [],
+   "observation_step": 23,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     0.003919442303401341,
+     23
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     23
+    ]
+   ]
+  },
+  {
+   "step": 24,
+   "events": [],
+   "observation_step": 24,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     0.017646307269864367,
+     24
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     24
+    ]
+   ]
+  },
+  {
+   "step": 25,
+   "events": [],
+   "observation_step": 25,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     0.031207760487732203,
+     25
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     25
+    ]
+   ]
+  },
+  {
+   "step": 26,
+   "events": [],
+   "observation_step": 26,
+   "pairs": [
+    [
+     [
+      "arm",
+      "beside"
+     ],
+     0.04460668354809286,
+     26
+    ],
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     26
+    ]
+   ]
+  },
+  {
+   "step": 27,
+   "events": [
+    [
+     "ended",
+     "arm",
+     "beside"
+    ]
+   ],
+   "observation_step": 27,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     27
+    ]
+   ]
+  },
+  {
+   "step": 28,
+   "events": [],
+   "observation_step": 28,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     28
+    ]
+   ]
+  },
+  {
+   "step": 29,
+   "events": [],
+   "observation_step": 29,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     29
+    ]
+   ]
+  },
+  {
+   "step": 30,
+   "events": [],
+   "observation_step": 30,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     30
+    ]
+   ]
+  },
+  {
+   "step": 31,
+   "events": [],
+   "observation_step": 31,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     31
+    ]
+   ]
+  },
+  {
+   "step": 32,
+   "events": [],
+   "observation_step": 32,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     32
+    ]
+   ]
+  },
+  {
+   "step": 33,
+   "events": [],
+   "observation_step": 33,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     33
+    ]
+   ]
+  },
+  {
+   "step": 34,
+   "events": [],
+   "observation_step": 34,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     34
+    ]
+   ]
+  },
+  {
+   "step": 35,
+   "events": [],
+   "observation_step": 35,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     35
+    ]
+   ]
+  },
+  {
+   "step": 36,
+   "events": [],
+   "observation_step": 36,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     36
+    ]
+   ]
+  },
+  {
+   "step": 37,
+   "events": [],
+   "observation_step": 37,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     37
+    ]
+   ]
+  },
+  {
+   "step": 38,
+   "events": [],
+   "observation_step": 38,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     38
+    ]
+   ]
+  },
+  {
+   "step": 39,
+   "events": [],
+   "observation_step": 39,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     39
+    ]
+   ]
+  },
+  {
+   "step": 40,
+   "events": [],
+   "observation_step": 40,
+   "pairs": [
+    [
+     [
+      "arm",
+      "pedestal"
+     ],
+     0.04899999999999999,
+     40
+    ]
+   ]
+  }
+ ]
+}

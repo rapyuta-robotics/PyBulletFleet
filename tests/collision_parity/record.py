@@ -5,6 +5,7 @@ Usage::
     python -m tests.collision_parity.record            # record every scene
     python -m tests.collision_parity.record crossing_lanes attach_detach
     python -m tests.collision_parity.record --check    # compare, exit 1 on a difference
+    python -m tests.collision_parity.record --reference 2e2a86a
 
 Record on the revision the parity test is meant to compare against, and say
 so in the commit: the trace's ``reference`` field holds the revision.
@@ -33,6 +34,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("scenes", nargs="*", help="scene names (default: every scene)")
     parser.add_argument("--check", action="store_true", help="compare against the goldens instead of writing them")
+    parser.add_argument(
+        "--reference",
+        help="the revision to name in the recorded traces (default: the current HEAD); the upstream commit, not a merge",
+    )
     args = parser.parse_args(argv)
 
     names = args.scenes or list(SCENES)
@@ -40,7 +45,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if unknown:
         parser.error(f"unknown scene(s): {', '.join(unknown)}; known: {', '.join(SCENES)}")
 
-    reference = current_revision()
+    reference = args.reference or current_revision()
     failed = False
     for name in names:
         trace = record_scene(SCENES[name], reference)

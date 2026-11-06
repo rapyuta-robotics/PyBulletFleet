@@ -4,8 +4,8 @@ Each scene is small (a few bodies, a few dozen steps) and deterministic, and
 exercises one part of what the collision pipeline promises: the broad phase
 across cells, the per-axis clearance and margin changes, collision mode
 changes, static bodies, attachment, the ignore filter, physics bodies under
-``CONTACT_POINTS`` and ``HYBRID``, agents on paths, and a collision check
-that runs every other step. Every object is named: the trace refers to
+``CONTACT_POINTS`` and ``HYBRID``, an arm touching with its links, agents on paths, and a
+collision check that runs every other step. Every object is named: the trace refers to
 objects by name.
 """
 
@@ -299,6 +299,32 @@ def hybrid_mixed(sim: MultiRobotSimulationCore) -> Iterator[None]:
             shift(k3, dx=-0.05)
         if 50 <= step < 56:
             shift(k3, dx=0.1)
+
+
+@scene("link_contact", **dict(KINEMATIC, timestep=0.02))
+def link_contact(sim: MultiRobotSimulationCore) -> Iterator[None]:
+    """An arm touches boxes with its links, not its base: the end effector rests
+    against a box overhead; the elbow is placed bent so the upper arm reaches a
+    box beside it, then driven straight again by kinematic joint motion."""
+    arm = Agent.from_params(
+        AgentSpawnParams(
+            urdf_path="robots/arm_robot.urdf",
+            initial_pose=Pose.from_xyz(0.0, 0.0, 0.0),
+            use_fixed_base=True,
+            collision_mode=CollisionMode.NORMAL_3D,
+            name="arm",
+        ),
+        sim_core=sim,
+    )
+    box(sim, "overhead", (0.0, 0.0, 0.78), half=(0.05, 0.05, 0.05))
+    box(sim, "beside", (0.0, -0.42, 0.35), half=(0.05, 0.05, 0.05))
+    box(sim, "pedestal", (0.0, 0.0, -0.3), half=(0.3, 0.3, 0.2), mode=CollisionMode.STATIC)
+    for step in range(40):
+        yield
+        if step == 4:
+            arm.set_joint_position("shoulder_to_elbow", 1.57)
+        if step == 14:
+            arm.set_joint_target_by_name("shoulder_to_elbow", 0.0)
 
 
 @scene("agents_crossing", **dict(KINEMATIC, spatial_hash_cell_size=2.0))
