@@ -27,7 +27,8 @@ P1 は #94 + #114 の意味論を、P3 は #87 の request 状態を、それぞ
 ## 予算 (1000 台, 2.0 ms/step, 疎シナリオ)
 
 現状は `2e2a86a` (#115 入り) の 2026-11-06 の計測 (P0 の sparse シーン、3 回の中央値、他の負荷なし)。
-P1 前半 (`49ffec6`) 後の値は P1 の節の表にある (sparse 6.5 ms: AABB flush 0.7、collision 0.55)。
+P1 後 (`486cef8`) の値は P1 の節の表にある (sparse 3.3 ms: phase1 1.3、pose flush 1.1、AABB flush 0.3、
+collision 0.5)。
 2026-11-05 に `6ee451e` で測った 14.2 ms (phase 別 6.1 / 2.0 / 3.7 / 1.8) は、同じ日に他の作業が
 走っていた状態の値で、同一セッションで `6ee451e` と `2e2a86a` を交互に測ると差はノイズ以下
 (sparse 10.2-11.5 ms、carrying 30.7-31.7 ms がどちらにも出る)。つまり #106-#115 は step 時間を変えず、
@@ -197,10 +198,37 @@ Python で集めて配列にする分で、pose のキャッシュを store の�
 生成は object あたり約 25 µs 増えた (ローカル箱とコライダーのリンクを add 時に読む。倉庫シーンの spawn
 10.8 → 11.7 s)。生成の支配項は従来からの `deepcopy` (ShapeParams、約 100 µs) と `createMultiBody` (約 95 µs) で、
 P1 の対象外だが後で下げる余地がある。
-**残り (P1 の後半):** `SimObject` の pose キャッシュを store の列へのアクセサにする (Phase 3 の gather と
-pose flush の per-object ループを消す)、`set_poses()` の配列書き込み、ベースアタッチの子を `parent_row` /
-`attach_offset` から配列で計算する (carrying の phase1 8.9 ms と pose flush 3.2 ms の対象)、衝突結果の
-object_id 配列化。多リンクの AABB は #115 の union のまま。
+**実装済み (2026-11-07、同ブランチ、`88872f6` と `486cef8`): pose の列化とアタッチの配列伝播 (P1 の後半)。**
+全オブジェクトの pose を store の `pos` / `orn` 列に持ち、`SimObject` の pose キャッシュ (`get_pose()` が返す
+`Pose`) はその行へのビューにした (列の再確保と削除時の行の入れ替えではビューを張り直す)。step 中の
+`set_poses()` は、動いた行を `set_pose` と同じ判定 (距離² > 1e-12、四元数の符号は無視) で配列のまま求めて
+書き込み、ベースにアタッチされた子は carrier の pose と `attach_pos` / `attach_orn` 列から段ごとに配列で運ぶ
+(四元数の積は倍精度、符号は PyBullet の `getRotation` と同じ規則。`multiplyTransforms` は単精度なので差は約 1e-7)。
+物理ボディ、link アタッチ、運動学でない子を持つ carrier、STATIC は従来の per-object 経路に回す。Phase 3 は列から
+直接 AABB を出し、Phase 2 は pending 行の pose を一度にリストへ変換して PyBullet に渡す (配列の行を 1 つずつ
+渡すと PyBullet 側の読み取りが遅い)。物理ボディは `stepSimulation` の後に行へ読み戻す。`Pose` は要素の値で比較
+する (`pose.position == [..]` はビューでは例外になるので `list()` を挟む。CHANGELOG に記載)。
+テスト `tests/test_pose_columns.py` 20 件、parity 11 シーン同一、フルスイート 3104 passed。
+
+同一セッションで 2 周交互に測った結果 (P0 の定常状態ベンチ、中央値。before は前半 `49ffec6`):
+
+| シーン | 前半後 (`49ffec6`) | 後半後 (`486cef8`) | phase1 | pose flush | AABB flush | collision |
+|---|---|---|---|---|---|---|
+| sparse 1000 | 7.2 ms (14.0x) | 3.3 ms (30.0x) | 4.4 → 1.3 ms | 1.4 → 1.1 ms | 0.7 → 0.3 ms | 0.6 → 0.5 ms |
+| dense 1000 | 6.1 ms (16.4x) | 3.3 ms (30.2x) | 3.7 → 1.2 ms | 1.1 → 1.1 ms | 0.6 → 0.3 ms | 0.6 → 0.6 ms |
+| carrying 1000 | 15.8 ms (6.3x) | 7.7 ms (13.1x) | 9.3 → 2.5 ms | 3.3 → 3.1 ms | 1.6 → 0.7 ms | 1.25 → 1.2 ms |
+| warehouse 200 + 33k | 3.1 ms | 2.5 ms | 2.0 → 1.5 ms | 0.5 → 0.5 ms | 0.2 → 0.1 ms | 0.35 → 0.34 ms |
+| idle 1000 | 0.45 ms | 0.43 ms | | | | |
+
+ベースライン `2e2a86a` からは sparse 9.6 → 3.3 ms、carrying 27.7 → 7.7 ms。sparse の残り 3.3 ms の内訳は
+phase1 1.3 (batch controller の advance 約 0.3 + per-object の `update()` ループ 0.4 + `set_poses` の
+配列経路 0.3 + イベント)、pose flush 1.1 (1000 回の `resetBasePositionAndOrientation`、P2 の対象)、
+AABB flush 0.3、collision 0.5 (narrow phase の Python ループ含む)。
+**残り:** step 外の `set_poses()` は per-object のまま (PyBullet への書き込みが要る)。per-object の `set_pose`
+経路はキャッシュが ndarray のビューになった分、1 回あたり約 1 µs 遅い (非 batch のコントローラで 1000 台だと
+約 1 ms。P3 で per-object 経路自体を減らす)。衝突結果の object_id 配列化と `stop_on_collision` の配列消費は
+未着手 (narrow phase が PyBullet のままなので P4 と一緒に)。多リンクと物理ボディの AABB は PyBullet から読む
+まま。
 
 - core が所有する `StateStore` (pos, orn, vel, aabb, local_aabb, footprint, mode, owner, parent_row,
   attach_offset, flags, object_id ↔ row の対応) を新設する。行の追加・削除は、既存 batch controller と同じ
