@@ -143,7 +143,12 @@ P5 の後、`get_states` のコストはブリッジ側に計上する (sim 側�
   - **待機 (idle):** 1000 台が全台停止。0.45 ms。P1 の配列 broad phase がこれより遅くならないことを見る。
 - 計測規約: 基準ホストは WSL2、warmup 20 steps、計測 150 steps × 3 回、中央値を採用。
   出力は per-phase の mean / median / p95 を出し、判定には 3 回の median を使う。
-- **残り:** 10000 台の sparse を同じ基盤で測る (現状 426 ms は `9780808` の値)。2D OBB (SAT) の
+- **10000 台 (2026-11-07、`e6ef956`、1 回計測、他の負荷なし):** sparse 14.2 ms (7.0x)、dense 18.6 ms
+  (5.4x、`683af21`)、carrying 29.4 ms (3.4x)、idle 2.0 ms。sparse の内訳: phase1 8.4 (batch advance、
+  `set_poses` の set 更新、早期 return でも 10k 回の `update()` 呼び出し 1.9)、collision 3.7 (hash の再構築 1.0、
+  候補ペア 2.6)、AABB flush 1.3。spawn は 4.9 s (`deepcopy` と `createMultiBody`)。
+- **残り:** 10000 台の phase1 (`set_poses` の set 操作と 10k 回の `update()` 呼び出し) は、P3 後半の
+  「更新が必要な集合」で下げる。2D OBB (SAT) の
   narrow phase を `prototype/soa_kernel.py` に追加し、密集シナリオでの 1 ペアあたりのコストを測って
   密集シナリオの予算表を確定する。
 - **効果:** なし (計測の土台)。
@@ -208,7 +213,7 @@ P1 の対象外だが後で下げる余地がある。
 直接 AABB を出し、Phase 2 は pending 行の pose を一度にリストへ変換して PyBullet に渡す (配列の行を 1 つずつ
 渡すと PyBullet 側の読み取りが遅い)。物理ボディは `stepSimulation` の後に行へ読み戻す。`Pose` は要素の値で比較
 する (`pose.position == [..]` はビューでは例外になるので `list()` を挟む。CHANGELOG に記載)。
-テスト `tests/test_pose_columns.py` 20 件、parity 11 シーン同一、フルスイート 3104 passed。
+テスト `tests/test_pose_columns.py` 13 件、parity 11 シーン同一、フルスイート 3104 passed。
 
 同一セッションで 2 周交互に測った結果 (P0 の定常状態ベンチ、中央値。before は前半 `49ffec6`):
 
@@ -224,6 +229,15 @@ P1 の対象外だが後で下げる余地がある。
 phase1 1.3 (batch controller の advance 約 0.3 + per-object の `update()` ループ 0.4 + `set_poses` の
 配列経路 0.3 + イベント)、pose flush 1.1 (1000 回の `resetBasePositionAndOrientation`、P2 の対象)、
 AABB flush 0.3、collision 0.5 (narrow phase の Python ループ含む)。
+**実装済み (2026-11-07、`e6ef956`): 親子ペアのマスクと `parent_row` 列。** `ignore_attached_collision` では
+broad phase が同じアタッチ木の 2 体 (store の `attach_root` 列が同じ) をペアにしない (従来は narrow phase の
+per-pair Python で毎ステップ除外していた)。carrier から外れた子は moved 扱いにし、動かなくても次の判定で
+ペアが出る (parity 同一)。`set_poses()` で動いた carrier の子は `parent_row` 列から段ごとに配列で見つける
+(carrier ごとの Python ループを削除)。ベースアタッチだけを持つ batch 管理下の Agent は `update()` の
+早期 return を通る。アタッチの台帳は attach / detach ごとに O(1) (dict を毎回作り直していて 10k 台の
+spawn が二乗だった)。テスト 5 件追加 (`test_pose_columns.py` 計 18 件)、フルスイート 3128 passed。
+carrying 1000 台 3.3 → 2.19 ms (45.7x、phase1 1.70 → 0.74)、carrying 10000 台 45.4 → 29.4 ms
+(phase1 26.8 → 11.3)。sparse は変わらず。
 **残り:** step 外の `set_poses()` は per-object のまま (PyBullet への書き込みが要る)。per-object の `set_pose`
 経路はキャッシュが ndarray のビューになった分、1 回あたり約 1 µs 遅い (非 batch のコントローラで 1000 台だと
 約 1 ms。P3 で per-object 経路自体を減らす)。衝突結果の object_id 配列化と `stop_on_collision` の配列消費は
@@ -580,6 +594,12 @@ collision 1.07 (親子ペアの除外は `_is_ignored_collision` の per-pair Py
 - **P3 の後:** 1000 台で 2.0 ms/step、10000 台で 20 ms/step を満たしているか確認する。
   満たしていれば P4、P5 は機能要件 (ROS、密集シーン) のために進める。
   満たしていなければ、P6 を前倒しするか検討する。
+  **2026-11-07 (P3 前半まで、`e6ef956`): 満たした。** 1000 台 sparse 1.19 ms (84x)、dense 1.24 ms、
+  carrying 2.19 ms、10000 台 sparse 14.2 ms (7.0x)、dense 18.6 ms (5.4x)。P6 の前倒しは不要。
+  P4 は narrow phase が律速でない (`getClosestPoints` の合計は 1000 台でも 10000 台の密集でも 0.1 ms 未満。
+  collision の残りは broad phase の配列処理と Python の台帳) ので、速度のためには着手しない。P4 に残る価値は
+  narrow phase から PyBullet を外して headless の静的プリミティブに Bullet のボディを作らなくする (spawn 時間、
+  P2 の follow-up) ことで、必要になったときに判断する。
 - **PC の後:** `accepted` モードで最大速度の 1000 台の `/fleet/navigate` の ack が 10 ms を超えていれば、コマンドリングを
   follow-up から本計画に入れる (2026-11-05: `applied` 既定で計測済み。`accepted` の計測はスケールチェッカーに
   `ack_mode` を渡す口を足してから)。
