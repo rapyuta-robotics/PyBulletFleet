@@ -460,7 +460,7 @@ class Elevator(Agent):
         # Only the collision check asks, so the cache holds every link of
         # ``other`` as of this step. Not cached (collision off, not initialised
         # yet): its base link from PyBullet.
-        whole = core._cached_aabbs_dict.get(object_id)
+        whole = core.cached_aabb(object_id)
         if whole is not None and core._aabb_links.get(object_id) == ():
             base = whole  # no child link with a collider: the cached box is the base's
         else:

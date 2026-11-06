@@ -157,6 +157,13 @@ def create_test_box(
     return sim_obj
 
 
+def cached_box(sim_core: MultiRobotSimulationCore, obj: SimObject):
+    """The AABB the collision system holds for ``obj``, which must have one."""
+    box = sim_core.cached_aabb(obj.object_id)
+    assert box is not None, f"object {obj.object_id} has no cached AABB"
+    return box
+
+
 def get_collision_pairs(sim_core: MultiRobotSimulationCore) -> List[Tuple[int, int]]:
     """
     Get current collision pairs.
@@ -217,7 +224,7 @@ def get_object_cells(sim_core: MultiRobotSimulationCore, sim_obj: SimObject) -> 
     Returns:
         List of (x, y, z) cell tuples
     """
-    return sim_core._cached_object_to_cell.get(sim_obj.object_id, [])
+    return sim_core.grid_cells_of(sim_obj.object_id)
 
 
 # ============================================================================
@@ -638,14 +645,13 @@ def test_registration_covers_the_aabb_enlarged_by_half_the_margin():
         near = create_test_box(sim, [0.945, 0.5, 0.5], size=0.05)  # 0.005 from x=1, within margin/2
         large = create_test_box(sim, [1.0, 0.5, 0.5], size=1.5)
         flat = create_test_box(sim, [0.5, 0.5, 0.945], size=0.05, collision_mode=CollisionMode.NORMAL_2D)
-        cells = sim._cached_object_to_cell
-        assert cells[inside.object_id] == [(0, 0, 0)]
+        assert sim.grid_cells_of(inside.object_id) == [(0, 0, 0)]
         # Every cell the AABB, enlarged by margin/2, touches.
-        assert cells[edge.object_id] == [(0, 0, 0), (1, 0, 0)]
-        assert cells[near.object_id] == [(0, 0, 0), (1, 0, 0)]
-        assert len(cells[large.object_id]) > 1
+        assert sim.grid_cells_of(edge.object_id) == [(0, 0, 0), (1, 0, 0)]
+        assert sim.grid_cells_of(near.object_id) == [(0, 0, 0), (1, 0, 0)]
+        assert len(sim.grid_cells_of(large.object_id)) > 1
         # A NORMAL_2D body's z extent is not enlarged.
-        assert cells[flat.object_id] == [(0, 0, 0)]
+        assert sim.grid_cells_of(flat.object_id) == [(0, 0, 0)]
     finally:
         p.disconnect(sim.client)
 
@@ -686,13 +692,13 @@ class TestMultiCellRegistration:
             size=0.25,
             collision_mode=CollisionMode.NORMAL_3D,
         )
-        cells = sim_core_multicell._cached_object_to_cell.get(obj.object_id, [])
+        cells = sim_core_multicell.grid_cells_of(obj.object_id)
         assert len(cells) == 1, f"Small object should use 1 cell, got {len(cells)}"
 
     def test_small_object_on_a_cell_boundary_is_in_both_cells(self, sim_core_multicell):
         """Registration follows the AABB, not its centre: straddling x=0 means two cells."""
         obj = create_test_box(sim_core_multicell, [0, 1, 1], size=0.25, collision_mode=CollisionMode.NORMAL_3D)
-        assert sorted(sim_core_multicell._cached_object_to_cell[obj.object_id]) == [(-1, 0, 0), (0, 0, 0)]
+        assert sorted(sim_core_multicell.grid_cells_of(obj.object_id)) == [(-1, 0, 0), (0, 0, 0)]
 
     def test_get_overlapping_cells(self, sim_core_multicell):
         """_get_overlapping_cells returns cells covering object AABB."""
@@ -740,7 +746,7 @@ class TestMultiCellRegistration:
             sim_core.set_collision_spatial_hash_cell_size_mode()
             try:
                 obj = create_test_box(sim_core, [0, 0, 0], size=1.25, collision_mode=CollisionMode.NORMAL_3D)
-                registered.append(sorted(sim_core._cached_object_to_cell[obj.object_id]))
+                registered.append(sorted(sim_core.grid_cells_of(obj.object_id)))
             finally:
                 p.disconnect(sim_core.client)
         assert registered[0] == registered[1] and len(registered[0]) > 1
@@ -790,115 +796,13 @@ class TestMultiCellRegistration:
             collision_mode=CollisionMode.STATIC,
         )
         cells = sim_core_multicell._get_overlapping_cells(large.object_id)
-        aabb = sim_core_multicell._cached_aabbs_dict[large.object_id]
+        aabb = sim_core_multicell.cached_aabb(large.object_id)
         # Each cell coordinate should match _coord_to_cell range
         for cell in cells:
             for d in range(3):
                 min_c = sim_core_multicell._coord_to_cell(aabb[0][d])
                 max_c = sim_core_multicell._coord_to_cell(aabb[1][d])
                 assert min_c <= cell[d] <= max_c
-
-    def test_same_cell_update_skips_grid_operations(self, sim_core_multicell):
-        """_update_object_spatial_grid skips discard/add when cell unchanged."""
-        obj = create_test_box(
-            sim_core_multicell,
-            [1, 1, 1],
-            size=0.25,
-            collision_mode=CollisionMode.NORMAL_3D,
-        )
-        oid = obj.object_id
-        cells_before = sim_core_multicell._cached_object_to_cell[oid]
-        assert len(cells_before) == 1
-        cell_key = cells_before[0]
-
-        # Capture the set object identity for this cell
-        grid_set_before = sim_core_multicell._cached_spatial_grid[cell_key]
-        set_id_before = id(grid_set_before)
-
-        # Move slightly within the same cell (cell_size=2.0, move 0.1m)
-        from pybullet_fleet.geometry import Pose
-
-        obj.set_pose(Pose(position=[1.1, 1.0, 1.0]))
-
-        # Call _update_object_spatial_grid (simulating what set_pose triggers)
-        sim_core_multicell._update_object_spatial_grid(oid)
-
-        # Cell should be unchanged
-        cells_after = sim_core_multicell._cached_object_to_cell[oid]
-        assert cells_after == cells_before, "Cell should not change for small movement"
-
-        # The grid set should be the same object (not recreated via delete+setdefault)
-        grid_set_after = sim_core_multicell._cached_spatial_grid[cell_key]
-        assert id(grid_set_after) == set_id_before, "Grid set was recreated — same-cell optimization not applied"
-
-    def test_discard_from_cells_removes_object(self, sim_core_multicell):
-        """_discard_from_cells removes object from spatial grid and cleans empty cells."""
-        obj = create_test_box(
-            sim_core_multicell,
-            [1, 1, 1],
-            size=0.25,
-            collision_mode=CollisionMode.NORMAL_3D,
-        )
-        oid = obj.object_id
-        cells = sim_core_multicell._cached_object_to_cell[oid]
-        assert len(cells) == 1
-        cell_key = cells[0]
-        assert oid in sim_core_multicell._cached_spatial_grid[cell_key]
-
-        # Call _discard_from_cells directly
-        sim_core_multicell._discard_from_cells(oid, cells)
-
-        # Object should be removed from the cell's set
-        # If the cell had only this object, the cell key should be deleted
-        if cell_key in sim_core_multicell._cached_spatial_grid:
-            assert oid not in sim_core_multicell._cached_spatial_grid[cell_key]
-
-    def test_discard_from_cells_preserves_other_objects(self, sim_core_multicell):
-        """_discard_from_cells only removes the target object, not others in the same cell."""
-        obj1 = create_test_box(
-            sim_core_multicell,
-            [0, 0, 0],
-            size=0.25,
-            collision_mode=CollisionMode.NORMAL_3D,
-        )
-        obj2 = create_test_box(
-            sim_core_multicell,
-            [0.1, 0, 0],
-            size=0.25,
-            collision_mode=CollisionMode.NORMAL_3D,
-        )
-        cells1 = sim_core_multicell._cached_object_to_cell[obj1.object_id]
-        cells2 = sim_core_multicell._cached_object_to_cell[obj2.object_id]
-        # Both should be in the same cell (cell_size=2.0, both near origin)
-        assert cells1 == cells2, "Both objects should be in the same cell"
-        cell_key = cells1[0]
-
-        # Remove obj1 only
-        sim_core_multicell._discard_from_cells(obj1.object_id, cells1)
-
-        # obj2 should still be in the cell
-        assert obj2.object_id in sim_core_multicell._cached_spatial_grid[cell_key]
-        # Cell should NOT be deleted (obj2 still there)
-        assert cell_key in sim_core_multicell._cached_spatial_grid
-
-    def test_discard_from_cells_deletes_empty_cell(self, sim_core_multicell):
-        """_discard_from_cells deletes cell key when the set becomes empty."""
-        obj = create_test_box(
-            sim_core_multicell,
-            [100, 100, 0],  # Far away to be the only object in this cell
-            size=0.25,
-            collision_mode=CollisionMode.NORMAL_3D,
-        )
-        oid = obj.object_id
-        cells = sim_core_multicell._cached_object_to_cell[oid]
-        cell_key = cells[0]
-        # Ensure only this object is in the cell
-        assert sim_core_multicell._cached_spatial_grid[cell_key] == {oid}
-
-        sim_core_multicell._discard_from_cells(oid, cells)
-
-        # Cell key should be completely removed
-        assert cell_key not in sim_core_multicell._cached_spatial_grid
 
 
 # ============================================================================
@@ -1248,7 +1152,7 @@ def _broadphase_scene(
             sim._moved_this_step = set(movers)
             everything = set(sim.filter_aabb_pairs()[0])
             found = {object_id: everything for object_id in movers}
-        aabbs = sim._cached_aabbs_dict
+        aabbs = {obj.object_id: cached_box(sim, obj) for obj in objects}
         two_d = {obj.object_id for obj in objects if obj.collision_mode == CollisionMode.NORMAL_2D}
         mx, my, mz = (margin, margin, margin) if isinstance(margin, (int, float)) else margin
         missed = checked = 0
@@ -1425,21 +1329,14 @@ def test_a_moved_normal_2d_body_and_one_centred_in_the_next_layer(kind, ignore_s
         sim.set_collision_spatial_hash_cell_size_mode()
         flat = create_test_box(sim, [0.2, 0.2, 0.60], size=0.10, collision_mode=CollisionMode.NORMAL_2D)
         other = create_test_box(sim, [0.2, 0.2, 0.41], size=0.11, collision_mode=kind)
-        assert {c[2] for c in sim._cached_object_to_cell[flat.object_id]} == {1}
-        assert {c[2] for c in sim._cached_object_to_cell[other.object_id]} == {0, 1}
-        looked_up = set()
-
-        class Grid(dict):
-            def get(self, key, default=None):
-                looked_up.add(key)
-                return super().get(key, default)
-
-        sim._cached_spatial_grid = Grid(sim._cached_spatial_grid)
+        assert {c[2] for c in sim.grid_cells_of(flat.object_id)} == {1}
+        assert {c[2] for c in sim.grid_cells_of(other.object_id)} == {0, 1}
+        # The search reads the moved body's own cells, where the other body is too.
+        assert set(sim.grid_cells_of(flat.object_id)) & set(sim.grid_cells_of(other.object_id))
         sim._moved_this_step = {flat.object_id}
         pair = tuple(sorted((flat.object_id, other.object_id)))
         expected = not (ignore_static and kind == CollisionMode.STATIC)
         assert (pair in set(sim.filter_aabb_pairs()[0])) is expected
-        assert looked_up == set(sim._cached_object_to_cell[flat.object_id])
     finally:
         p.disconnect(sim.client)
 
@@ -1468,12 +1365,18 @@ def test_the_grid_follows_every_body():
     def consistent():
         half = tuple(m / 2 for m in sim._collision_broadphase_margin())
         grid = {}
-        for object_id, cells in sim._cached_object_to_cell.items():
+        for obj in objects:
+            object_id = obj.object_id
+            cells = sim.grid_cells_of(object_id)
+            if object_id in sim._disabled_collision_objects:
+                if cells:
+                    return False
+                continue
             if sorted(cells) != sorted(sim._get_overlapping_cells(object_id, half)):
                 return False
             for cell in cells:
                 grid.setdefault(cell, set()).add(object_id)
-        return grid == sim._cached_spatial_grid and not sim._disabled_collision_objects & set(sim._cached_object_to_cell)
+        return grid == sim._spatial_hash_contents()
 
     try:
         sim.set_collision_spatial_hash_cell_size_mode()
@@ -1492,9 +1395,9 @@ def test_the_grid_follows_every_body():
             obj = rng.choice(objects)
             action = rng.random()
             if action < 0.5:
-                pos = [rng.uniform(0, 2), rng.uniform(0, 2), rng.uniform(0, 2)]
-                p.resetBasePositionAndOrientation(obj.body_id, pos, [0, 0, 0, 1], physicsClientId=sim.client)
-                sim._update_object_aabb(obj.object_id)
+                if obj.collision_mode == CollisionMode.STATIC:
+                    continue  # a STATIC body does not move
+                obj.set_pose(Pose.from_xyz(rng.uniform(0, 2), rng.uniform(0, 2), rng.uniform(0, 2)))
             elif action < 0.93:
                 others = [m for m in modes + (CollisionMode.DISABLED,) if m != obj.collision_mode]
                 obj.set_collision_mode(rng.choice(others))

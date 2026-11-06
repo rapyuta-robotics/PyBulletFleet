@@ -263,7 +263,7 @@ def create_demo_objects(sim_core: MultiRobotSimulationCore):
     objects.append(large_obj)
 
     # Check multi-cell registration
-    cells = sim_core._cached_object_to_cell.get(large_obj.object_id, [])
+    cells = sim_core.grid_cells_of(large_obj.object_id)
     print(f"  Large object (4×4×2m) registered to {len(cells)} cells: {cells[:5]}{'...' if len(cells) > 5 else ''}")
 
     print(f"\nTotal objects created: {len(objects)}")
@@ -400,7 +400,7 @@ def main():
     print("=" * 70)
     print(f"Cell size: {sim_core._cached_cell_size}m")
     print(f"Collision margin: {COLLISION_MARGIN}m")
-    print(f"Total cells in grid: {len(sim_core._cached_spatial_grid)}")
+    print(f"Total cells in grid: {len(sim_core._spatial_hash_contents())}")
     print(f"Total objects: {len(objects)}")
     print(f"  - Left side robots: {len(left_robots)} ({', '.join([r.name for r in left_robots])})")
     print(f"  - Right side robots: {len(right_robots)} ({', '.join([r.name for r in right_robots])})")

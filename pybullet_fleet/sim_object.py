@@ -1500,13 +1500,11 @@ class SimObject:
             # paused and on flush; collision state stays as of the last step.
             self.sim_core._monitor_frames.pose_edited()
 
-            # Update AABB and spatial grid immediately for kinematic objects (optimization)
-            # Physics objects are updated in step_once() to batch PyBullet calls
+            # Update the AABB immediately for kinematic objects (the spatial
+            # hash follows it on its next sync). Physics objects are updated
+            # in step_once() to batch PyBullet calls.
             if self.object_id in self.sim_core._kinematic_objects:
                 self.sim_core._update_object_aabb(self.object_id)
-                # Update spatial grid if cell_size is initialized
-                if self.sim_core._cached_cell_size is not None:
-                    self.sim_core._update_object_spatial_grid(self.object_id)
 
         # Recursively apply the same coordinates and velocity to attached_objects.
         # Skipped when the parent didn't move — children's relative pose is unchanged.

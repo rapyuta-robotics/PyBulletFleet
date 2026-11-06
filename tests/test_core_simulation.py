@@ -91,28 +91,12 @@ def make_agent(sim_core, position=(0, 0, 0), name=None):
 
 def obj_cells(sim_core, obj):
     """Return the set of cells that *obj* is registered in."""
-    return set(sim_core._cached_object_to_cell[obj.object_id])
+    return set(sim_core.grid_cells_of(obj.object_id))
 
 
-class SpyGrid(dict):
-    """A dict subclass that records every key passed to .get().
-
-    Replaces sim_core._cached_spatial_grid to observe which cells
-    filter_aabb_pairs actually queries: a body's own cells.
-    """
-
-    def __init__(self, original):
-        super().__init__(original)
-        self.queried_keys = set()
-
-    def get(self, key, default=None):
-        self.queried_keys.add(key)
-        return super().get(key, default)
-
-
-def was_searched(spy_grid, sim_core, obj):
-    """Return True if ANY cell occupied by *obj* was queried during search."""
-    return bool(obj_cells(sim_core, obj) & spy_grid.queried_keys)
+def shares_a_cell(sim_core, obj, other):
+    """Whether a search from *obj*, which reads its own cells only, reaches *other*."""
+    return bool(obj_cells(sim_core, obj) & obj_cells(sim_core, other))
 
 
 # ============================================================================
@@ -167,12 +151,11 @@ class TestObjectLifecycle:
 
     def test_add_object_registers_aabb(self, sim_core):
         obj = make_box(sim_core, [0, 0, 0])
-        assert obj.object_id in sim_core._cached_aabbs_dict
+        assert sim_core.cached_aabb(obj.object_id) is not None
 
     def test_add_object_registers_spatial_grid_cell(self, sim_core):
         obj = make_box(sim_core, [0, 0, 0])
-        assert obj.object_id in sim_core._cached_object_to_cell
-        cells = sim_core._cached_object_to_cell[obj.object_id]
+        cells = sim_core.grid_cells_of(obj.object_id)
         assert len(cells) >= 1
 
     def test_add_agent_registers_in_agents_list(self, sim_core):
@@ -203,7 +186,7 @@ class TestObjectLifecycle:
         assert obj.object_id in sim_core._disabled_collision_objects
         assert obj.object_id not in sim_core._static_collision_objects
         assert obj.object_id not in sim_core._dynamic_collision_objects
-        assert obj.object_id not in sim_core._cached_aabbs_dict
+        assert sim_core.cached_aabb(obj.object_id) is None
         # Movement type: DISABLED mass=0 is kinematic (not STATIC, so not skipped)
         assert obj.object_id in sim_core._kinematic_objects
         assert obj.object_id not in sim_core._physics_objects
@@ -440,8 +423,8 @@ class TestObjectLifecycle:
         assert obj_id not in sim_core._sim_objects_dict
         assert obj not in sim_core.sim_objects
         assert obj_id not in sim_core._cached_collision_modes
-        assert obj_id not in sim_core._cached_aabbs_dict
-        assert obj_id not in sim_core._cached_object_to_cell
+        assert sim_core.cached_aabb(obj_id) is None
+        assert sim_core.grid_cells_of(obj_id) == []
         # Collision domain sets (mutually exclusive)
         assert obj_id not in sim_core._dynamic_collision_objects
         assert obj_id not in sim_core._static_collision_objects
@@ -465,8 +448,8 @@ class TestObjectLifecycle:
         assert agent not in sim_core.sim_objects
         assert oid not in sim_core._sim_objects_dict
         assert oid not in sim_core._cached_collision_modes
-        assert oid not in sim_core._cached_aabbs_dict
-        assert oid not in sim_core._cached_object_to_cell
+        assert sim_core.cached_aabb(oid) is None
+        assert sim_core.grid_cells_of(oid) == []
         # Collision domain sets
         assert oid not in sim_core._dynamic_collision_objects
         assert oid not in sim_core._static_collision_objects
@@ -1389,13 +1372,13 @@ class TestReset:
     def test_clears_collision_caches(self, sim_core):
         """All collision-related caches are emptied."""
         sim_core._cached_collision_modes[42] = CollisionMode.NORMAL_3D
-        sim_core._cached_aabbs_dict[42] = ((0, 0, 0), (1, 1, 1))
+        sim_core._store.add(42, mode=0, physics=False, pickable=False, pybullet_aabb=False)
         sim_core._add_active_collision_pair((1, 2))
 
         sim_core.reset()
 
         assert len(sim_core._cached_collision_modes) == 0
-        assert len(sim_core._cached_aabbs_dict) == 0
+        assert len(sim_core._store) == 0
         assert len(sim_core._active_collision_pairs) == 0
         assert len(sim_core._active_pairs_by_object) == 0
 
@@ -2092,12 +2075,10 @@ class TestFilterAabbPairs:
 
         # Only obj1 is "moved" so the spy observes obj1's search only
         sim_core._moved_this_step = {obj1.object_id}
-        spy = SpyGrid(sim_core._cached_spatial_grid)
-        sim_core._cached_spatial_grid = spy
         pairs, _ = sim_core.filter_aabb_pairs()
 
         # obj2's cell WAS queried (same Z-cell) → search hit
-        assert was_searched(spy, sim_core, obj2), "obj2's cell should have been queried (same Z-cell)"
+        assert shares_a_cell(sim_core, obj1, obj2), "obj2's cell should have been queried (same Z-cell)"
         # but pair is rejected by AABB Z-overlap check
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair not in pairs, "Search found obj2, but AABB Z-overlap should reject the pair"
@@ -2113,11 +2094,9 @@ class TestFilterAabbPairs:
         obj2 = make_box(sim_core, [0.3, 0, 0], collision_mode=CollisionMode.NORMAL_2D)
 
         sim_core._moved_this_step = {obj1.object_id}
-        spy = SpyGrid(sim_core._cached_spatial_grid)
-        sim_core._cached_spatial_grid = spy
         pairs, _ = sim_core.filter_aabb_pairs()
 
-        assert was_searched(spy, sim_core, obj2), "obj2's cell should have been queried"
+        assert shares_a_cell(sim_core, obj1, obj2), "obj2's cell should have been queried"
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair in pairs, "2D mode should detect overlapping objects"
 
@@ -2131,12 +2110,10 @@ class TestFilterAabbPairs:
         obj2 = make_box(sim_core, [0, 0, 1.5], collision_mode=CollisionMode.NORMAL_3D)
 
         sim_core._moved_this_step = {obj1.object_id}
-        spy = SpyGrid(sim_core._cached_spatial_grid)
-        sim_core._cached_spatial_grid = spy
         pairs, _ = sim_core.filter_aabb_pairs()
 
         # obj2's cell WAS queried (same Z-cell) → search hit
-        assert was_searched(spy, sim_core, obj2), "obj2's cell should have been queried (same Z-cell)"
+        assert shares_a_cell(sim_core, obj1, obj2), "obj2's cell should have been queried (same Z-cell)"
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair not in pairs, "Search found obj2, but AABB Z-overlap should reject the pair"
 
@@ -2150,8 +2127,8 @@ class TestFilterAabbPairs:
         different z cells share no cell and are never paired."""
         obj1 = make_box(sim_core, [0, 0, 0], collision_mode=CollisionMode.NORMAL_2D)
         obj2 = make_box(sim_core, [0, 0, 3.0], collision_mode=CollisionMode.NORMAL_2D)
-        assert {c[2] for c in sim_core._cached_object_to_cell[obj1.object_id]}.isdisjoint(
-            c[2] for c in sim_core._cached_object_to_cell[obj2.object_id]
+        assert {c[2] for c in sim_core.grid_cells_of(obj1.object_id)}.isdisjoint(
+            c[2] for c in sim_core.grid_cells_of(obj2.object_id)
         )
 
         sim_core._moved_this_step = {obj1.object_id}
@@ -2173,12 +2150,10 @@ class TestFilterAabbPairs:
         obj2 = make_box(sim_core, [0, 0, 5], collision_mode=CollisionMode.NORMAL_3D)
 
         sim_core._moved_this_step = {obj1.object_id}
-        spy = SpyGrid(sim_core._cached_spatial_grid)
-        sim_core._cached_spatial_grid = spy
         pairs, _ = sim_core.filter_aabb_pairs()
 
         # obj2's cell was NEVER queried → genuine search miss
-        assert not was_searched(spy, sim_core, obj2), "obj2's Z-cell should NOT have been queried (not one of obj1's cells)"
+        assert not shares_a_cell(sim_core, obj1, obj2), "obj2's Z-cell should NOT have been queried (not one of obj1's cells)"
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair not in pairs
 
@@ -2192,11 +2167,9 @@ class TestFilterAabbPairs:
         obj2 = make_box(sim_core, [0, 0, 2.5], collision_mode=CollisionMode.NORMAL_3D)
 
         sim_core._moved_this_step = {obj1.object_id}
-        spy = SpyGrid(sim_core._cached_spatial_grid)
-        sim_core._cached_spatial_grid = spy
         pairs, _ = sim_core.filter_aabb_pairs()
 
-        assert not was_searched(spy, sim_core, obj2)
+        assert not shares_a_cell(sim_core, obj1, obj2)
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair not in pairs
 
@@ -2279,7 +2252,7 @@ class TestCalculateCellSizeFromAabbs:
 
     def test_returns_none_when_no_cached_aabbs(self, sim_core):
         """No objects in sim → None when called without explicit aabbs."""
-        assert len(sim_core._cached_aabbs_dict) == 0
+        assert len(sim_core._store) == 0
         result = sim_core._calculate_cell_size_from_aabbs()
         assert result is None
 
@@ -2309,7 +2282,7 @@ class TestCalculateCellSizeFromAabbs:
     def test_uses_cached_aabbs_when_none(self, sim_core):
         """When aabbs=None, should use cached AABBs from sim objects."""
         obj = make_box(sim_core, [0, 0, 0], size=1.0)
-        assert len(sim_core._cached_aabbs_dict) > 0
+        assert len(sim_core._store) > 0
 
         result = sim_core._calculate_cell_size_from_aabbs()
         assert result is not None

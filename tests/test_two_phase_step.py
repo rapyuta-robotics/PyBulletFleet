@@ -197,7 +197,7 @@ class TestDeferredAABBAndGrid:
         agent = _make_agent(sim, 0, 0, 0.1)
         # Force AABB to be computed at spawn pose.
         sim._update_object_aabb(agent.object_id)
-        aabb_before = sim._cached_aabbs_dict[agent.object_id]
+        aabb_before = sim.cached_aabb(agent.object_id)
 
         def cb(_sim, _dt):
             agent.set_pose(Pose.from_xyz(20.0, 0.0, 0.1))
@@ -205,7 +205,7 @@ class TestDeferredAABBAndGrid:
         sim.register_callback(cb)
         sim.step_once()
 
-        aabb_after = sim._cached_aabbs_dict[agent.object_id]
+        aabb_after = sim.cached_aabb(agent.object_id)
         # AABB center should have moved with the buffered pose write.
         cx_before = 0.5 * (aabb_before[0][0] + aabb_before[1][0])
         cx_after = 0.5 * (aabb_after[0][0] + aabb_after[1][0])
@@ -217,7 +217,6 @@ class TestDeferredAABBAndGrid:
         # Initialize cell size + AABBs + grid (mimics what real check_collisions setup does).
         sim.set_collision_spatial_hash_cell_size_mode()
         sim._update_object_aabb(agent.object_id)
-        sim._update_object_spatial_grid(agent.object_id)
         assert sim._cached_cell_size is not None
 
         def cb(_sim, _dt):
@@ -228,7 +227,7 @@ class TestDeferredAABBAndGrid:
         sim.step_once()
 
         # The grid must contain the agent under its new cell key.
-        found_cells = [cell for cell, ids in sim._cached_spatial_grid.items() if agent.object_id in ids]
+        found_cells = sim.grid_cells_of(agent.object_id)
         assert len(found_cells) >= 1
         # And the cell key must correspond to the new (20, 20) area, not (0, 0).
         for cell in found_cells:

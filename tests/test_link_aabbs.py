@@ -80,7 +80,7 @@ class TestCachedBoxCoversEveryLink:
     def test_cached_box_reaches_the_end_effector(self, sim):
         robot = arm(sim)
 
-        cached = sim._cached_aabbs_dict[robot.object_id]
+        cached = sim.cached_aabb(robot.object_id)
 
         assert cached[1][2] == pytest.approx(0.81, abs=1e-3)
         assert_box_equal(cached, whole_body_aabb(sim, robot))
@@ -91,7 +91,7 @@ class TestCachedBoxCoversEveryLink:
 
         sim.filter_aabb_pairs()
 
-        assert_box_equal(sim._cached_aabbs_dict[robot.object_id], whole_body_aabb(sim, robot))
+        assert_box_equal(sim.cached_aabb(robot.object_id), whole_body_aabb(sim, robot))
 
     def test_get_aabbs_covers_every_link(self, sim):
         robot = arm(sim)
@@ -123,7 +123,7 @@ class TestBoxFollowsTheJoints:
 
         robot.set_joint_position(ELBOW, BENT)
 
-        cached = sim._cached_aabbs_dict[robot.object_id]
+        cached = sim.cached_aabb(robot.object_id)
         assert cached[0][1] < -0.4  # the upper arm now points towards -y
         assert_box_equal(cached, whole_body_aabb(sim, robot))
 
@@ -132,7 +132,7 @@ class TestBoxFollowsTheJoints:
 
         robot.set_joints_positions({ELBOW: BENT})
 
-        assert_box_equal(sim._cached_aabbs_dict[robot.object_id], whole_body_aabb(sim, robot))
+        assert_box_equal(sim.cached_aabb(robot.object_id), whole_body_aabb(sim, robot))
 
     def test_placed_joint_reaches_a_box_and_collides(self, sim):
         robot = arm(sim)
@@ -160,7 +160,7 @@ class TestBoxFollowsTheJoints:
 
         for _ in range(60):  # 1.57 rad at the URDF's 1.8 rad/s takes 44 steps
             sim.step_once()
-            assert_box_equal(sim._cached_aabbs_dict[robot.object_id], whole_body_aabb(sim, robot))
+            assert_box_equal(sim.cached_aabb(robot.object_id), whole_body_aabb(sim, robot))
 
         assert robot.get_joint_state_by_name(ELBOW)[0] == pytest.approx(BENT, abs=1e-3)
         assert pair(robot, target) in sim.get_active_collision_pairs()
@@ -173,7 +173,7 @@ class TestBoxFollowsTheJoints:
 
         sim.step_once()
 
-        assert_box_equal(sim._cached_aabbs_dict[robot.object_id], whole_body_aabb(sim, robot))
+        assert_box_equal(sim.cached_aabb(robot.object_id), whole_body_aabb(sim, robot))
         assert pair(robot, target) in sim.get_active_collision_pairs()
 
     def test_query_aabb_inside_a_step_sees_a_joint_placed_in_that_step(self, sim):
@@ -198,7 +198,7 @@ class TestBoxFollowsTheJoints:
 
         robot.restore_kinematic_joint_execution(checkpoint)
 
-        cached = sim._cached_aabbs_dict[robot.object_id]
+        cached = sim.cached_aabb(robot.object_id)
         assert cached[0][1] < -0.4
         assert_box_equal(cached, whole_body_aabb(sim, robot))
 
@@ -210,13 +210,14 @@ class TestBoxFollowsTheJoints:
         for _ in range(100):
             physics_sim.step_once()
 
-        cached = physics_sim._cached_aabbs_dict[robot.object_id]
+        cached = physics_sim.cached_aabb(robot.object_id)
         assert cached[0][1] < -0.3
         assert_box_equal(cached, whole_body_aabb(physics_sim, robot))
 
 
 class TestSingleLinkCost:
-    def test_one_get_aabb_call_per_update(self, sim, monkeypatch):
+    def test_no_pybullet_call_per_update_of_a_single_link_body(self, sim, monkeypatch):
+        """A single-link kinematic body's box is computed from its pose: no getAABB per move."""
         cube = box(sim, 0.0, 0.0, 0.0, name="cube")
         calls = {"getAABB": 0, "getNumJoints": 0}
         real_get_aabb, real_num_joints = p.getAABB, p.getNumJoints
@@ -235,7 +236,8 @@ class TestSingleLinkCost:
         for i in range(1, 11):
             cube.set_pose(Pose.from_xyz(0.1 * i, 0.0, 0.0))
 
-        assert calls == {"getAABB": 10, "getNumJoints": 0}
+        assert calls == {"getAABB": 0, "getNumJoints": 0}
+        assert sim.cached_aabb(cube.object_id)[0][0] == pytest.approx(0.95, abs=1e-9)
 
 
 def reset_elbow(sim, obj, position=BENT):
@@ -268,7 +270,7 @@ class TestNotifyGeometryChanged:
 
         sim.notify_geometry_changed(robot)
 
-        cached = sim._cached_aabbs_dict[robot.object_id]
+        cached = sim.cached_aabb(robot.object_id)
         assert cached[0][1] < -0.4
         assert_box_equal(cached, whole_body_aabb(sim, robot))
         assert robot in sim.query_aabb((-0.05, -0.45, 0.3), (0.05, -0.35, 0.4))
@@ -300,7 +302,7 @@ class TestNotifyGeometryChanged:
         sim.step_once()
 
         assert seen == [True]
-        cached = sim._cached_aabbs_dict[robot.object_id]
+        cached = sim.cached_aabb(robot.object_id)
         assert_box_equal(cached, whole_body_aabb(sim, robot))
         assert robot in sim.query_aabb((-0.05, -0.45, 0.3), (0.05, -0.35, 0.4))
         assert pair(robot, target) in sim.get_active_collision_pairs()
@@ -308,11 +310,11 @@ class TestNotifyGeometryChanged:
     def test_without_a_notification_the_box_stays_stale(self, sim, make_arm):
         robot = make_arm(sim)
         sim.step_once()
-        before = sim._cached_aabbs_dict[robot.object_id]
+        before = sim.cached_aabb(robot.object_id)
 
         reset_elbow(sim, robot)
 
-        assert sim._cached_aabbs_dict[robot.object_id] == before
+        assert sim.cached_aabb(robot.object_id) == before
 
 
 def static_arm(sim):
@@ -341,7 +343,7 @@ class TestStaticArmFollowsItsJoints:
             sim.step_once()
 
         assert robot.get_joint_state_by_name(ELBOW)[0] == pytest.approx(BENT, abs=1e-3)
-        assert_box_equal(sim._cached_aabbs_dict[robot.object_id], whole_body_aabb(sim, robot))
+        assert_box_equal(sim.cached_aabb(robot.object_id), whole_body_aabb(sim, robot))
         assert pair(robot, target) in sim.get_active_collision_pairs()
         p.disconnect(sim.client)
 
@@ -352,7 +354,7 @@ class TestStaticArmFollowsItsJoints:
 
         sim.step_once()
 
-        assert_box_equal(sim._cached_aabbs_dict[robot.object_id], whole_body_aabb(sim, robot))
+        assert_box_equal(sim.cached_aabb(robot.object_id), whole_body_aabb(sim, robot))
         assert robot in sim.query_aabb((-0.05, -0.45, 0.3), (0.05, -0.35, 0.4))
 
 
@@ -371,7 +373,7 @@ class TestLinksWithoutACollider:
 
         elevator.set_joint_position("lift", 8.0)
 
-        cached = sim._cached_aabbs_dict[elevator.object_id]
+        cached = sim.cached_aabb(elevator.object_id)
         assert tuple(cached[0]) == pytest.approx((-1.5, -1.5, 7.9), abs=1e-6)
         assert tuple(cached[1]) == pytest.approx((1.5, 1.5, 8.1), abs=1e-6)
 
@@ -412,4 +414,4 @@ class TestLinksWithoutACollider:
         )
         obj = SimObject(body_id=body, sim_core=sim)
 
-        assert_box_equal(sim._cached_aabbs_dict[obj.object_id], p.getAABB(body, physicsClientId=sim.client))
+        assert_box_equal(sim.cached_aabb(obj.object_id), p.getAABB(body, physicsClientId=sim.client))

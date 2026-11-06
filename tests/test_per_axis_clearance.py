@@ -57,6 +57,12 @@ def _body(sim, xyz, size=(0.1, 0.1, 0.1), kind="box", mode=CollisionMode.NORMAL_
     )
 
 
+def _cached_box(sim, obj):
+    box = sim.cached_aabb(obj.object_id)
+    assert box is not None
+    return box
+
+
 def _pair(a, b):
     return (min(a.object_id, b.object_id), max(a.object_id, b.object_id))
 
@@ -260,7 +266,7 @@ def test_broadphase_returns_every_pair_within_the_per_axis_clearance(seed, margi
             objects.append(_body(sim, xyz, size=half))
         sim._moved_this_step = {o.object_id for o in objects}
         found = set(sim.filter_aabb_pairs()[0])
-        aabbs = sim._cached_aabbs_dict
+        aabbs = {o.object_id: _cached_box(sim, o) for o in objects}
         expected = set()
         for a, b in itertools.combinations([o.object_id for o in objects], 2):
             box_a, box_b = aabbs[a], aabbs[b]

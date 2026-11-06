@@ -91,47 +91,40 @@ sim_core.run_simulation(...)  # Uses pre-calculated cell_size
 
 ---
 
-## AABB Caching
+## AABB Columns
 
-**Purpose**: Avoid redundant `getAABB()` calls
+**Purpose**: hold every body's AABB where the broad phase can read them all at once
 
-**Data Structure**:
-```python
-_cached_aabbs_dict: Dict[int, Tuple[Tuple[float, float, float],
-                                     Tuple[float, float, float]]]
-# Key: object_id (body_id)
-# Value: ((min_x, min_y, min_z), (max_x, max_y, max_z))
-```
+The simulation core keeps one row per object in a column store
+(`pybullet_fleet/collision_store.py`): the AABB, the body's box in its own
+frame, its collision mode and whether it is a physics body. Rows are
+internal; `sim.cached_aabb(object_id)` returns the box the collision system
+holds for an object (``None`` while collision is DISABLED).
 
-**Update Strategy**:
-```python
-def _update_object_aabb(self, object_id: int):
-    """Called when object moves"""
-    obj = self._sim_objects_dict[object_id]
+**How a box is computed**:
 
-    # The box of every link with a collision shape: p.getAABB(body) alone
-    # is the base link's.
-    # One getAABB() call for a body without child links, one per link
-    # (unioned) for an articulated body.
-    self._cached_aabbs_dict[object_id] = self._body_aabb(obj)
-
-    # Update grid registration
-    self._update_object_spatial_grid(object_id)
-```
+- A kinematic single-body object (a box, a cylinder, a mesh, a URDF with one
+  link): from its pose. Its local box is read from PyBullet once, at identity
+  orientation; the world box at any pose is that box transformed by the
+  element-wise absolute rotation, which is exactly what PyBullet's
+  `getAABB()` returns (`btTransformAabb`); a sphere's extents do not rotate.
+  The boxes of every moved object are computed in one array operation in the
+  step's Phase 3, with no PyBullet call.
+- A physics body: read from PyBullet after every `stepSimulation()`.
+- An articulated body: the union of its links' boxes, one `getAABB()` per
+  link with a collision shape (`p.getAABB(body)` alone is the base link's).
 
 An articulated body's box covers every link, so it changes when a joint
 moves. `notify_geometry_changed(obj)` marks the body moved and refreshes its
-box and grid cells: at once outside a step, with the flushed poses (Phase 3)
-inside one. `Agent.set_joint_position()`, `set_joints_positions()`, the
-kinematic joint interpolation and a joint checkpoint restore call it; physics
-bodies are re-read after every `stepSimulation()`. Call it after moving a
-body's joints directly with `p.resetJointState()`.
+box: at once outside a step, with the flushed poses (Phase 3) inside one.
+`Agent.set_joint_position()`, `set_joints_positions()`, the kinematic joint
+interpolation and a joint checkpoint restore call it; physics bodies are
+re-read after every `stepSimulation()`. Call it after moving a body's joints
+directly with `p.resetJointState()`.
 `examples/arm/link_collision_demo.py` shows all three cases: a fixed arm whose
 end effector sweeps through a box well outside its base, a mobile manipulator
 whose stretched-out arm hits a pillar its base clears, and a joint reset by hand
 followed by `notify_geometry_changed`.
-
-**Invalidation**: Cache invalidated on movement, mode change, or removal
 
 ---
 
@@ -167,15 +160,21 @@ overlap in z, so the cell holding a point of that overlap is one both reach
 in z without enlargement. Without a margin (`m = 0`) every body is registered
 in exactly the cells its AABB touches, which is the same argument.
 
+**How the hash is kept**: two sorted arrays of packed cell keys, with the
+row of each entry alongside: one for the STATIC bodies, patched only when a
+static body changes, and one for the others, rebuilt (one sort) whenever
+one of them moved, since in a driving fleet most of them did. A search for
+the candidates of the moved bodies is one `searchsorted` per array over all
+of their cells at once (the static array is skipped under `ignore_static`);
+the pairs then go through the margin-based AABB filter (with its NORMAL_2D
+z rule, the zero margin for a pair with a physics body and DISABLED) as
+arrays, and come out as object id pairs. Nothing in it is per object Python.
+
 **What it costs**: a body small next to a cell is usually in one cell, in two
 or four near a cell boundary. A body larger than a cell, a wall say, is in
-every cell it covers. The pair search then reads only the body's own cells,
-not the 9 or 27 around it, and the margin-based AABB filter (with its NORMAL_2D
-z rule, the zero margin for a pair with a physics body, `ignore_static` and
-DISABLED) decides on each candidate. A *moving* body much larger than a cell
-pays for its size on every move: it is removed from and added to every cell it
-covers, O(cells covered), each time its cells change. A large static body pays
-this once.
+every cell it covers; a *moving* one pays for its size on every move, as its
+entries are rebuilt each time it moves. A large static body pays this once.
+The pair search reads only a body's own cells, not the 9 or 27 around it.
 
 `multi_cell_threshold` is accepted for compatibility and no longer used: every
 body is registered wherever it reaches, whatever its size, so it is no longer a
@@ -210,11 +209,8 @@ def check_collisions(self):
     moved_objects = self._moved_this_step.copy()
     self._moved_this_step.clear()
 
-    # Only iterate through moved objects
-    for obj_id in moved_objects:
-        # Find the bodies registered in its own cells
-        # Check AABB overlap
-        # Add to candidate pairs
+    # The candidates of all the moved bodies, from their own cells, as arrays
+    ids_a, ids_b = store.candidate_pairs(store.rows(moved_objects), clearance, ...)
 ```
 
 ---
@@ -224,18 +220,20 @@ def check_collisions(self):
 
 **Concept**: Only update what changed
 
-**Benefits**:
-```
-1000 objects, 10 move per frame:
-  Full update: 1000 getAABB() calls
-  Incremental: 10 getAABB() calls
-  → 100x faster! ✓
-```
+- The boxes of the objects that moved are recomputed (kinematic single
+  bodies in one array operation, the rest from PyBullet); the others keep
+  theirs.
+- The static bodies' entries are kept as they are; the moving bodies'
+  entries are rebuilt from their new boxes, one sort over the moving bodies
+  only.
+- Only the moved objects are searched for pairs; a static object is never
+  in `_moved_this_step`.
 
-**Implementation**:
-- Track moved objects in `_moved_this_step`
-- Only these objects trigger collision checks
-- Static objects never added to `_moved_this_step`
+```
+33,000 static tiles and 200 moving robots:
+  the tiles' entries stay; each step sorts the 200 robots' entries afresh
+  and searches from them only.
+```
 
 ---
 

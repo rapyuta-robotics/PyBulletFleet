@@ -12,6 +12,25 @@ profiles. A declared kinematic profile supports fixed-arm and mobile-arm validat
 they do not provide general save/load for arbitrary simulations and
 are not recommended for production use yet.
 
+### Changed
+
+- The collision broad phase works on arrays. Every object's AABB, local
+  box, collision mode and physics flag live in one column store
+  (`pybullet_fleet/collision_store.py`) and the spatial hash is two sorted
+  arrays of cell keys over it, one for the static bodies and one for the
+  rest: the boxes of all the kinematic single-body
+  objects that moved in a step are computed from their poses in one array
+  operation (no `getAABB()` call per object; physics and articulated bodies
+  are still read from PyBullet), and the candidate pairs of all the moved
+  bodies come out of one `searchsorted` and one array AABB filter. The
+  registration rule, the per-axis clearance, the NORMAL_2D z rule, the
+  zero clearance of a HYBRID pair with a physics body, `ignore_static` and
+  DISABLED are as before, and the collision parity traces record the same
+  events and distances. `sim.cached_aabb(object_id)` and
+  `sim.grid_cells_of(object_id)` replace reading the former
+  `_cached_aabbs_dict` and `_cached_object_to_cell` dicts, which are gone
+  along with `_cached_spatial_grid`.
+
 ### Added
 
 - Collision parity traces (`tests/collision_parity/`): ten small scripted
