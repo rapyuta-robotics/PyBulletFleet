@@ -16,9 +16,9 @@ PyBullet は遅延同期のミラーにする。コストの大きいフェー�
 定常状態ベンチマークで効果を確認する。
 
 **前提となる upstream PR:** #94 (broad phase) と #98 (`query_aabb`) は 2026-11-04 に、
-#111 (NORMAL_2D の非推奨化) と #114 (軸ごとの collision clearance) は 2026-11-05 にマージ済み
-(main `275b9f0`)。#115 (多リンクボディの AABB を全リンクの和にする) は open で、P1 と同じ場所
-(AABB のキャッシュ) を変えるので P1 の前にマージする。#87 (PathRequest) を P3 の前にマージする。
+#111 (NORMAL_2D の非推奨化) と #114 (軸ごとの collision clearance) は 2026-11-05 に、
+#115 (多リンクボディの AABB を全リンクの和にする) は 2026-11-06 にマージ済み (main `2e2a86a`)。
+#87 (PathRequest) を P3 の前にマージする。
 P1 は #94 + #114 の意味論を、P3 は #87 の request 状態を、それぞれ前提にする
 (spec の「関連する upstream PR」)。
 
@@ -26,37 +26,40 @@ P1 は #94 + #114 の意味論を、P3 は #87 の request 状態を、それぞ
 
 ## 予算 (1000 台, 2.0 ms/step, 疎シナリオ)
 
-現状は `6ee451e` (#94 入り) の 2026-11-05 の計測 (P0 の sparse シーン、3 回の中央値)。
-main はその後 `275b9f0` (#111、#114 入り) まで進んだが、#114 は 1000 台でノイズの範囲内
-(#114 の計測: 8.6-12.1 ms/step、前後で同じ) なので表の値は据え置き、P1 の着手時に P0 で測り直す。
+現状は `2e2a86a` (#115 入り) の 2026-11-06 の計測 (P0 の sparse シーン、3 回の中央値、他の負荷なし)。
+2026-11-05 に `6ee451e` で測った 14.2 ms (phase 別 6.1 / 2.0 / 3.7 / 1.8) は、同じ日に他の作業が
+走っていた状態の値で、同一セッションで `6ee451e` と `2e2a86a` を交互に測ると差はノイズ以下
+(sparse 10.2-11.5 ms、carrying 30.7-31.7 ms がどちらにも出る)。つまり #106-#115 は step 時間を変えず、
+日をまたいだ絶対値の比較は負荷の差を見ている。**リビジョン間の比較は同一セッションで交互に測る。**
 #94 前 (`6551125`) の値を括弧に残す。
 
 | フェーズ | 現状 | 目標 | 根拠 |
 |---|---|---|---|
-| collision (broad + narrow) | 1.8 ms (#94 前 18.7-19.6) | ≤ 0.8 ms | プロトタイプ 0.6-1.1 ms |
-| AABB / grid 更新 | 3.7 ms (4.8-5.4) | ≤ 0.1 ms | AABB を pose から配列計算すれば、grid は broad phase 内で毎回作り直せる |
-| advance + Agent 更新 | 6.1 ms (5.4-6.0) | ≤ 0.5 ms | カーネル 0.1-0.2 ms + イベント処理 |
-| pose flush (PyBullet) | 2.0 ms (1.6-1.8) | ≈ 0 ms (headless) | 遅延ミラー |
+| collision (broad + narrow) | 1.4 ms (#94 前 18.7-19.6) | ≤ 0.8 ms | プロトタイプ 0.6-1.1 ms |
+| AABB / grid 更新 | 2.9 ms (4.8-5.4) | ≤ 0.1 ms | AABB を pose から配列計算すれば、grid は broad phase 内で毎回作り直せる |
+| advance + Agent 更新 | 4.8 ms (5.4-6.0) | ≤ 0.5 ms | カーネル 0.1-0.2 ms + イベント処理 |
+| pose flush (PyBullet) | 1.5 ms (1.6-1.8) | ≈ 0 ms (headless) | 遅延ミラー |
 | step の固定オーバーヘッド | 約 0.1 ms | ≤ 0.2 ms | `getConnectionInfo`、イベント emit など |
-| **合計** | **14.2 ms (7x)** (30.5-32.8) | **≤ 2.0 ms** | 余裕 0.4 ms。プロトタイプにない static / mode 混在 / margin の処理をここで吸収する |
+| **合計** | **11.1 ms (9x)** (30.5-32.8) | **≤ 2.0 ms** | 余裕 0.4 ms。プロトタイプにない static / mode 混在 / margin の処理をここで吸収する |
 
-#94 の後は collision が最大のフェーズではない。残る 12 ms のうち、per-object の agent update が 6.1 ms、
-AABB / grid と pose の flush が 5.7 ms で、どちらも「オブジェクト単位の Python 処理」である。
-P1 (store と配列の flush) と P3 (per-object ループの除去) がこの 12 ms の対象になる。
+#94 の後は collision が最大のフェーズではない。残る 9.7 ms のうち、per-object の agent update が 4.8 ms、
+AABB / grid と pose の flush が 4.4 ms で、どちらも「オブジェクト単位の Python 処理」である。
+P1 (store と配列の flush) と P3 (per-object ループの除去) がこの 9.7 ms の対象になる。
 予算に余裕がないのは advance + Agent 更新である。Python の `Agent.update()` は 1 回約 1.4 µs
 なので、1000 台全員を毎ステップ呼ぶだけで 1.4 ms を使い切る。したがって P3 (イベント駆動化) は必須とする。
 
 ## 予算 (1000 台, 搬送シナリオ, 3.0 ms/step)
 
-現状 (`6ee451e`): 50.1 ms (2.0x)。sparse の 3.5 倍で、子オブジェクト 1000 個が per-object に処理されている。
+現状 (`2e2a86a`、2026-11-06、他の負荷なし): 27.0 ms (3.7x)。sparse の 2.4 倍で、子オブジェクト 1000 個が
+per-object に処理されている (2026-11-05 の 50.1 ms は負荷のある状態の値)。
 
 | フェーズ | 現状 | 目標 | 根拠 |
 |---|---|---|---|
-| advance + Agent 更新 + 子の pose 伝播 | 18.1 ms | ≤ 0.7 ms | 子の pose は `parent_row` / `attach_offset` 列からカーネルが配列で計算する (P1) |
-| AABB / grid 更新 (親子 2000 体) | 12.7 ms | ≤ 0.2 ms | 配列計算 (P1) |
-| collision | 10.6 ms | ≤ 1.0 ms | 親子ペアの無視は候補ペアのマスク (P1)。候補は sparse の約 2 倍 |
-| pose flush (親子 2000 体) | 6.9 ms | ≈ 0 ms | 遅延ミラー (P2) |
-| **合計** | **50.1 ms** | **≤ 3.0 ms** | 余裕 1.1 ms |
+| advance + Agent 更新 + 子の pose 伝播 | 10.3 ms | ≤ 0.7 ms | 子の pose は `parent_row` / `attach_offset` 列からカーネルが配列で計算する (P1) |
+| AABB / grid 更新 (親子 2000 体) | 6.8 ms | ≤ 0.2 ms | 配列計算 (P1) |
+| collision | 5.7 ms | ≤ 1.0 ms | 親子ペアの無視は候補ペアのマスク (P1)。候補は sparse の約 2 倍 |
+| pose flush (親子 2000 体) | 3.5 ms | ≈ 0 ms | 遅延ミラー (P2) |
+| **合計** | **27.0 ms** | **≤ 3.0 ms** | 余裕 1.1 ms |
 
 ## 予算 (1000 台, 密集・交差シナリオ, 4.0 ms/step)
 
@@ -159,8 +162,12 @@ golden (`golden/*.json`、合計 100 KB) を置いた。`tests/test_collision_pa
 golden が固定した現行の性質 (P1 で保つか、差として文書化する): DISABLED にしたボディの active ペアは
 `COLLISION_ENDED` なしに消え、戻すと `COLLISION_STARTED` が改めて出る。その場で `detach_object()` した
 carrier と load は接触したままなので、次の判定からペアとして報告される。
-**残り:** #115 のマージ後に golden を再記録する (多リンクの AABB が変わるので `agents_crossing` が変わる)、
-P0 の定常状態ベンチマークを `275b9f0` + #115 で測り直す、その上で store と配列 broad phase の実装。
+#115 のマージ (2026-11-06、`2e2a86a`) 後に golden を再記録した (`061a674`): 10 シーンはすべて同じ
+(`agents_crossing` のロボットはベースで当たるので変わらない)。#115 の対象を押さえるため、アームがリンクで
+箱に触れるシーン `link_contact` (上の箱に手先が接触、肘を曲げて上腕が横の箱に接触、関節補間で離れる) を
+足した。このシーンは `275b9f0` では 3 ペアとも見つからない (29 差分)。golden は 11 シーン、参照は `2e2a86a`。
+P0 の定常状態ベンチマークは `2e2a86a` で測り直した (上の予算表)。
+**残り:** store と配列 broad phase の実装。
 
 - core が所有する `StateStore` (pos, orn, vel, aabb, local_aabb, footprint, mode, owner, parent_row,
   attach_offset, flags, object_id ↔ row の対応) を新設する。行の追加・削除は、既存 batch controller と同じ
@@ -482,7 +489,9 @@ P0 の定常状態ベンチマークを `275b9f0` + #115 で測り直す、そ�
 - **upstream との競合:** P1 は #94 と同じ場所を変える。#94 を先に入れ、P1 はその上で書く。
   #98 の `query_aabb()` と #87 の `MoveAction` も同じ理由で先に入れる。#111 と #114 は
   2026-11-05 に入った。#115 (多リンクの AABB) も AABB のキャッシュを変えるので P1 の前に入れる。
-- **ベンチマークのぶれ:** WSL2 上で ±10% 以上ぶれる。判定は中央値と相対比で行う。
+- **ベンチマークのぶれ:** WSL2 上で ±10% 以上ぶれ、他の作業が走っていると同じコードで 1.5-1.9 倍遅く出る
+  (2026-11-05 の 50.1 ms と 2026-11-06 の 27.0 ms は同じ carrying シーン)。判定は同一セッションで
+  before / after を交互に測った中央値と相対比で行い、別の日の絶対値とは比べない。
 - **プリミティブ近似による判定差:** 既定を箱・円にするため、mesh 形状のロボットでは判定が変わる。
   `collision_shape: pybullet` で従来の判定に戻せるようにする。
 - **OBB narrow phase のコスト:** 円判定のプロトタイプしかない。P0 で OBB 版を測ってから予算を確定する。
