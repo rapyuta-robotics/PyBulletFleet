@@ -151,27 +151,37 @@ fleet is still moving during the measured window: 20 warmup steps, then 150
 measured steps, dt = 0.1 s, differential drive, batch controller, collision
 check every step, headless. Values are the median over 3 repetitions of each
 run's median step; the RTF is derived from that step. Measured in the
-environment above at commit 6ee451e (after #94 and #98), 2026-11-05.
+environment above at commit 2e2a86a (after #115), 2026-11-06, with nothing
+else running on the machine.
 
 | Scene | Agents | Static bodies | Step p50 | RTF | phase1 (agent update) | pose flush | AABB / grid | collision | Collision events in window |
 |-------|--------|---------------|----------|-----|-----------------------|------------|-------------|-----------|----------------------------|
-| sparse (2 m grid, all driving +x) | 1000 | 0 | 14.2 ms | 7.0x | 6.1 ms | 2.0 ms | 3.7 ms | 1.8 ms | 0 |
-| dense (two groups head-on, 0.05 m margin, every tenth robot stopped) | 1000 | 0 | 13.0 ms | 7.7x | 5.4 ms | 1.9 ms | 3.2 ms | 2.0 ms | 610 started, 610 ended |
-| carrying (one box attached to every robot) | 1000 | 0 | 50.1 ms | 2.0x | 18.1 ms | 6.9 ms | 12.7 ms | 10.6 ms | 0 |
-| warehouse (aisles between floor tiles and bins) | 200 | 32,924 | 7.4 ms | 13.6x | 4.7 ms | 1.0 ms | 1.0 ms | 0.6 ms | 0 |
-| idle (sparse layout, no goals) | 1000 | 0 | 0.45 ms | 220x | 0.4 ms | 0 | 0 | 0.01 ms | 0 |
+| sparse (2 m grid, all driving +x) | 1000 | 0 | 11.1 ms | 9.0x | 4.8 ms | 1.5 ms | 2.9 ms | 1.4 ms | 0 |
+| dense (two groups head-on, 0.05 m margin, every tenth robot stopped) | 1000 | 0 | 8.7 ms | 11.6x | 3.8 ms | 1.1 ms | 2.1 ms | 1.4 ms | 610 started, 610 ended |
+| carrying (one box attached to every robot) | 1000 | 0 | 27.0 ms | 3.7x | 10.3 ms | 3.5 ms | 6.8 ms | 5.7 ms | 0 |
+| warehouse (aisles between floor tiles and bins) | 200 | 32,924 | 5.9 ms | 16.9x | 3.6 ms | 0.8 ms | 0.7 ms | 0.5 ms | 0 |
+| idle (sparse layout, no goals) | 1000 | 0 | 0.42 ms | 241x | 0.4 ms | 0 | 0 | 0.01 ms | 0 |
+
+The same scenes measured at 6ee451e on 2026-11-05, while other work ran on
+the machine, gave 14.2 ms (sparse), 13.0 ms (dense), 50.1 ms (carrying),
+7.4 ms (warehouse) and 0.45 ms (idle). Runs of 6ee451e and 2e2a86a alternated
+in one quiet session agree within noise (sparse 10.2-11.5 ms, carrying
+30.7-31.7 ms for both), so the commits between them do not change the step
+time; the difference between the two days is the load on the machine. Compare
+revisions by alternating them in one session, not by numbers from different
+days.
 
 What the scenes show:
 
 - After #94 the collision check is no longer the largest phase at 1000 moving
-  robots (1.8 ms); the per-object agent update (6.1 ms), the AABB / grid flush
-  (3.7 ms) and the pose flush (2.0 ms) are.
-- An attached object per robot more than triples the step (14 to 50 ms): the
+  robots (1.4 ms); the per-object agent update (4.8 ms), the AABB / grid flush
+  (2.9 ms) and the pose flush (1.5 ms) are.
+- An attached object per robot more than doubles the step (11 to 27 ms): the
   child pose is propagated per object, and every child joins the pose flush,
   the AABB / grid flush and the collision check.
-- With 33k static bodies and 200 movers, the agent update is still 4.7 ms:
+- With 33k static bodies and 200 movers, the agent update is still 3.6 ms:
   the per-object loop visits every static body each step. The spawn of that
-  scene takes 16.8 s.
+  scene takes 17.3 s.
 - Head-on traffic (610 contacts in 15 simulated seconds) adds little to the
   collision phase here; the narrow phase is cheap next to the broad phase.
 
