@@ -6,7 +6,15 @@ This module contains shared type definitions to avoid circular imports
 and provide a single source of truth for common types.
 """
 
+import dataclasses
+import os
+import sys
+import warnings
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from enum import Enum
+from types import FrameType
+from typing import Iterator, Optional
 
 
 class MotionMode(str, Enum):
@@ -184,10 +192,10 @@ class CollisionMode(Enum):
                    - A pair is a candidate when its AABBs are within the collision clearance on every axis
                    - For dynamic/kinematic objects
 
-        NORMAL_2D: As NORMAL_3D, without the clearance on the z axis (z is not ignored)
+        NORMAL_2D: Deprecated, use NORMAL_3D. As NORMAL_3D, without the clearance on the z axis (z is not ignored)
                    - A pair involving one needs real z overlap; x and y get the clearance as for NORMAL_3D
                    - Differs from NORMAL_3D only with a non-zero clearance (CLOSEST_POINTS / HYBRID)
-                   - For ground vehicles that pass close under or over things
+                   - Setting it emits a FutureWarning; it still works and will be removed in a future release
 
         STATIC: Static object mode (never moves, but has collision)
                 - Registered in collision system during spawn
@@ -208,9 +216,6 @@ class CollisionMode(Enum):
         # Normal 3D robot
         robot = SimObject(..., collision_mode=CollisionMode.NORMAL_3D)
 
-        # 2D ground vehicle
-        vehicle = SimObject(..., collision_mode=CollisionMode.NORMAL_2D)
-
         # Static structure
         wall = SimObject(..., collision_mode=CollisionMode.STATIC)
 
@@ -222,6 +227,110 @@ class CollisionMode(Enum):
     NORMAL_2D = "normal_2d"
     STATIC = "static"
     DISABLED = "disabled"
+
+
+_NORMAL_2D_DEPRECATION_MESSAGE = (
+    "CollisionMode.NORMAL_2D is deprecated and will be removed in a future release. "
+    "It only removes the collision clearance (collision_margin) on the z axis: a pair with a NORMAL_2D body "
+    "must really overlap in z. Use CollisionMode.NORMAL_3D instead. To keep no clearance on the z axis, set "
+    "collision_margin=(m, m, 0) for your margin m; it reports what NORMAL_2D did, for every pair, not only those "
+    "with this body. Otherwise NORMAL_3D alone differs only in reporting near misses within the clearance above "
+    "or below too (none with CONTACT_POINTS or a zero margin)."
+)
+
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__)) + os.sep
+_EXAMPLES_DIR = os.path.join(_PACKAGE_DIR, "examples") + os.sep
+_normal_2d_warning_suppressed: ContextVar[bool] = ContextVar("_normal_2d_warning_suppressed", default=False)
+# The class whose next NORMAL_2D object construction is not to warn (see
+# _spawning_from_warned_params); objects spawned while building it still warn.
+_normal_2d_skip_next_object: ContextVar[Optional[type]] = ContextVar("_normal_2d_skip_next_object", default=None)
+
+
+def _is_internal_frame(frame: FrameType) -> bool:
+    filename = frame.f_code.co_filename
+    if filename == "<string>":
+        # The __init__ that dataclasses generates (dataclasses.replace() calls it) is
+        # compiled from a string; other code there (python -c, exec) is the caller's.
+        return frame.f_code.co_name == "__init__" and dataclasses.is_dataclass(frame.f_locals.get("self"))
+    if filename == dataclasses.__file__:
+        return True
+    return filename.startswith(_PACKAGE_DIR) and not filename.startswith(_EXAMPLES_DIR)
+
+
+def _warn_if_normal_2d(mode: object) -> None:
+    """Emit the NORMAL_2D ``FutureWarning`` if *mode* is NORMAL_2D.
+
+    The warning is attributed to the first caller outside the package (the
+    bundled examples count as outside). The default filter keeps one warning
+    per line of that code, so a line spawning thousands of objects warns once;
+    a per-process flag would hide other lines and break ``pytest.warns``.
+    """
+    if mode is not CollisionMode.NORMAL_2D or _normal_2d_warning_suppressed.get():
+        return
+    frame = sys._getframe(1)
+    level = 2
+    while frame is not None and _is_internal_frame(frame):
+        frame = frame.f_back
+        level += 1
+    warnings.warn(_NORMAL_2D_DEPRECATION_MESSAGE, FutureWarning, stacklevel=level if frame is not None else 2)
+
+
+def _warn_if_new_object_is_normal_2d(obj: object, mode: object) -> None:
+    """:func:`_warn_if_normal_2d` for an object's ``__init__``.
+
+    Silent for the one object that :func:`_spawning_from_warned_params` is
+    building; later objects, including those it spawns, warn as usual.
+    """
+    if mode is CollisionMode.NORMAL_2D:
+        skip = _normal_2d_skip_next_object.get()
+        if skip is not None and isinstance(obj, skip):
+            _normal_2d_skip_next_object.set(None)
+            return
+    _warn_if_normal_2d(mode)
+
+
+class _spawning_from_warned_params:
+    """Warn once about NORMAL_2D spawn params, then spawn a *cls* from them.
+
+    Building the params warned already, unless their mode was set to NORMAL_2D
+    afterwards; then entering this warns, attributed to the caller. Inside the
+    block the first NORMAL_2D object of *cls* -- the one being spawned -- does
+    not warn again; anything else spawned there (by an overridden factory, a
+    controller or a plugin) does. A class, not a generator: contextlib's frame
+    would otherwise take the warning's attribution.
+    """
+
+    def __init__(self, cls: type, spawn_params: object) -> None:
+        self._cls = cls
+        self._spawn_params = spawn_params
+        self._token: Optional[Token] = None
+
+    def __enter__(self) -> None:
+        mode = getattr(self._spawn_params, "collision_mode", None)
+        if mode is not CollisionMode.NORMAL_2D:
+            return
+        if not getattr(self._spawn_params, "_normal_2d_warned", False):
+            _warn_if_normal_2d(mode)
+        self._token = _normal_2d_skip_next_object.set(self._cls)
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self._token is not None:
+            _normal_2d_skip_next_object.reset(self._token)
+            self._token = None
+
+
+@contextmanager
+def _normal_2d_warning_already_given() -> Iterator[None]:
+    """Do not warn about NORMAL_2D inside this block.
+
+    For internal steps that pass on a mode the user has already been warned
+    about (spawning from spawn params) or that must keep NORMAL_2D themselves.
+    """
+    token = _normal_2d_warning_suppressed.set(True)
+    try:
+        yield
+    finally:
+        _normal_2d_warning_suppressed.reset(token)
 
 
 class CollisionDetectionMethod(Enum):

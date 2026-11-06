@@ -485,3 +485,225 @@ class TestElevatorRedirect:
             {"name": "e1", "urdf_path": "robots/elevator.urdf", "floors": {"L1": 0.0}, "boarding_height": 0.25}
         )
         assert params.boarding_height == 0.25
+
+
+class TestElevatorPlatformContacts:
+    """A body standing on the platform is not in collision with the elevator unless asked.
+
+    The broadphase AABB covers every link, so the elevator's box includes its
+    platform: without this a robot resting on the platform before departure
+    or after arrival would be reported as colliding with the cabin.
+    """
+
+    @pytest.fixture
+    def sim(self):
+        from pybullet_fleet import MultiRobotSimulationCore, SimulationParams
+
+        sim = MultiRobotSimulationCore(
+            SimulationParams(gui=False, physics=False, timestep=0.02, monitor=False, enable_floor=False)
+        )
+        sim.initialize_simulation()
+        yield sim
+        sim.close()
+
+    @staticmethod
+    def _elevator(sim, **extra):
+        return Elevator.from_params(
+            ElevatorParams(
+                urdf_path="robots/elevator.urdf",
+                initial_pose=Pose.from_xyz(0, 0, 0),
+                use_fixed_base=True,
+                floors={"L1": 0.0, "L2": 8.0},
+                initial_floor="L1",
+                **extra,
+            ),
+            sim,
+        )
+
+    @staticmethod
+    def _robot_on_platform(sim):
+        # mobile_robot's wheels reach 0.252 m below its origin; the platform top is at 0.1.
+        return Agent.from_params(
+            AgentSpawnParams(urdf_path="robots/mobile_robot.urdf", initial_pose=Pose.from_xyz(0, 0, 0.35)), sim_core=sim
+        )
+
+    @staticmethod
+    def _box_under_platform(sim):
+        # Touches the platform's underside (bottom at -0.1): a cabin coming down onto it.
+        return SimObject.from_params(
+            SimObjectSpawnParams(
+                visual_shape=ShapeParams(shape_type="box", half_extents=[0.2, 0.2, 0.2]),
+                collision_shape=ShapeParams(shape_type="box", half_extents=[0.2, 0.2, 0.2]),
+                initial_pose=Pose.from_xyz(1.0, 1.0, -0.29),
+                mass=0.0,
+            ),
+            sim,
+        )
+
+    @staticmethod
+    def _pair(a, b):
+        return tuple(sorted((a.object_id, b.object_id)))
+
+    def test_a_robot_resting_on_the_platform_is_not_reported_by_default(self, sim):
+        elev = self._elevator(sim)
+        robot = self._robot_on_platform(sim)
+        sim.step_once()
+        assert self._pair(elev, robot) not in sim.get_active_collision_pairs()
+
+    def test_report_platform_contacts_reports_a_robot_resting_on_the_platform(self, sim):
+        elev = self._elevator(sim, report_platform_contacts=True)
+        robot = self._robot_on_platform(sim)
+        sim.step_once()
+        assert self._pair(elev, robot) in sim.get_active_collision_pairs()
+
+    @pytest.mark.parametrize("report", [False, True])
+    def test_a_body_touching_the_platform_from_below_is_reported(self, sim, report):
+        elev = self._elevator(sim, report_platform_contacts=report)
+        box = self._box_under_platform(sim)
+        sim.step_once()
+        assert self._pair(elev, box) in sim.get_active_collision_pairs()
+
+    def test_a_robot_leaving_the_platform_area_downward_is_reported_again(self, sim):
+        """The rule follows the geometry: a body sunk through the platform is no longer standing on it."""
+        elev = self._elevator(sim)
+        robot = self._robot_on_platform(sim)
+        sim.step_once()
+        robot.set_pose(Pose.from_xyz(0, 0, 0.15))  # wheels at -0.10, below the platform's mid-plane
+        sim.step_once()
+        assert self._pair(elev, robot) in sim.get_active_collision_pairs()
+
+    _REACHING_URDF = """<?xml version="1.0"?>
+<robot name="reaching">
+  <link name="base">
+    <collision><geometry><box size="0.2 0.2 0.2"/></geometry></collision>
+    <inertial><mass value="0.0"/><inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial>
+  </link>
+  <joint name="reach" type="fixed">
+    <parent link="base"/><child link="tool"/><origin xyz="-0.3 0 0"/>
+  </joint>
+  <link name="tool">
+    <collision><geometry><box size="0.2 0.2 0.1"/></geometry></collision>
+    <inertial><mass value="0.0"/><inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial>
+  </link>
+</robot>
+"""
+
+    def test_a_link_reaching_over_the_platform_from_beside_the_cabin_is_reported(self, sim, tmp_path):
+        """Standing is judged by the base's footprint: a body beside the cabin whose
+        link reaches over the platform, into its floor, is not standing on it."""
+        elev = self._elevator(sim)
+        urdf = tmp_path / "reaching.urdf"
+        urdf.write_text(self._REACHING_URDF)
+        # Base x 1.55..1.75, beside the platform (x -1.5..1.5, top at z 0.1);
+        # the tool x 1.25..1.45 over it, its bottom 0.05 into the floor.
+        body = Agent.from_params(
+            AgentSpawnParams(urdf_path=str(urdf), initial_pose=Pose.from_xyz(1.65, 0, 0.15), use_fixed_base=True),
+            sim_core=sim,
+        )
+        sim.step_once()
+        assert self._pair(elev, body) in sim.get_active_collision_pairs()
+
+    def test_a_riding_passenger_keeps_the_attached_object_rule(self):
+        """The platform rule leaves passengers alone: with ignore_attached_collision off they are reported."""
+        from pybullet_fleet import MultiRobotSimulationCore, SimulationParams
+
+        sim = MultiRobotSimulationCore(
+            SimulationParams(
+                gui=False,
+                physics=False,
+                timestep=0.02,
+                monitor=False,
+                enable_floor=False,
+                ignore_attached_collision=False,
+            )
+        )
+        sim.initialize_simulation()
+        try:
+            elev = self._elevator(sim)
+            robot = self._robot_on_platform(sim)
+            elev.request_floor("L2")
+            assert robot.is_attached()
+            sim.step_once()
+            assert self._pair(elev, robot) in sim.get_active_collision_pairs()
+        finally:
+            sim.close()
+
+    _WALLED_URDF = """<?xml version="1.0"?>
+<robot name="walled_elevator">
+  <link name="shaft"><inertial><mass value="0.0"/><inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial></link>
+  <joint name="lift" type="prismatic">
+    <parent link="shaft"/><child link="platform"/>
+    <axis xyz="0 0 1"/><limit lower="0" upper="30.0" effort="100" velocity="2.0"/>
+  </joint>
+  <link name="platform">
+    <collision><geometry><box size="3.0 3.0 0.2"/></geometry></collision>
+    <inertial><mass value="0.0"/><inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial>
+  </link>
+  <joint name="wall_mount" type="fixed">
+    <parent link="platform"/><child link="wall"/><origin xyz="1.45 0 1.1"/>
+  </joint>
+  <link name="wall">
+    <collision><geometry><box size="0.1 3.0 2.0"/></geometry></collision>
+    <inertial><mass value="0.0"/><inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial>
+  </link>
+</robot>
+"""
+
+    def _walled_elevator(self, sim, tmp_path, **extra):
+        urdf = tmp_path / "walled_elevator.urdf"
+        urdf.write_text(self._WALLED_URDF)
+        return Elevator.from_params(
+            ElevatorParams(
+                urdf_path=str(urdf),
+                initial_pose=Pose.from_xyz(0, 0, 0),
+                use_fixed_base=True,
+                floors={"L1": 0.0, "L2": 8.0},
+                initial_floor="L1",
+                **extra,
+            ),
+            sim,
+        )
+
+    def test_a_robot_on_the_platform_driving_into_a_cabin_wall_is_reported(self, sim, tmp_path):
+        """The platform rule must not hide contact with the cabin's other colliders."""
+        elev = self._walled_elevator(sim, tmp_path)
+        robot = self._robot_on_platform(sim)
+        robot.set_pose(Pose.from_xyz(1.3, 0, 0.35))  # on the platform, against the wall at x = 1.4
+        sim.step_once()
+        assert self._pair(elev, robot) in sim.get_active_collision_pairs()
+
+    def test_an_elevator_with_other_colliders_warns_once_that_platform_contacts_are_reported(self, sim, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="pybullet_fleet.devices.elevator"):
+            self._walled_elevator(sim, tmp_path)
+        warnings = [r for r in caplog.records if "report_platform_contacts" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "wall" in warnings[0].getMessage()
+
+    def test_report_platform_contacts_on_does_not_warn_for_other_colliders(self, sim, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="pybullet_fleet.devices.elevator"):
+            self._walled_elevator(sim, tmp_path, report_platform_contacts=True)
+        assert not [r for r in caplog.records if "report_platform_contacts" in r.getMessage()]
+
+    def test_the_bundled_elevator_does_not_warn(self, sim, caplog):
+        with caplog.at_level("WARNING", logger="pybullet_fleet.devices.elevator"):
+            self._elevator(sim)
+        assert not [r for r in caplog.records if "report_platform_contacts" in r.getMessage()]
+
+    def test_report_platform_contacts_from_dict(self):
+        params = ElevatorParams.from_dict(
+            {"name": "e1", "urdf_path": "robots/elevator.urdf", "floors": {"L1": 0.0}, "report_platform_contacts": True}
+        )
+        assert params.report_platform_contacts is True
+        default = ElevatorParams.from_dict({"name": "e1", "urdf_path": "robots/elevator.urdf", "floors": {"L1": 0.0}})
+        assert default.report_platform_contacts is False
+
+    @pytest.mark.parametrize("value, expected", [("false", False), ("no", False), ("0", False), ("true", True), (1, True)])
+    def test_report_platform_contacts_from_dict_parses_quoted_booleans(self, value, expected):
+        config = {"name": "e1", "urdf_path": "robots/elevator.urdf", "floors": {"L1": 0.0}}
+        params = ElevatorParams.from_dict({**config, "report_platform_contacts": value})
+        assert params.report_platform_contacts is expected
+
+    def test_report_platform_contacts_from_dict_rejects_an_unknown_value(self):
+        config = {"name": "e1", "urdf_path": "robots/elevator.urdf", "floors": {"L1": 0.0}}
+        with pytest.raises(ValueError, match="report_platform_contacts"):
+            ElevatorParams.from_dict({**config, "report_platform_contacts": "maybe"})

@@ -109,15 +109,27 @@ def _update_object_aabb(self, object_id: int):
     """Called when object moves"""
     obj = self._sim_objects_dict[object_id]
 
-    # Query PyBullet (expensive!)
-    self._cached_aabbs_dict[object_id] = p.getAABB(
-        obj.body_id,
-        physicsClientId=self.client
-    )
+    # The box of every link with a collision shape: p.getAABB(body) alone
+    # is the base link's.
+    # One getAABB() call for a body without child links, one per link
+    # (unioned) for an articulated body.
+    self._cached_aabbs_dict[object_id] = self._body_aabb(obj)
 
     # Update grid registration
     self._update_object_spatial_grid(object_id)
 ```
+
+An articulated body's box covers every link, so it changes when a joint
+moves. `notify_geometry_changed(obj)` marks the body moved and refreshes its
+box and grid cells: at once outside a step, with the flushed poses (Phase 3)
+inside one. `Agent.set_joint_position()`, `set_joints_positions()`, the
+kinematic joint interpolation and a joint checkpoint restore call it; physics
+bodies are re-read after every `stepSimulation()`. Call it after moving a
+body's joints directly with `p.resetJointState()`.
+`examples/arm/link_collision_demo.py` shows all three cases: a fixed arm whose
+end effector sweeps through a box well outside its base, a mobile manipulator
+whose stretched-out arm hits a pillar its base clears, and a joint reset by hand
+followed by `notify_geometry_changed`.
 
 **Invalidation**: Cache invalidated on movement, mode change, or removal
 
@@ -129,7 +141,9 @@ def _update_object_aabb(self, object_id: int):
 
 Every collision body (NORMAL_3D, NORMAL_2D and STATIC; not DISABLED) is
 registered in **every cell its AABB, enlarged by half the collision margin on
-every side, touches**. A NORMAL_2D body's z extent is not enlarged. A moved
+every side, touches**; with a per-axis margin `(x, y, z)`, each axis is
+enlarged by half that axis's margin. A NORMAL_2D body's z extent is not
+enlarged (NORMAL_2D is deprecated). A moved
 body's candidates are the bodies registered in **its own cells**: there is no
 neighbour search.
 

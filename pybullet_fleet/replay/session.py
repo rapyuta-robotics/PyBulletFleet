@@ -17,7 +17,7 @@ from pybullet_fleet.core_simulation import MultiRobotSimulationCore
 from pybullet_fleet.fleet_api import FleetCommandDispatcher
 from pybullet_fleet.geometry import Pose, quat_angle_between
 from pybullet_fleet.sim_object import ShapeParams, SimObject, SimObjectSpawnParams
-from pybullet_fleet.types import CollisionMode
+from pybullet_fleet.types import CollisionMode, _normal_2d_warning_already_given
 
 from .artifact import PACKAGE, ArtifactWriter, assets, environment
 from .schema import PROFILE, SCHEMA_VERSION, ReplayError, ReplayInput, clone, normalize_initial, positive_int
@@ -90,7 +90,8 @@ class ReplaySession:
                 name="replay_fleet",
                 fleet_controller={"type": "batch_omni"} if config["controller"] == "batch_omni" else None,
             )
-            with self._sim.batch_spawn():
+            # The v1 profile fixes NORMAL_2D robots (deprecated) so recorded runs replay unchanged.
+            with self._sim.batch_spawn(), _normal_2d_warning_already_given():
                 for entity in initial["world"]["entities"]:
                     pose = Pose.from_yaw(entity["position"][0], entity["position"][1], entity["position"][2], entity["yaw"])
                     if entity["kind"] == "robot":

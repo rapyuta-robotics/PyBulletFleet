@@ -103,8 +103,7 @@ of `1 / f` simulation seconds.
 
 Set `collision_mode` per entity:
 
-- `normal_2d` for ground-constrained entities;
-- `normal_3d` for full 3D motion;
+- `normal_3d` for moving entities (`normal_2d` is deprecated);
 - `static` for fixed structures;
 - `disabled` only when an object must not participate in collision detection.
 

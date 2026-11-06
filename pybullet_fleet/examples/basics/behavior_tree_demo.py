@@ -41,7 +41,7 @@ def main() -> None:
             collision_shape=ShapeParams(shape_type="cylinder", radius=0.22, height=0.8),
             pose=Pose.from_xyz(*starts[index % len(starts)]),
             controller={"type": "omni", "max_linear_vel": 1.2},
-            collision_mode=CollisionMode.NORMAL_2D,
+            collision_mode=CollisionMode.NORMAL_3D,
             name=f"worker_{index}",
             sim_core=sim,
         )

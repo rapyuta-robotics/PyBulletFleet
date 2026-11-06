@@ -55,14 +55,14 @@ def sim(tmp_path, monkeypatch):
             p.disconnect(core.client)
 
 
-def _box(core, x, name=None):
+def _box(core, x, name=None, collision_mode=CollisionMode.STATIC):
     return SimObject.from_mesh(
         visual_shape=ShapeParams(shape_type="box", half_extents=[0.1, 0.1, 0.1]),
         collision_shape=ShapeParams(shape_type="box", half_extents=[0.1, 0.1, 0.1]),
         pose=Pose.from_xyz(x, 0.0, 0.1),
         mass=0.0,
         sim_core=core,
-        collision_mode=CollisionMode.STATIC,
+        collision_mode=collision_mode,
         name=name,
     )
 
@@ -233,6 +233,131 @@ class TestTheWindowIsNeverLeftBehind:
         core._set_selected_entity(box.object_id, "test")
         core.step_once()  # paused, but the window shows the selection
         assert _read(core)["selected_entity"]["entity"]["name"] == "picked"
+
+    def test_a_pose_edit_while_paused(self, sim):
+        core = sim(update_interval=10.0)
+        box = _box(core, 0.0, "picked", CollisionMode.NORMAL_3D)
+        core._set_selected_entity(box.object_id, "test")
+        core.step_once()
+        core.pause()
+        core.step_once()
+        assert _read(core)["selected_entity"]["position"][0] == pytest.approx(0.0)
+        assert core._set_entity_pose(box.object_id, (2.0, 0.0, 0.1), None, None, "test")
+        core.step_once()  # paused, but the window shows the selected entity's pose
+        assert _read(core)["selected_entity"]["position"][0] == pytest.approx(2.0)
+
+    def test_a_pose_edit_while_paused_is_flushed(self, sim):
+        core = sim(update_interval=10.0)
+        box = _box(core, 0.0, "picked", CollisionMode.NORMAL_3D)
+        core._set_selected_entity(box.object_id, "test")
+        core.step_once()
+        core.pause()
+        core.step_once()
+        assert core._set_entity_pose(box.object_id, (2.0, 0.0, 0.1), None, None, "test")
+        assert core.flush_monitor()  # no step taken: the step count alone would say nothing changed
+        assert core.last_monitor_frame.selected_entity.position[0] == pytest.approx(2.0)
+        assert _read(core)["selected_entity"]["position"][0] == pytest.approx(2.0)
+
+    def test_a_refused_pose_edit_leaves_nothing_to_flush(self, sim):
+        core = sim(update_interval=10.0)
+        box = _box(core, 0.0, "picked", CollisionMode.NORMAL_3D)
+        core._set_selected_entity(box.object_id, "test")
+        core.step_once()
+        core.pause()
+        core.step_once()
+        assert not core._set_entity_pose(box.object_id, (float("nan"), 0.0, 0.1), None, None, "test")
+        assert not core.flush_monitor()
+
+    def test_a_pose_edit_to_the_same_pose_leaves_nothing_to_flush(self, sim):
+        core = sim(update_interval=10.0)
+        box = _box(core, 0.0, "picked", CollisionMode.NORMAL_3D)
+        core._set_selected_entity(box.object_id, "test")
+        core.step_once()
+        core.pause()
+        core.step_once()
+        assert not core._set_entity_pose(box.object_id, (0.0, 0.0, 0.1), None, None, "test")
+        assert not core.flush_monitor()
+
+    def test_a_pose_edit_of_a_static_entity_leaves_nothing_to_flush(self, sim):
+        core = sim(update_interval=10.0)
+        box = _box(core, 0.0, "picked")
+        core._set_selected_entity(box.object_id, "test")
+        core.step_once()
+        core.pause()
+        core.step_once()
+        assert not core._set_entity_pose(box.object_id, (2.0, 0.0, 0.1), None, None, "test")
+        assert not core.flush_monitor()
+
+    def test_a_pose_set_by_user_code_while_paused(self, sim):
+        core = sim(update_interval=10.0)
+        box = _box(core, 0.0, "picked", CollisionMode.NORMAL_3D)
+        core._set_selected_entity(box.object_id, "test")
+        core.step_once()
+        core.pause()
+        core.step_once()
+        assert box.set_pose(Pose.from_xyz(2.0, 0.0, 0.1))
+        core.step_once()  # paused, but the window shows the selected entity's pose
+        assert _read(core)["selected_entity"]["position"][0] == pytest.approx(2.0)
+
+    def test_a_pose_set_by_user_code_while_paused_is_flushed(self, sim):
+        core = sim(update_interval=10.0)
+        box = _box(core, 0.0, "picked", CollisionMode.NORMAL_3D)
+        core._set_selected_entity(box.object_id, "test")
+        core.step_once()
+        core.pause()
+        core.step_once()
+        assert box.set_pose(Pose.from_xyz(2.0, 0.0, 0.1))
+        assert core.flush_monitor()  # no step taken: the step count alone would say nothing changed
+        assert core.last_monitor_frame.selected_entity.position[0] == pytest.approx(2.0)
+        assert not core.flush_monitor()  # nothing left to write
+
+    def test_a_pose_set_by_user_code_between_steps_is_flushed(self, sim):
+        # Not paused: a program that stopped calling step_once().
+        core = sim(update_interval=10.0)
+        box = _box(core, 0.0, "picked", CollisionMode.NORMAL_3D)
+        core._set_selected_entity(box.object_id, "test")
+        core.step_once()
+        assert core.flush_monitor()
+        assert box.set_pose(Pose.from_xyz(2.0, 0.0, 0.1))
+        assert core.flush_monitor()
+        assert core.last_monitor_frame.selected_entity.position[0] == pytest.approx(2.0)
+
+    def test_a_pose_set_by_user_code_to_the_same_pose_leaves_nothing_to_flush(self, sim):
+        core = sim(update_interval=10.0)
+        box = _box(core, 0.0, "picked", CollisionMode.NORMAL_3D)
+        core.step_once()
+        core.pause()
+        core.step_once()
+        assert not box.set_pose(Pose.from_xyz(0.0, 0.0, 0.1))
+        assert not core.flush_monitor()
+
+    def test_a_pose_set_while_paused_keeps_the_contacts_of_the_last_step(self, sim):
+        # The paused world is stopped: contacts are counted again on the next step.
+        core = sim(update_interval=10.0)
+        _box(core, 0.0, "still", CollisionMode.NORMAL_3D)
+        box = _box(core, 2.0, "moved", CollisionMode.NORMAL_3D)
+        core.step_once()
+        core.pause()
+        core.step_once()
+        assert box.set_pose(Pose.from_xyz(0.05, 0.0, 0.1))  # into the other box
+        assert core.flush_monitor()
+        assert core.last_monitor_frame.active_collisions == 0
+        core.resume()
+        core.step_once()
+        assert core.flush_monitor()
+        assert core.last_monitor_frame.active_collisions == 1
+
+    def test_a_pose_set_inside_a_step_does_not_mark_the_window_behind(self, sim, monkeypatch):
+        # Running, the periodic refresh shows the move: no per-step bookkeeping.
+        core = sim(update_interval=10.0)
+        box = _box(core, 0.0, "picked", CollisionMode.NORMAL_3D)
+        edits = []
+        monkeypatch.setattr(core._monitor_frames, "pose_edited", lambda: edits.append(1))
+        core.register_callback(lambda *_: box.set_pose(Pose.from_xyz(core.step_count * 0.1, 0.0, 0.1)), frequency=None)
+        for _ in range(5):
+            core.step_once()
+        assert box.get_pose().position[0] > 0.0
+        assert edits == []
 
     def test_the_end_of_a_step_once_loop(self, sim):
         core = sim(update_interval=10.0)

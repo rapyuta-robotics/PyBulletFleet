@@ -9,6 +9,7 @@ monitoring, and log control for various robots, pallets, and meshes.
 import copy
 import logging
 import math
+import numbers
 import os
 import statistics
 import time
@@ -146,6 +147,42 @@ _MOUSE_MOVE_EVENT = 1
 _SELECTED_NAMEPLATE_UPDATE_INTERVAL_S = 0.25
 _VIEWPORT_CLICK_MAX_DISTANCE_PX = 8
 
+#: A collision clearance: one distance for every axis, or one per world axis (x, y, z).
+CollisionMargin = Union[float, Tuple[float, float, float]]
+
+
+def _is_scalar_margin(value: Any) -> bool:
+    """A real number (numpy scalars included), not a bool."""
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+def _normalize_margin(value: Any) -> CollisionMargin:
+    """A ``collision_margin`` as a validated float, or as a validated per-axis tuple of floats."""
+    if _is_scalar_margin(value):
+        margin = float(value)
+        if not math.isfinite(margin) or margin < 0:
+            raise ValueError(f"collision_margin must be finite and non-negative, got {value!r}")
+        return margin
+    return _clearance_triple(value)
+
+
+def _clearance_triple(value: Iterable[float]) -> Tuple[float, float, float]:
+    """Validate a per-axis ``collision_margin`` and return it as a tuple of floats."""
+    shape_error = ValueError(f"collision_margin must be a number or an (x, y, z) triple, got {value!r}")
+    # A string is iterable ("005" would read as 0, 0, 5) and a bool is a number; neither is a clearance.
+    if isinstance(value, (str, bytes, bool)):
+        raise shape_error
+    try:
+        items = list(value)
+    except TypeError:
+        raise shape_error from None
+    if len(items) != 3 or not all(_is_scalar_margin(v) for v in items):
+        raise shape_error
+    triple = tuple(float(v) for v in items)
+    if not all(math.isfinite(v) and v >= 0 for v in triple):
+        raise ValueError(f"collision_margin components must be finite and non-negative, got {value!r}")
+    return cast(Tuple[float, float, float], triple)
+
 
 @dataclass(frozen=True)
 class CollisionPairObservation:
@@ -165,7 +202,7 @@ class CollisionObservation:
     step: int
     sim_time: float
     configured_method: CollisionDetectionMethod
-    margin: float
+    margin: CollisionMargin
     pairs: Tuple[CollisionPairObservation, ...]
 
 
@@ -232,7 +269,18 @@ class SimulationParams:
     spatial_hash_cell_size_mode: SpatialHashCellSizeMode = SpatialHashCellSizeMode(_SIM_D["spatial_hash_cell_size_mode"])
     spatial_hash_cell_size: Optional[float] = None  # Fixed cell size (for mode=CONSTANT)
     collision_detection_method: Optional[CollisionDetectionMethod] = None  # Auto-select based on physics
-    collision_margin: float = _SIM_D["collision_margin"]
+    #: Clearance, in metres, within which CLOSEST_POINTS (and the kinematic
+    #: pairs of HYBRID) report a pair that does not touch; CONTACT_POINTS
+    #: ignores it. A number applies to every direction; an ``(x, y, z)``
+    #: triple (a list in YAML) gives one clearance per world axis, for
+    #: example ``(0.05, 0.05, 0.0)`` to report bodies side by side but not one
+    #: passing close above or below another. A triple acts in the broad phase:
+    #: each AABB axis is enlarged by that axis's clearance, so two bodies whose
+    #: AABBs are farther apart than that on any axis are never reported. The
+    #: narrow phase judges the straight-line gap against the largest
+    #: component, so ``(m, m, m)`` is the same as ``m``, and ``(m, m, 0)``
+    #: reports what ``CollisionMode.NORMAL_2D`` with ``m`` did, for every pair.
+    collision_margin: CollisionMargin = _SIM_D["collision_margin"]
     multi_cell_threshold: float = _SIM_D["multi_cell_threshold"]  # Accepted for compatibility; not used
     enable_floor: bool = _SIM_D["enable_floor"]
     camera_config: Optional[Dict[str, Any]] = None  # Camera configuration from config file
@@ -255,6 +303,8 @@ class SimulationParams:
                 DeprecationWarning,
                 stacklevel=3,
             )
+        # A per-axis clearance (a list from YAML) is stored as a validated tuple.
+        self.collision_margin = _normalize_margin(self.collision_margin)
         # Coerce a string (e.g. from YAML: collision_detection_method: "closest_points")
         # into the CollisionDetectionMethod enum. Without this the value stays a plain
         # str and the `== CollisionDetectionMethod.X` checks in check_collisions() never
@@ -572,6 +622,11 @@ class MultiRobotSimulationCore:
         self._cached_aabbs_dict: Dict[int, Tuple[Tuple[float, float, float], Tuple[float, float, float]]] = (
             {}
         )  # object_id -> AABB
+        # The links (-1 = base) whose boxes make up each body's AABB: those
+        # with a collision shape, read once from PyBullet. Empty for a body
+        # without child links (or without any collider): its AABB is one
+        # getAABB() call. An articulated body's is the union over these links.
+        self._aabb_links: Dict[int, Tuple[int, ...]] = {}
         # Pickable objects whose base origin lies outside their cached AABB,
         # with the largest per-axis distance from the origin to the box. Lets
         # a search by base origin (pickable_candidates_near) go through the
@@ -585,7 +640,9 @@ class MultiRobotSimulationCore:
         # it, so the grid is rebuilt whenever the effective margin differs --
         # set_collision_margin() does so at once; a change made on ``params``
         # directly is caught by filter_aabb_pairs().
-        self._grid_margin: Optional[float] = None
+        self._grid_margin: Optional[Tuple[float, float, float]] = None
+        # Half of _grid_margin per axis: what each body's AABB is enlarged by.
+        self._grid_half_margin: Optional[Tuple[float, float, float]] = None
         self._cached_object_to_cell: Dict[int, List[Tuple[int, int, int]]] = (
             {}
         )  # object_id -> list of cells (supports multi-cell registration)
@@ -596,7 +653,7 @@ class MultiRobotSimulationCore:
         self._active_collision_pairs: Set[Tuple[int, int]] = set()  # Currently colliding object_id pairs (sorted: i < j)
         self._active_pairs_by_object: Dict[int, Set[Tuple[int, int]]] = {}
         self._collision_pair_observations: Dict[Tuple[int, int], CollisionPairObservation] = {}
-        self._last_collision_check_metadata: Optional[Tuple[int, float, CollisionDetectionMethod, float]] = None
+        self._last_collision_check_metadata: Optional[Tuple[int, float, CollisionDetectionMethod, CollisionMargin]] = None
         self._recheck_stationary_pairs = False
         self._collision_ignore_filter: Optional[CollisionIgnoreFilter] = None
         # Broad-phase candidate pairs the ignore rules excluded last time they
@@ -625,6 +682,10 @@ class MultiRobotSimulationCore:
         self._in_pre_step: bool = False
         self._resume_ready: bool = False  # Set only by a validated completed-step restore.
         self._pending_pose_ids: Set[int] = set()
+        # Kinematic objects whose links moved inside the step without a pose
+        # write (a joint): their AABB and grid cells are refreshed in Phase 3
+        # with the flushed poses. See notify_geometry_changed().
+        self._pending_geometry_ids: Set[int] = set()
         # Parent object ids that have link-level kinematic attachments.
         # Used to avoid scanning every flushed object in the hot path when no
         # link attachments exist.
@@ -634,17 +695,18 @@ class MultiRobotSimulationCore:
         self._plugins: List["SimPlugin"] = []
 
         self.setup_pybullet()
+        self.setup_monitor()
         # DataMonitor refresh: monitor_update_interval, else
         # MONITOR_REFRESH_WITH_WINDOW while its window is open
         # (enable_monitor_gui, or gui when that is None; the window reads every
         # 0.5 wall seconds) and MONITOR_REFRESH_HEADLESS otherwise.
-        # Set after setup_pybullet(): RECORD may turn the GUI off.
+        # Set after setup_pybullet(), as RECORD may turn the GUI off, and
+        # after setup_monitor(), as the window stays shut without Tk.
         interval = params.monitor_update_interval
         if interval is None:
-            window = params.enable_monitor_gui if params.enable_monitor_gui is not None else params.gui
+            window = self._data_monitor is not None and self._data_monitor.enable_gui
             interval = MONITOR_REFRESH_WITH_WINDOW if window else MONITOR_REFRESH_HEADLESS
         self._monitor_update_gate = FrequencyGate(1.0 / interval if interval > 0 else None)
-        self.setup_monitor()
 
     def setup_monitor(self) -> None:
         # If monitor: true and console_monitor: false, start DataMonitor
@@ -809,6 +871,11 @@ class MultiRobotSimulationCore:
         an agent controller or physics integration.  Dynamic bodies also have
         their velocity cleared so a pre-edit velocity cannot move them away
         immediately after resume.
+
+        The monitor shows the new pose at once, but collision state is not
+        recomputed: the paused world is stopped, so contact counts (the
+        frame's ``active_collisions``) stay as of the last step until the
+        simulation steps again.
         """
         if not self.is_paused:
             logger.warning("Ignoring GUI pose edit while simulation is running")
@@ -835,6 +902,7 @@ class MultiRobotSimulationCore:
             orientation = list(p.getQuaternionFromEuler([roll, pitch, yaw_radians]))
         moved = entity.set_pose_raw(list(position), orientation, preserve_velocity=False)
         if moved:
+            # set_pose_raw() marked the monitor window behind.
             self.events.emit("gui.entity_pose_changed", entity_id=entity_id, source=source)
         return moved
 
@@ -1597,6 +1665,9 @@ class MultiRobotSimulationCore:
         if self._params.gui and self._params.window_width > 0 and self._params.window_height > 0:
             options = f"--width={self._params.window_width} --height={self._params.window_height}"
         self._client = p.connect(p.GUI if self._params.gui else p.DIRECT, options=options)
+        # A reused client id may still have cache entries from a connection
+        # that was disconnected without close() (p.disconnect() by the caller).
+        SimObject._forget_shared_shapes(self._client)
 
         # Hide all debug UI panels immediately after connection
         if self._params.gui:
@@ -1746,7 +1817,7 @@ class MultiRobotSimulationCore:
         """Rebuild entire spatial grid using current cell_size, margin and AABBs."""
         self._cached_spatial_grid.clear()
         self._cached_object_to_cell.clear()
-        self._grid_margin = self._collision_broadphase_margin()
+        self._set_grid_margin(self._collision_broadphase_margin())
 
         for object_id in self._cached_aabbs_dict.keys():
             self._update_object_spatial_grid(object_id)
@@ -1939,7 +2010,7 @@ class MultiRobotSimulationCore:
             to_sync = synced_ids & self._link_attachment_parent_ids
         return all_synced_ids
 
-    def _flush_aabb_and_grid(self, ids: Set[int]) -> None:
+    def _flush_aabb_and_grid(self, ids: Set[int], geometry_ids: Set[int] = frozenset()) -> None:
         """
         Two-phase step Phase 3: refresh AABB + spatial grid for buffered objects.
 
@@ -1952,17 +2023,103 @@ class MultiRobotSimulationCore:
             ids: Snapshot of object_ids to refresh (same set passed to
                 ``_flush_pending_poses``). Independent of ``_pending_pose_ids``
                 so the two flush helpers have no implicit ordering coupling.
+            geometry_ids: Objects whose links moved in the step
+                (``notify_geometry_changed``): refreshed too, kinematic or
+                ``STATIC``.
         """
+        if geometry_ids:
+            ids = ids | geometry_ids
         if not ids:
             return
         kinematic = self._kinematic_objects
         cell_size_set = self._cached_cell_size is not None
         for object_id in ids:
-            if object_id in kinematic:
+            if object_id in kinematic or object_id in geometry_ids:
                 # One grid update per object (the AABB update would do one too).
                 self._update_object_aabb(object_id, update_grid=False)
                 if cell_size_set:
                     self._update_object_spatial_grid(object_id)
+
+    def _body_aabb(self, obj: SimObject) -> Tuple[Sequence[float], Sequence[float]]:
+        """The AABB of every link of ``obj``'s body, as PyBullet has them now.
+
+        ``p.getAABB(body)`` alone is the base link's box. A body without child
+        links (a mobile robot box, a tile, a pallet) costs that one call; an
+        articulated body's box is the union of its link boxes, one call per
+        link. A link without a collision shape (an elevator shaft, a tool or
+        sensor frame) is a point at its frame for PyBullet and is left out:
+        nothing there can collide. The links are read from PyBullet once per
+        object.
+        """
+        body_id = obj.body_id
+        client = self._client
+        links = self._aabb_links.get(obj.object_id)
+        if links is None:
+            links = self._collider_links(body_id)
+            self._aabb_links[obj.object_id] = links
+        if not links:
+            return p.getAABB(body_id, physicsClientId=client)
+        (x0, y0, z0), (x1, y1, z1) = p.getAABB(body_id, links[0], physicsClientId=client)
+        for link in links[1:]:
+            (a0, b0, c0), (a1, b1, c1) = p.getAABB(body_id, link, physicsClientId=client)
+            if a0 < x0:
+                x0 = a0
+            if b0 < y0:
+                y0 = b0
+            if c0 < z0:
+                z0 = c0
+            if a1 > x1:
+                x1 = a1
+            if b1 > y1:
+                y1 = b1
+            if c1 > z1:
+                z1 = c1
+        return (x0, y0, z0), (x1, y1, z1)
+
+    def _collider_links(self, body_id: int) -> Tuple[int, ...]:
+        """The links (-1 = base) of ``body_id`` that have a collision shape, for ``_body_aabb``.
+
+        Empty when the body has no child links, or no link with a collider:
+        its AABB is then the base link's, one ``getAABB()`` call, as before.
+        """
+        client = self._client
+        num_links = p.getNumJoints(body_id, physicsClientId=client)
+        if not num_links:
+            return ()
+        links = tuple(link for link in range(-1, num_links) if p.getCollisionShapeData(body_id, link, physicsClientId=client))
+        return links if links != (-1,) else ()
+
+    def notify_geometry_changed(self, obj: SimObject) -> None:
+        """Tell the simulation that ``obj``'s links moved without its base pose being set.
+
+        A joint moved by :meth:`Agent.set_joint_position`, by the joint
+        interpolation of a kinematic agent or by restoring a checkpoint calls
+        this already. Call it after moving a body's joints directly through
+        PyBullet (``p.resetJointState``).
+
+        The body counts as moved for the next collision check, and its
+        broadphase AABB (the union of its link boxes) and spatial-hash cells
+        follow the links. Outside a step that happens at once. Inside a step
+        a kinematic or ``STATIC`` body is refreshed with the flushed poses
+        before the collision check; a physics body is re-read after
+        ``stepSimulation()`` anyway.
+
+        Args:
+            obj: The object whose links moved.
+        """
+        object_id = obj.object_id
+        if object_id not in self._sim_objects_dict:
+            return
+        self._moved_this_step.add(object_id)
+        if object_id not in self._cached_aabbs_dict:
+            # Collision DISABLED (no cached box) or not yet initialised: the
+            # box is read from PyBullet when it is needed.
+            return
+        if self._in_step:
+            if object_id not in self._physics_objects:
+                self._pending_geometry_ids.add(object_id)
+            return
+        self._update_object_aabb(object_id)
 
     def _update_object_aabb(self, object_id: int, update_grid: bool = True) -> None:
         """
@@ -1982,7 +2139,14 @@ class MultiRobotSimulationCore:
             return
 
         try:
-            aabb = p.getAABB(obj.body_id, physicsClientId=self._client)
+            if self._aabb_links.get(object_id) == ():
+                # Hot path, one getAABB() call (no child links): _body_aabb() inlined
+                # on purpose, to save a method call for every moved object every
+                # step. Both read the same _aabb_links entry, so the two cannot
+                # disagree.
+                aabb = p.getAABB(obj.body_id, physicsClientId=self._client)
+            else:
+                aabb = self._body_aabb(obj)
             self._cached_aabbs_dict[object_id] = aabb
             self._record_origin_gap(obj, aabb)
             logger.debug(f"Updated AABB for object {object_id}")
@@ -2113,21 +2277,94 @@ class MultiRobotSimulationCore:
         # loads -- belongs to one body: no contact among them is a collision.
         if self._params.ignore_attached_collision and obj_a._attachment_root() is obj_b._attachment_root():
             return True
+        # An object's own rule for its contacts (an elevator ignores the
+        # bodies standing on its platform).
+        if obj_a._filters_own_contacts and obj_a._ignores_contact_with(obj_b):
+            return True
+        if obj_b._filters_own_contacts and obj_b._ignores_contact_with(obj_a):
+            return True
         return self._collision_ignore_filter is not None and bool(self._collision_ignore_filter(obj_a, obj_b))
 
-    def _collision_broadphase_margin(self) -> float:
-        """Match the clearance used by the configured narrow phase."""
+    def _collision_broadphase_margin(self) -> Tuple[float, float, float]:
+        """Match the clearance used by the configured narrow phase, per world axis (x, y, z)."""
         if self._params.collision_detection_method in (
             CollisionDetectionMethod.CLOSEST_POINTS,
             CollisionDetectionMethod.HYBRID,
         ):
-            return max(0.0, self._params.collision_margin)
-        return 0.0
+            margin = self._params.collision_margin
+            if _is_scalar_margin(margin):
+                margin = max(0.0, float(margin))
+                return (margin, margin, margin)
+            return _clearance_triple(margin)
+        return (0.0, 0.0, 0.0)
 
-    def set_collision_margin(self, margin: float) -> None:
-        """Change the clearance and recheck stationary pairs on the next collision check."""
-        if not math.isfinite(margin) or margin < 0:
-            raise ValueError("collision margin must be finite and non-negative")
+    def _narrow_phase_clearance(self) -> float:
+        """The getClosestPoints query distance: the margin, or the largest component of a per-axis one.
+
+        A per-axis clearance acts in the broad phase only (each AABB axis is
+        enlarged by that axis's clearance); the narrow phase judges the
+        straight-line gap, so ``(m, m, m)`` behaves as ``m``.
+        """
+        margin = self._params.collision_margin
+        if _is_scalar_margin(margin):
+            return float(margin)
+        return max(_clearance_triple(margin))
+
+    def _aabbs_within_clearance(self, obj_id_a: int, obj_id_b: int, clearance: Tuple[float, float, float]) -> bool:
+        """Whether two kinematic bodies' AABBs are within ``clearance`` of each other on every axis.
+
+        The pair test of filter_aabb_pairs(), for a pair the narrow phase
+        checks again without the broad phase offering it (an active pair, or
+        any pair after a margin change). No z clearance with a NORMAL_2D body.
+        """
+        aabb_a = self._cached_aabbs_dict.get(obj_id_a)
+        aabb_b = self._cached_aabbs_dict.get(obj_id_b)
+        if aabb_a is None or aabb_b is None:
+            return True  # nothing to judge by: leave it to the narrow phase
+        modes = self._cached_collision_modes
+        two_d = modes.get(obj_id_a) == CollisionMode.NORMAL_2D or modes.get(obj_id_b) == CollisionMode.NORMAL_2D
+        for axis in range(3):
+            margin = 0.0 if two_d and axis == 2 else clearance[axis]
+            if aabb_a[1][axis] + margin < aabb_b[0][axis] or aabb_a[0][axis] - margin > aabb_b[1][axis]:
+                return False
+        return True
+
+    def _closest_points_within_clearance(
+        self,
+        obj_id_a: int,
+        obj_id_b: int,
+        query_distance: float,
+        recheck_clearance: Optional[Tuple[float, float, float]] = None,
+    ) -> Tuple[bool, Optional[float]]:
+        """Whether two bodies touch or are within the clearance, and the smallest signed distance found.
+
+        ``recheck_clearance`` is given for a pair the broad phase did not
+        offer (an active pair checked again): its AABBs must then pass the
+        broad phase's per-axis test first, so a pair the broad phase would
+        drop resolves here too. A pair the broad phase offered passed it.
+        """
+        if recheck_clearance is not None and not self._aabbs_within_clearance(obj_id_a, obj_id_b, recheck_clearance):
+            return False, None
+        body_a, body_b = self._sim_objects_dict[obj_id_a].body_id, self._sim_objects_dict[obj_id_b].body_id
+        closest_points = p.getClosestPoints(body_a, body_b, distance=query_distance, physicsClientId=self._client)
+        if not closest_points:
+            return False, None
+        distances = (float(point[8]) for point in closest_points)
+        return True, min((d for d in distances if math.isfinite(d)), default=None)
+
+    def set_collision_margin(self, margin: Union[float, Sequence[float]]) -> None:
+        """Change the clearance and recheck stationary pairs on the next collision check.
+
+        Args:
+            margin: Metres, for every direction, or an ``(x, y, z)`` sequence
+                with one clearance per world axis (see
+                :attr:`SimulationParams.collision_margin`).
+
+        Raises:
+            ValueError: If the margin, or any component, is negative or not
+                finite, or a sequence does not have three components.
+        """
+        margin = _normalize_margin(margin)
         if margin == self._params.collision_margin:
             return
         old_effective_margin = self._collision_broadphase_margin()
@@ -2154,7 +2391,13 @@ class MultiRobotSimulationCore:
         self._recheck_stationary_pairs = True
         return True
 
-    def _get_overlapping_cells(self, object_id: int, margin: float = 0.0) -> List[Tuple[int, int, int]]:
+    def _set_grid_margin(self, margin: Tuple[float, float, float]) -> None:
+        self._grid_margin = margin
+        self._grid_half_margin = (margin[0] / 2, margin[1] / 2, margin[2] / 2)
+
+    def _get_overlapping_cells(
+        self, object_id: int, margin: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    ) -> List[Tuple[int, int, int]]:
         """
         Get all grid cells that overlap with an object's AABB plus margin.
 
@@ -2163,8 +2406,8 @@ class MultiRobotSimulationCore:
 
         Args:
             object_id: The object_id to get overlapping cells for
-            margin: Per-side AABB enlargement in meters (x, y, and z for a
-                body that is not NORMAL_2D)
+            margin: Per-side AABB enlargement in meters for each world axis
+                (x, y, z); z is not enlarged for a NORMAL_2D body
 
         Returns:
             List of cell tuples (x, y, z) that overlap with the object's AABB
@@ -2186,12 +2429,14 @@ class MultiRobotSimulationCore:
         aabb_min, aabb_max = aabb[0], aabb[1]
         cell_size = cast(float, self._cached_cell_size)
         floor = math.floor
-        z_margin = 0.0 if self._cached_collision_modes.get(object_id) == CollisionMode.NORMAL_2D else margin
+        x_margin, y_margin, z_margin = margin
+        if self._cached_collision_modes.get(object_id) == CollisionMode.NORMAL_2D:
+            z_margin = 0.0
 
         # Cell range for each dimension: _coord_to_cell's rounding, inlined
         # because this runs for every moved body each step; change both together.
-        x0, x1 = int(floor((aabb_min[0] - margin) / cell_size)), int(floor((aabb_max[0] + margin) / cell_size))
-        y0, y1 = int(floor((aabb_min[1] - margin) / cell_size)), int(floor((aabb_max[1] + margin) / cell_size))
+        x0, x1 = int(floor((aabb_min[0] - x_margin) / cell_size)), int(floor((aabb_max[0] + x_margin) / cell_size))
+        y0, y1 = int(floor((aabb_min[1] - y_margin) / cell_size)), int(floor((aabb_max[1] + y_margin) / cell_size))
         z0, z1 = int(floor((aabb_min[2] - z_margin) / cell_size)), int(floor((aabb_max[2] + z_margin) / cell_size))
         if x0 == x1 and y0 == y1 and z0 == z1:
             return [(x0, y0, z0)]  # the common case: a small body in one cell
@@ -2211,8 +2456,8 @@ class MultiRobotSimulationCore:
         - Movement update: old_cells exists → remove from old, add to new
           (skipped when new cells == old cells for performance)
         - Removal: remove_only=True → remove from current cell(s) only
-        - Registration: every cell the AABB, enlarged by half the collision
-          margin (not in z for NORMAL_2D), touches
+        - Registration: every cell the AABB, enlarged on each axis by half
+          the collision margin on that axis (not in z for NORMAL_2D), touches
 
         Args:
             object_id: The object_id to update in spatial grid
@@ -2260,13 +2505,16 @@ class MultiRobotSimulationCore:
         if self._cached_cell_size is None:
             return
 
-        # Every cell its AABB, enlarged by half the pair clearance, touches:
-        # two bodies within the clearance then share a cell, so the pair
-        # search looks in a body's own cells only.
-        margin = self._collision_broadphase_margin()
-        if self._grid_margin is None:
-            self._grid_margin = margin
-        cells = self._get_overlapping_cells(object_id, margin / 2)
+        # Every cell its AABB, enlarged on each axis by half the pair
+        # clearance on that axis, touches: two bodies within the clearance
+        # then share a cell, so the pair search looks in a body's own cells
+        # only. All bodies use the grid's margin; a margin changed since is
+        # applied to all of them at once by _sync_grid_margin().
+        half_margin = self._grid_half_margin
+        if half_margin is None:
+            self._set_grid_margin(self._collision_broadphase_margin())
+            half_margin = cast(Tuple[float, float, float], self._grid_half_margin)
+        cells = self._get_overlapping_cells(object_id, half_margin)
 
         # Same-cell optimization: skip grid operations if cells haven't changed
         if old_cells is not None and cells == old_cells:
@@ -2708,6 +2956,8 @@ class MultiRobotSimulationCore:
         self._static_collision_objects.discard(obj_id)
         self._disabled_collision_objects.discard(obj_id)
         self._origin_gaps.pop(obj_id, None)
+        self._aabb_links.pop(obj_id, None)
+        self._pending_geometry_ids.discard(obj_id)
 
         # Remove from collision mode cache
         self._cached_collision_modes.pop(obj_id, None)
@@ -3224,6 +3474,9 @@ class MultiRobotSimulationCore:
         callback or a controller), a written pose is buffered and reaches
         PyBullet only when the step flushes it: until then such an object is
         tested against the AABB of the pose it had when the step began.
+        Joints are not buffered: an object whose links moved in the step
+        (``notify_geometry_changed``) is tested against its links as they
+        are now, at the base pose PyBullet holds.
 
         Args:
             aabb_min: ``(x, y, z)`` lower corner of the box, world frame.
@@ -3247,6 +3500,8 @@ class MultiRobotSimulationCore:
         objects = self._sim_objects_dict
         cached = self._cached_aabbs_dict
         stale = self._pending_pose_ids
+        if self._pending_geometry_ids:
+            stale = stale | self._pending_geometry_ids
         candidate_ids: Iterable[int] = objects.keys()
         if self._cached_cell_size is not None:
             x_range = range(self._coord_to_cell(lo[0]), self._coord_to_cell(hi[0]) + 1)
@@ -3272,7 +3527,7 @@ class MultiRobotSimulationCore:
             box = cached.get(object_id)
             if box is None or object_id in stale:
                 try:
-                    box = p.getAABB(obj.body_id, physicsClientId=self._client)
+                    box = self._body_aabb(obj)
                 except p.error:
                     continue
             if overlaps(box):
@@ -3318,8 +3573,8 @@ class MultiRobotSimulationCore:
         return list(found.values())
 
     def get_aabbs(self) -> List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
-        """Get AABBs for all simulation objects."""
-        return [p.getAABB(obj.body_id, physicsClientId=self._client) for obj in self._sim_objects]
+        """Get the AABB of every simulation object, each covering all of the body's links."""
+        return [self._body_aabb(obj) for obj in self._sim_objects]
 
     def filter_aabb_pairs(
         self, ignore_static: Optional[bool] = None, moved_objects: Optional[Set[int]] = None, return_profiling: bool = False
@@ -3353,7 +3608,7 @@ class MultiRobotSimulationCore:
 
         if ignore_static is None:
             ignore_static = self._ignore_static_collision
-        broadphase_margin = self._collision_broadphase_margin()
+        bx_margin, by_margin, bz_margin = self._collision_broadphase_margin()
 
         # 0. A margin changed on ``params`` directly: rebuild, and check every
         # body. check_collisions() has already done this before taking its
@@ -3394,7 +3649,7 @@ class MultiRobotSimulationCore:
                 p.performCollisionDetection(physicsClientId=self._client)
             logger.debug(f"Full AABB rebuild for {len(self._sim_objects)} objects")
             for obj in self._sim_objects:
-                aabb = p.getAABB(obj.body_id, physicsClientId=self._client)
+                aabb = self._body_aabb(obj)
                 self._cached_aabbs_dict[obj.object_id] = aabb
                 self._record_origin_gap(obj, aabb)
             # Mark cache as valid after update
@@ -3503,17 +3758,21 @@ class MultiRobotSimulationCore:
                     if aabb_j is None:
                         continue
 
-                    # Reject pairs separated beyond the margin on any axis.
-                    # NORMAL_2D still requires actual Z overlap, even when
-                    # both objects occupy the same spatial-grid Z cell.
-                    margin = 0.0 if hybrid and (i_physics or obj_id_j in physics_objects) else broadphase_margin
-                    z_margin = 0.0 if i_2d or mode_j == CollisionMode.NORMAL_2D else margin
+                    # Reject pairs separated beyond that axis's margin on any
+                    # axis. NORMAL_2D still requires actual Z overlap, even
+                    # when both objects occupy the same spatial-grid Z cell.
+                    if hybrid and (i_physics or obj_id_j in physics_objects):
+                        x_margin = y_margin = z_margin = 0.0
+                    else:
+                        x_margin, y_margin, z_margin = bx_margin, by_margin, bz_margin
+                    if i_2d or mode_j == CollisionMode.NORMAL_2D:
+                        z_margin = 0.0
                     (j0x, j0y, j0z), (j1x, j1y, j1z) = aabb_j
                     if (
-                        i1x + margin < j0x
-                        or i0x - margin > j1x
-                        or i1y + margin < j0y
-                        or i0y - margin > j1y
+                        i1x + x_margin < j0x
+                        or i0x - x_margin > j1x
+                        or i1y + y_margin < j0y
+                        or i0y - y_margin > j1y
                         or i1z + z_margin < j0z
                         or i0z - z_margin > j1z
                     ):
@@ -3584,6 +3843,9 @@ class MultiRobotSimulationCore:
         detection_method = self._params.collision_detection_method
         if detection_method is None:
             raise ValueError("collision_detection_method must be set before checking collisions")
+        # A margin set on ``params`` directly is validated only here: reject a
+        # bad one before anything below changes the collision state.
+        margin = _normalize_margin(self._params.collision_margin)
 
         t0 = time.perf_counter()
 
@@ -3629,6 +3891,7 @@ class MultiRobotSimulationCore:
             # candidate_pairs already contains only pairs involving moved objects (filtered in filter_aabb_pairs)
             # We just need to add existing collision pairs for resolution detection
             pairs_to_check = set(candidate_pairs)
+            offered_pairs = frozenset(pairs_to_check)
 
             # Also re-check existing collision pairs involving moved objects
             # (to detect when collisions are resolved)
@@ -3675,7 +3938,12 @@ class MultiRobotSimulationCore:
                 else:
                     pairs_to_check.add(pair)
 
-            # Check contact points for all pairs
+            # Check contact points for all pairs. A pair the broad phase did not
+            # offer (an active one checked again) first gets the broad phase's
+            # per-axis AABB test, so it is judged as the broad phase would judge
+            # it; the closest points are then queried at the largest component.
+            query_distance = self._narrow_phase_clearance()
+            clearance = self._collision_broadphase_margin()
             new_collisions = set()
             resolved_collisions = set()
 
@@ -3722,17 +3990,9 @@ class MultiRobotSimulationCore:
                     # Method 2: getClosestPoints (kinematics mode, distance-based)
                     # Best for: kinematics motion, safety margin detection
                     # Works with: Physics ON/OFF, stable with resetBasePositionAndOrientation
-                    closest_points = p.getClosestPoints(
-                        obj_i.body_id,
-                        obj_j.body_id,
-                        distance=self._params.collision_margin,  # Safety clearance
-                        physicsClientId=self._client,
+                    has_collision, signed_distance = self._closest_points_within_clearance(
+                        obj_id_i, obj_id_j, query_distance, None if (obj_id_i, obj_id_j) in offered_pairs else clearance
                     )
-                    has_collision = len(closest_points) > 0
-                    if closest_points:
-                        signed_distance = min(
-                            (float(point[8]) for point in closest_points if math.isfinite(float(point[8]))), default=None
-                        )
 
                 elif detection_method == CollisionDetectionMethod.HYBRID:
                     # Method 3: Hybrid (physics uses getContactPoints, kinematic uses getClosestPoints)
@@ -3748,14 +4008,12 @@ class MultiRobotSimulationCore:
                     else:
                         pair_method = CollisionDetectionMethod.CLOSEST_POINTS
                         # Both are kinematic - use getClosestPoints with safety margin
-                        closest_points = p.getClosestPoints(
-                            obj_i.body_id, obj_j.body_id, distance=self._params.collision_margin, physicsClientId=self._client
+                        has_collision, signed_distance = self._closest_points_within_clearance(
+                            obj_id_i,
+                            obj_id_j,
+                            query_distance,
+                            None if (obj_id_i, obj_id_j) in offered_pairs else clearance,
                         )
-                        has_collision = len(closest_points) > 0
-                        if closest_points:
-                            signed_distance = min(
-                                (float(point[8]) for point in closest_points if math.isfinite(float(point[8]))), default=None
-                            )
 
                 pair = (obj_id_i, obj_id_j)
 
@@ -3783,7 +4041,12 @@ class MultiRobotSimulationCore:
                             f"<-> object {obj_id_j} (body {obj_j.body_id})"
                         )
 
-            self._last_collision_check_metadata = (sample_step, sample_time, detection_method, self._params.collision_margin)
+            self._last_collision_check_metadata = (
+                sample_step,
+                sample_time,
+                detection_method,
+                margin,
+            )
 
             if return_profiling:
                 timings["contact_points"] = (time.perf_counter() - t_contact0) * 1000  # ms
@@ -4177,6 +4440,8 @@ class MultiRobotSimulationCore:
         self._dynamic_collision_objects.clear()
         self._cached_collision_modes.clear()
         self._cached_aabbs_dict.clear()
+        self._aabb_links.clear()
+        self._pending_geometry_ids.clear()
         self._origin_gaps.clear()
         self._cached_spatial_grid.clear()
         self._cached_object_to_cell.clear()
@@ -4206,6 +4471,7 @@ class MultiRobotSimulationCore:
 
         # 2. Reset PyBullet world (removes all bodies including ground plane)
         p.resetSimulation(physicsClientId=self._client)
+        SimObject._forget_shared_shapes(self._client)  # resetSimulation() removed the shapes too
         self._lighting_control_ids = None
         self._lighting_control_values = None
 
@@ -4805,6 +5071,7 @@ class MultiRobotSimulationCore:
                     p.disconnect(self._client)
                 except p.error:
                     pass  # already disconnected
+                SimObject._forget_shared_shapes(self._client)
         finally:
             if first_error is not None:
                 raise first_error
@@ -4944,7 +5211,7 @@ class MultiRobotSimulationCore:
         if self.is_paused and not self._single_step_requested:
             if self._monitor_enabled and self._data_monitor and self._monitor_frames.due_while_paused():
                 # Nothing refreshes the monitor while paused: still show a
-                # selection, follow or pause change.
+                # selection, follow or pause change, or a pose set from the GUI or user code.
                 self.update_monitor()
             return
         # A single step taken while paused is shown at once, refresh due or not.
@@ -5092,7 +5359,10 @@ class MultiRobotSimulationCore:
             # so the two flush helpers can be reordered or invoked independently if needed.
             if measure_timing:
                 t_phase3 = time.perf_counter()
-            self._flush_aabb_and_grid(flushed_ids)
+            geometry_ids = self._pending_geometry_ids
+            if geometry_ids:
+                self._pending_geometry_ids = set()
+            self._flush_aabb_and_grid(flushed_ids, geometry_ids)
             if measure_timing:
                 self._profiling_stats["phase3_aabb_grid_flush"][-1] = (time.perf_counter() - t_phase3) * 1000
 

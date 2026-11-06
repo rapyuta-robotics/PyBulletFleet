@@ -11,7 +11,8 @@ This demo showcases:
 
 Features demonstrated:
 - NORMAL_3D mode (Green, Orange, Cyan): full 3D collision detection
-- NORMAL_2D mode (Blue, Magenta): XY collision detection; z must actually overlap
+- NORMAL_2D mode (Blue, Magenta): XY collision detection; z must actually overlap.
+  NORMAL_2D is deprecated (it emits a FutureWarning); use NORMAL_3D in new code.
 - DISABLED mode (White): No collision detection at all
 - Multi-cell registration (Red center object): every object is registered in each grid cell it reaches
 - Collision color change: Objects change color when actively colliding
@@ -268,7 +269,7 @@ def create_demo_objects(sim_core: MultiRobotSimulationCore):
     print(f"\nTotal objects created: {len(objects)}")
     print("\nCollision Mode Summary:")
     print("  - NORMAL_3D (Green, Orange, Cyan): Full 3D collision detection")
-    print("  - NORMAL_2D (Blue, Magenta): XY-plane only collision")
+    print("  - NORMAL_2D (Blue, Magenta): no clearance in z (deprecated; use NORMAL_3D)")
     print("  - DISABLED (White): No collision at all")
     print("  - Large object (Red): Multi-cell registration demo")
 
@@ -335,7 +336,7 @@ def main():
     print("=" * 70)
     print("\nThis demo showcases:")
     print("  1. Multi-cell registration for large objects")
-    print("  2. All collision modes: NORMAL_3D, NORMAL_2D, STATIC, DISABLED")
+    print("  2. All collision modes: NORMAL_3D, NORMAL_2D (deprecated), STATIC, DISABLED")
     print("  3. Collision visualization with color changes")
     print("  4. Real-time performance monitoring")
     print("\nRobot Layout:")

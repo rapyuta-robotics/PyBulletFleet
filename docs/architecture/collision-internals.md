@@ -155,6 +155,14 @@ In the current implementation, an object is physics-enabled when it has
 member is physics-enabled; only pairs where both members are kinematic use
 `getClosestPoints()` and `collision_margin`.
 
+A per-axis `collision_margin` `(x, y, z)` acts on AABBs only: the broad phase
+enlarges each AABB axis by that axis's clearance, and the narrow phase first
+holds a pair it checks again without the broad phase (an active pair) to the
+same AABB test. `getClosestPoints()` is then queried with the largest
+component and judges the straight-line gap, with no per-axis test of the
+points; `(m, m, 0)` is therefore the same as `NORMAL_2D` with `m` for every
+pair. See [Per-axis clearance](per-axis-clearance).
+
 ---
 
 (collision-mode-details)=
@@ -171,10 +179,7 @@ This section provides comprehensive details for each collision mode.
 - **PyBullet Collision**: Enabled
 
 **Use Cases**:
-- Flying drones (need Z-axis collision)
-- 3D manipulators
-- Multi-level warehouses
-- Any object that moves in 3D space
+- Any moving object: ground robots (AGVs, AMRs), drones, manipulators
 
 **Configuration**:
 ```python
@@ -191,7 +196,14 @@ drone = SimObject(
 - Candidates are the bodies sharing a cell, for both modes
 - Same cost as NORMAL_2D: the two differ only in the z clearance
 
-### NORMAL_2D - No Clearance in Z
+### NORMAL_2D - No Clearance in Z (Deprecated)
+
+NORMAL_2D is deprecated: setting it emits a `FutureWarning`, and it will
+be removed in a future release. Use NORMAL_3D; the only difference is that a
+body within the clearance above or below is reported. A
+`collision_margin` of `(m, m, 0)` removes the z clearance instead, for every
+pair, and reports exactly what NORMAL_2D did (see
+[Per-axis clearance](per-axis-clearance)).
 
 **Characteristics**:
 - **Candidates**: the bodies sharing one of its cells
@@ -200,21 +212,6 @@ drone = SimObject(
 - **Z-Axis**: AABB Z must actually overlap (no margin in z); Z is not ignored
 - **Differs from NORMAL_3D** only with a non-zero clearance (CLOSEST_POINTS / HYBRID): a body within the clearance above or below is not reported
 
-**Use Cases**:
-- Ground robots (AGVs, AMRs)
-- Warehouse robots (single floor)
-- 2D path planning
-- Most typical use cases
-
-**Configuration**:
-```python
-agv = SimObject(
-    body_id=body_id,
-    sim_core=sim_core,
-    collision_mode=CollisionMode.NORMAL_2D,
-    mass=0.0
-)
-```
 
 ### STATIC - Fixed Objects
 
@@ -362,11 +359,11 @@ robot_3d = SimObject(
     mass=0.0,  # Kinematic
 )
 
-# Moving 2D AGV
+# Moving ground AGV
 agv = SimObject(
     body_id=body_id,
     sim_core=sim_core,
-    collision_mode=CollisionMode.NORMAL_2D,
+    collision_mode=CollisionMode.NORMAL_3D,
     mass=0.0,
 )
 
@@ -418,6 +415,18 @@ Some touching pairs are meant to touch and should not count as collisions.
   the tree is still reported. Attaching or detaching takes effect on the next
   collision check: an active pair that becomes excluded ends
   (`COLLISION_ENDED`), and an excluded pair is checked again once it is not.
+- An `Elevator` drops contact between itself and a body standing on its
+  platform (over the platform's footprint, lowest point not below the
+  platform's mid-height): a robot waiting for the cabin or left on it after
+  arrival rests on the platform without colliding. A body touching the
+  platform from below, such as one under a cabin coming down, is still
+  reported, and passengers attached for a ride follow
+  `ignore_attached_collision`. Set `report_platform_contacts: true` on the
+  elevator to report bodies on the platform as well. The rule drops contact
+  with the whole elevator body, so it applies only when the platform link is
+  the elevator's one collider; an elevator URDF with collider walls, a
+  ceiling or doors reports bodies on the platform (with a warning at spawn),
+  so that a robot driving into a wall is not hidden.
 - `set_collision_ignore_filter(fn)` drops every touching pair for which
   `fn(obj_a, obj_b)` returns `True`, for rules only the application knows:
 

@@ -84,6 +84,8 @@ simulation:
   #   - 0.02-0.05: Normal operation (2-5cm safety buffer) [DEFAULT]
   #   - 0.05-0.10: Conservative (5-10cm extra safety for high-speed)
   #   - 0.0: Contact detection only (touching)
+  #   - [x, y, z]: One clearance per world axis, e.g. [0.05, 0.05, 0.0] to report
+  #     bodies side by side but not one passing close above or below
   #
   # Note: Only affects CLOSEST_POINTS and HYBRID modes
   #       CONTACT_POINTS always detects actual contact (margin=0)
@@ -112,25 +114,19 @@ simulation:
   #
   # Available modes:
   #   - NORMAL_3D: Full 3D collision - DEFAULT
-  #   - NORMAL_2D: XY collision; z must actually overlap - for ground robots
+  #   - NORMAL_2D: deprecated (no clearance in z); use NORMAL_3D
   #   - STATIC: One-time AABB registration, never updated - for fixed structures
   #   - DISABLED: No collision detection at all - for visualization objects
   #
   # Example usage in code:
   #   from pybullet_fleet.types import CollisionMode
   #
-  #   # Ground robot (2D) - via spawn parameters
+  #   # Moving robot - default is NORMAL_3D
   #   params = AgentSpawnParams(
   #       urdf_path="robot.urdf",
-  #       collision_mode=CollisionMode.NORMAL_2D,  # 2D collision (own z layer)
-  #   )
-  #   agent = Agent.from_params(params, sim_core)
-  #
-  #   # Drone (3D) - default is NORMAL_3D
-  #   params = AgentSpawnParams(
-  #       urdf_path="drone.urdf",
   #       # collision_mode not specified → uses default NORMAL_3D
   #   )
+  #   agent = Agent.from_params(params, sim_core)
   #
   #   # Structure (static) - direct creation
   #   structure = SimObject(
@@ -146,10 +142,6 @@ simulation:
   #       sim_core=sim_core,
   #       collision_mode=CollisionMode.DISABLED
   #   )
-  #
-  # Migration from v1.x:
-  #   OLD: collision_check_2d=True (global setting)
-  #   NEW: collision_mode=CollisionMode.NORMAL_2D (per-object parameter in spawn params)
 
   # Enable monitor GUI (visualization)
   # Recommended: false for headless performance testing

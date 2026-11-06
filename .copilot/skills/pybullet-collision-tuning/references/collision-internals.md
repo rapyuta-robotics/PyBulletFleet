@@ -24,7 +24,7 @@ cell_index = (floor(x / cell_size), floor(y / cell_size), floor(z / cell_size))
 - `_cached_aabbs_dict: Dict[int, Tuple]` — object ID → AABB bounds
 
 **Registration and search:**
-- Every body is registered in each cell its AABB, enlarged by half the collision margin, touches (`NORMAL_2D` is not enlarged in z).
+- Every body is registered in each cell its AABB, enlarged by half the collision margin, touches (the deprecated `NORMAL_2D` is not enlarged in z).
 - Candidates for a body are the bodies registered in its own cells; no neighbour cells are searched. Two bodies within the margin always share a cell.
 - `STATIC`: registered once, never re-checked for movement
 - `DISABLED`: not in grid at all

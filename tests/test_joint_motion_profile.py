@@ -12,7 +12,7 @@ import math
 
 import pytest
 
-from pybullet_fleet import Agent, AgentSpawnParams, MultiRobotSimulationCore, SimulationParams
+from pybullet_fleet import Agent, AgentSpawnParams
 from pybullet_fleet.action import JointAction
 from pybullet_fleet.devices.elevator import Elevator, ElevatorParams
 from pybullet_fleet.types import ActionStatus
@@ -24,18 +24,8 @@ TRAVEL = 0.6
 
 
 @pytest.fixture
-def sim_core():
-    import pybullet as p
-
-    sim = MultiRobotSimulationCore(
-        SimulationParams(gui=False, physics=False, timestep=DT, monitor=False, enable_monitor_gui=False)
-    )
-    sim.initialize_simulation()
-    yield sim
-    try:
-        p.disconnect(sim.client)
-    except p.error:
-        pass
+def sim_core_params():
+    return {"timestep": DT}
 
 
 def _travel_time(sim_core, agent, distance=TRAVEL, limit=4000):
@@ -376,20 +366,8 @@ class TestThirdRoundReviewFollowUps:
     DT = 0.02
 
     @pytest.fixture
-    def sim_core(self):
-        import pybullet as p
-
-        from pybullet_fleet import MultiRobotSimulationCore, SimulationParams
-
-        sim = MultiRobotSimulationCore(
-            SimulationParams(gui=False, physics=False, timestep=self.DT, monitor=False, enable_monitor_gui=False)
-        )
-        sim.initialize_simulation()
-        yield sim
-        try:
-            p.disconnect(sim.client)
-        except p.error:
-            pass
+    def sim_core_params(self):
+        return {"timestep": self.DT}
 
     def _agent(self, sim_core):
         return Agent.from_params(AgentSpawnParams(urdf_path=URDF, name="a", use_fixed_base=True), sim_core=sim_core)

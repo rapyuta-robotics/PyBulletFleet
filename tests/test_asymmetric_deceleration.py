@@ -142,20 +142,8 @@ class TestPerAgentControllersUseTheDecelLimit:
     DT = 0.02
 
     @pytest.fixture
-    def sim_core(self):
-        import pybullet as p
-
-        from pybullet_fleet import MultiRobotSimulationCore, SimulationParams
-
-        sim = MultiRobotSimulationCore(
-            SimulationParams(gui=False, physics=False, timestep=self.DT, monitor=False, enable_monitor_gui=False)
-        )
-        sim.initialize_simulation()
-        yield sim
-        try:
-            p.disconnect(sim.client)
-        except p.error:
-            pass
+    def sim_core_params(self):
+        return {"timestep": self.DT}
 
     def _agent(self, sim_core, name, controller_cls, **extra):
         from pybullet_fleet import Agent, AgentSpawnParams
@@ -225,20 +213,8 @@ class TestBatchedControllersHonourTheDecelLimit:
     DISTANCE = 8.0
 
     @pytest.fixture
-    def sim_core(self):
-        import pybullet as p
-
-        from pybullet_fleet import MultiRobotSimulationCore, SimulationParams
-
-        sim = MultiRobotSimulationCore(
-            SimulationParams(gui=False, physics=False, timestep=self.DT, monitor=False, enable_monitor_gui=False)
-        )
-        sim.initialize_simulation()
-        yield sim
-        try:
-            p.disconnect(sim.client)
-        except p.error:
-            pass
+    def sim_core_params(self):
+        return {"timestep": self.DT}
 
     def _trace(self, sim_core, mode, accel, decel, name, goal=None):
         """Drive one agent to a goal and record its x over time."""
@@ -378,20 +354,8 @@ class TestCheckpointCaptureCoversBothPaths:
     LIMITS = dict(max_linear_vel=[2.5, 2.5, 0.0], navigation_2d=True)
 
     @pytest.fixture
-    def sim_core(self):
-        import pybullet as p
-
-        from pybullet_fleet import MultiRobotSimulationCore, SimulationParams
-
-        sim = MultiRobotSimulationCore(
-            SimulationParams(gui=False, physics=False, timestep=0.02, monitor=False, enable_monitor_gui=False)
-        )
-        sim.initialize_simulation()
-        yield sim
-        try:
-            p.disconnect(sim.client)
-        except p.error:
-            pass
+    def sim_core_params(self):
+        return {"timestep": 0.02}
 
     def _agent(self, sim_core, name, **extra):
         from pybullet_fleet import Agent, AgentSpawnParams, OmniController
@@ -440,20 +404,8 @@ class TestIsMovingIsSetUnderTheBatchLock:
     leaving an idle row reporting is_moving."""
 
     @pytest.fixture
-    def sim_core(self):
-        import pybullet as p
-
-        from pybullet_fleet import MultiRobotSimulationCore, SimulationParams
-
-        sim = MultiRobotSimulationCore(
-            SimulationParams(gui=False, physics=False, timestep=0.02, monitor=False, enable_monitor_gui=False)
-        )
-        sim.initialize_simulation()
-        yield sim
-        try:
-            p.disconnect(sim.client)
-        except p.error:
-            pass
+    def sim_core_params(self):
+        return {"timestep": 0.02}
 
     def _managed(self, sim_core):
         from pybullet_fleet import Agent, AgentManager, AgentSpawnParams, OmniController
@@ -530,20 +482,8 @@ class TestRowCompactionCarriesTheBrakingScalar:
     DT = 0.02
 
     @pytest.fixture
-    def sim_core(self):
-        import pybullet as p
-
-        from pybullet_fleet import MultiRobotSimulationCore, SimulationParams
-
-        sim = MultiRobotSimulationCore(
-            SimulationParams(gui=False, physics=False, timestep=self.DT, monitor=False, enable_monitor_gui=False)
-        )
-        sim.initialize_simulation()
-        yield sim
-        try:
-            p.disconnect(sim.client)
-        except p.error:
-            pass
+    def sim_core_params(self):
+        return {"timestep": self.DT}
 
     def _agent(self, sim_core, manager, name, decel):
         from pybullet_fleet import Agent, AgentSpawnParams, OmniController

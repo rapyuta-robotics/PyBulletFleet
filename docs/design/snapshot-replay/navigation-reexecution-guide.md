@@ -137,6 +137,8 @@ floor, no physics, no GUI/monitor, and no plugin/callback/BT execution. Other
 simulation defaults remain tied to the recorded PBF source fingerprint; the
 profile version and fingerprint must match for strict reproduction. Unknown
 configuration fields are rejected instead of silently discarded.
+`CollisionMode.NORMAL_2D` is deprecated for user code, but the v1 profile keeps
+its NORMAL_2D robots, without a warning, so recorded runs replay unchanged.
 Headless execution is a restriction of this tested profile, not a claim that
 displaying a replay inherently changes simulation results. A GUI or interactive
 example may add unrecorded user input and scheduling effects, so it needs a

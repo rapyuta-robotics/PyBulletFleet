@@ -95,19 +95,19 @@ workload. The script warns when counts differ.
 
 ### `collision_mode_comparison.py`
 
-**Purpose:** Measure disabled, `NORMAL_2D`, and `NORMAL_3D` collision modes for
-a moving-agent grid in one scene.
+**Purpose:** Measure disabled, `NORMAL_2D` (deprecated), and `NORMAL_3D` collision
+modes for a moving-agent grid in one scene.
 
 ```bash
 python benchmark/experiments/collision_mode_comparison.py \
   --agents=1000 --iterations=100
 ```
 
-`NORMAL_2D` searches XY neighbours only, while `NORMAL_3D` also considers Z
-neighbours. Use `NORMAL_2D` when that semantic restriction is correct for the
-scene; do not choose it solely from a speed result. The reported difference is
-specific to the grid density, cell size, object size, movement, and host used
-for the run.
+`NORMAL_2D` and `NORMAL_3D` search the same cells; `NORMAL_2D` only drops the
+collision clearance on the z axis. `NORMAL_2D` is deprecated and emits a
+`FutureWarning`; the script measures it for comparison only. The reported
+difference is specific to the grid density, cell size, object size, movement,
+and host used for the run.
 
 ### Output Example
 

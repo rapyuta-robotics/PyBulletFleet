@@ -8,6 +8,7 @@ answer is the one the full scan would give.
 """
 
 import random
+import warnings
 from typing import List, Optional
 
 import pybullet as p
@@ -79,17 +80,20 @@ def names(objects) -> List[str]:
 
 def scatter(sim: MultiRobotSimulationCore, count: int = 300, seed: int = 3) -> None:
     rng = random.Random(seed)
+    # NORMAL_2D is deprecated but still registered differently (no z clearance), so keep it in the mix.
     modes = [CollisionMode.STATIC, CollisionMode.NORMAL_3D, CollisionMode.NORMAL_2D, CollisionMode.DISABLED]
-    for i in range(count):
-        box(
-            sim,
-            rng.uniform(-10, 10),
-            rng.uniform(-10, 10),
-            rng.uniform(0, 3),
-            half=rng.choice([0.05, 0.2, 1.5]),
-            name="o{}".format(i),
-            mode=modes[i % len(modes)],
-        )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "CollisionMode.NORMAL_2D is deprecated", FutureWarning)
+        for i in range(count):
+            box(
+                sim,
+                rng.uniform(-10, 10),
+                rng.uniform(-10, 10),
+                rng.uniform(0, 3),
+                half=rng.choice([0.05, 0.2, 1.5]),
+                name="o{}".format(i),
+                mode=modes[i % len(modes)],
+            )
 
 
 BOXES = [

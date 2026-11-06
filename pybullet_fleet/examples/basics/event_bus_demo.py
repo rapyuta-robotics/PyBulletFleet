@@ -99,7 +99,7 @@ def main():
             collision_shape=ShapeParams(shape_type="box", half_extents=[0.15, 0.15, 0.15]),
             initial_pose=Pose.from_xyz(1.0, 1.0, 0.15),  # on the robot's (0,0)->(2,2) path → collision
             name="obstacle_box",
-            collision_mode=CollisionMode.NORMAL_2D,
+            collision_mode=CollisionMode.NORMAL_3D,
         ),
         sim_core=sim,
     )
@@ -109,7 +109,7 @@ def main():
             urdf_path="robots/mobile_robot.urdf",
             initial_pose=Pose.from_xyz(0, 0, 0.1),
             controller={"type": "omni", "max_linear_vel": 2.0},
-            collision_mode=CollisionMode.NORMAL_2D,
+            collision_mode=CollisionMode.NORMAL_3D,
             name="robot_1",
         ),
         sim_core=sim,

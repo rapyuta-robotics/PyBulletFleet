@@ -341,12 +341,15 @@ class TestSimObjectSpawnParamsFromDict:
         """All collision mode strings correctly converted to enum."""
         for mode_str, expected in [
             ("normal_3d", CollisionMode.NORMAL_3D),
-            ("normal_2d", CollisionMode.NORMAL_2D),
             ("static", CollisionMode.STATIC),
             ("disabled", CollisionMode.DISABLED),
         ]:
             result = SimObjectSpawnParams.from_dict({"name": "obj", "collision_mode": mode_str})
             assert result.collision_mode == expected
+        # Deprecated, but still parsed.
+        with pytest.warns(FutureWarning, match="NORMAL_2D is deprecated"):
+            result = SimObjectSpawnParams.from_dict({"name": "obj", "collision_mode": "normal_2d"})
+        assert result.collision_mode == CollisionMode.NORMAL_2D
 
     def test_initial_pose_takes_precedence(self):
         """initial_pose Pose object takes precedence over pose list."""
@@ -1254,7 +1257,8 @@ class TestCollisionMode:
         obj.set_collision_mode(CollisionMode.DISABLED)
         assert_object_properties(obj, mass=1.0, collision_mode=CollisionMode.DISABLED, position=(0, 0, 1), is_kinematic=False)
 
-        obj.set_collision_mode(CollisionMode.NORMAL_2D)
+        with pytest.warns(FutureWarning, match="NORMAL_2D is deprecated"):
+            obj.set_collision_mode(CollisionMode.NORMAL_2D)
         assert_object_properties(obj, mass=1.0, collision_mode=CollisionMode.NORMAL_2D, position=(0, 0, 1), is_kinematic=False)
 
 
@@ -1417,8 +1421,12 @@ class TestSharedShapesCache:
         )
         col_params = ShapeParams(shape_type="box", half_extents=[0.1, 0.1, 0.1])
 
-        vid1, cid1 = SimObject.create_shared_shapes(visual_shape=mesh_params, collision_shape=col_params)
-        vid2, cid2 = SimObject.create_shared_shapes(visual_shape=mesh_params, collision_shape=col_params)
+        vid1, cid1 = SimObject.create_shared_shapes(
+            visual_shape=mesh_params, collision_shape=col_params, physics_client_id=pybullet_env
+        )
+        vid2, cid2 = SimObject.create_shared_shapes(
+            visual_shape=mesh_params, collision_shape=col_params, physics_client_id=pybullet_env
+        )
 
         # Same IDs → cache was hit
         assert vid1 == vid2
@@ -1432,8 +1440,8 @@ class TestSharedShapesCache:
         red = ShapeParams(**base, rgba_color=[1, 0, 0, 1])
         green = ShapeParams(**base, rgba_color=[0, 1, 0, 1])
 
-        vid_r, _ = SimObject.create_shared_shapes(visual_shape=red)
-        vid_g, _ = SimObject.create_shared_shapes(visual_shape=green)
+        vid_r, _ = SimObject.create_shared_shapes(visual_shape=red, physics_client_id=pybullet_env)
+        vid_g, _ = SimObject.create_shared_shapes(visual_shape=green, physics_client_id=pybullet_env)
 
         assert vid_r != vid_g
         assert len(SimObject._shared_shapes) == 2
@@ -1442,8 +1450,8 @@ class TestSharedShapesCache:
         """Box / sphere / cylinder shapes should not be cached."""
         box = ShapeParams(shape_type="box", half_extents=[0.5, 0.5, 0.5])
 
-        SimObject.create_shared_shapes(visual_shape=box, collision_shape=box)
-        SimObject.create_shared_shapes(visual_shape=box, collision_shape=box)
+        SimObject.create_shared_shapes(visual_shape=box, collision_shape=box, physics_client_id=pybullet_env)
+        SimObject.create_shared_shapes(visual_shape=box, collision_shape=box, physics_client_id=pybullet_env)
 
         # Cache should remain empty — primitives are never stored
         assert len(SimObject._shared_shapes) == 0

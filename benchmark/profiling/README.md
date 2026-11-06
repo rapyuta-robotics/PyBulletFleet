@@ -187,8 +187,7 @@ fixed percentage split.
 
 ### Optimization Hints
 
-- If candidate filtering dominates, inspect grid cell size, object density, and
-  whether `NORMAL_2D` is correct for the scene.
+- If candidate filtering dominates, inspect grid cell size and object density.
 - If narrow-phase work dominates, profile the configured collision method and
   reduce check frequency only when the application's detection requirements
   allow it.
@@ -276,8 +275,6 @@ scene.
 ### 1. Collision check is a material part of the measured step
 
 **Fixes:**
-- Use `CollisionMode.NORMAL_2D` only for a ground-robot scene where ignoring
-  Z-axis neighbours is correct.
 - Reduce `collision_check_frequency` only after deciding the permitted
   detection latency.
 - Use `ignore_static_collision=True` only when static-structure collisions are

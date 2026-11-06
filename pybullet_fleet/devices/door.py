@@ -10,7 +10,7 @@ from pybullet_fleet.agent import Agent, AgentSpawnParams, IKParams  # noqa: F401
 from pybullet_fleet.controller import Controller  # noqa: F401 - resolves inherited API type hints
 from pybullet_fleet.controller_params import ControllerParams  # noqa: F401 - resolves inherited API type hints
 from pybullet_fleet.logging_utils import get_lazy_logger
-from pybullet_fleet.types import ActionStatus, DoorState
+from pybullet_fleet.types import ActionStatus, DoorState, _normal_2d_warning_already_given
 
 logger = get_lazy_logger(__name__)
 
@@ -42,7 +42,8 @@ class DoorParams(AgentSpawnParams):
         Delegates base-field parsing to ``AgentSpawnParams.from_dict``
         and adds door-specific fields (``open_positions``, ``close_positions``).
         """
-        base = AgentSpawnParams.from_dict(config)
+        with _normal_2d_warning_already_given():  # cls(...) below warns about a deprecated collision mode
+            base = AgentSpawnParams.from_dict(config)
         base_kwargs = {f.name: getattr(base, f.name) for f in fields(base)}
         return cls(
             **base_kwargs,

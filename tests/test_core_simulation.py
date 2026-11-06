@@ -27,6 +27,10 @@ from pybullet_fleet.types import (
 # ---------------------------------------------------------------------------
 
 
+# These tests cover the deprecated CollisionMode.NORMAL_2D on purpose.
+allow_normal_2d = pytest.mark.filterwarnings("ignore:CollisionMode.NORMAL_2D is deprecated:FutureWarning")
+
+
 @pytest.fixture
 def sim_core():
     """Headless kinematics sim with collision enabled."""
@@ -2071,6 +2075,7 @@ class TestFilterAabbPairs:
         pair = (min(static.object_id, normal.object_id), max(static.object_id, normal.object_id))
         assert pair in pairs
 
+    @allow_normal_2d
     def test_2d_mode_rejects_z_separated_same_cell(self, sim_core):
         """NORMAL_2D with Z-separated objects in the SAME Z-cell: rejected.
 
@@ -2097,6 +2102,7 @@ class TestFilterAabbPairs:
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair not in pairs, "Search found obj2, but AABB Z-overlap should reject the pair"
 
+    @allow_normal_2d
     def test_2d_mode_detects_overlapping_objects(self, sim_core):
         """NORMAL_2D with actually overlapping objects should be detected.
 
@@ -2134,6 +2140,7 @@ class TestFilterAabbPairs:
         pair = (min(obj1.object_id, obj2.object_id), max(obj1.object_id, obj2.object_id))
         assert pair not in pairs, "Search found obj2, but AABB Z-overlap should reject the pair"
 
+    @allow_normal_2d
     def test_2d_search_skips_2d_body_in_different_z_cell(self, sim_core):
         """Two NORMAL_2D bodies in different Z-cells are never a candidate.
 

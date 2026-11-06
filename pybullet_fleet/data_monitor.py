@@ -24,17 +24,28 @@ from pybullet_fleet.logging_utils import get_lazy_logger
 
 logger = get_lazy_logger(__name__)
 
+# Tk is needed only for the window. Without it the package still imports and
+# the monitor still writes its file; DataMonitor says so when the window is
+# asked for. ImportError, not only ModuleNotFoundError: where the tkinter
+# package is present but the Tk library is not (a slim container image),
+# importing it fails to load libtk instead.
 try:
     import tkinter as tk
     from tkinter import ttk
-except ModuleNotFoundError:
+
+    _TK_IMPORT_ERROR: Optional[str] = None
+except ImportError as error:
     tk = None
     ttk = None
-    logger.warning(
-        "tkinter is not installed; DataMonitor GUI will be disabled. "
-        "Install it (Debian/Ubuntu: `sudo apt-get install python3-tk`, "
-        "or the matching `python3.X-tk` package for your interpreter) to enable the monitor window."
-    )
+    _TK_IMPORT_ERROR = f"{type(error).__name__}: {error}"
+
+# How long start() waits for the monitor thread to open its window (or fail
+# to, as on a host without a display) before it returns.
+_WINDOW_OPEN_TIMEOUT = 5.0
+# How often the Tk thread checks whether stop() asked it to close the window,
+# and how long stop() waits for it to end.
+_STOP_POLL_MS = 100
+_STOP_JOIN_TIMEOUT = 3.0
 
 
 class DataMonitor:
@@ -65,6 +76,9 @@ class DataMonitor:
         self._entities_json: str = "[]"
         self.status_label: Optional[Any] = None
         self.monitor_thread: Optional[threading.Thread] = None
+        # The thread that runs the window's main loop; only it may call Tk.
+        self._tk_thread: Optional[threading.Thread] = None
+        self._window_attempted: Optional[threading.Event] = None
         self._monitor_process: Optional[subprocess.Popen] = None
         self._command_pipe: Optional[Connection] = None
         self._parent_poll: Optional[Callable[[], None]] = None
@@ -77,8 +91,11 @@ class DataMonitor:
         self.initial_timestep: Optional[float] = initial_timestep
         if tk is None and self.enable_gui:
             logger.warning(
-                "DataMonitor GUI was requested but tkinter is unavailable; "
-                "falling back to file-only mode (data still written to %s).",
+                "DataMonitor GUI was requested but tkinter is unavailable (%s); "
+                "falling back to file-only mode (data still written to %s). "
+                "Install it (Debian/Ubuntu: `sudo apt-get install python3-tk`, "
+                "or the matching `python3.X-tk` package for your interpreter) to enable the monitor window.",
+                _TK_IMPORT_ERROR,
                 self.data_file,
             )
             self.enable_gui = False
@@ -101,8 +118,13 @@ class DataMonitor:
             if IS_MACOS:
                 self._start_process()
             else:
+                # Wait until the thread has tried to open the window, so that
+                # enable_gui says whether one opened when start() returns (the
+                # simulation picks its monitor refresh rate from it).
+                self._window_attempted = threading.Event()
                 self.monitor_thread = threading.Thread(target=self._run_monitor, daemon=True)
                 self.monitor_thread.start()
+                self._window_attempted.wait(timeout=_WINDOW_OPEN_TIMEOUT)
 
     def _start_process(self) -> None:
         # PyBullet and Tk both own NSApplication on macOS. Even main-thread Tk
@@ -154,7 +176,12 @@ class DataMonitor:
             self.stop()
 
     def stop(self) -> None:
-        """Stop the monitor window"""
+        """Stop the monitor window.
+
+        Tk is not thread-safe, so from another thread this only asks the Tk
+        thread to close the window (it polls ``running``) and waits for it
+        to end, at most ``_STOP_JOIN_TIMEOUT`` seconds.
+        """
         self.running = False
         if IS_MACOS and self._command_pipe is not None:
             self._command_pipe.close()
@@ -167,14 +194,22 @@ class DataMonitor:
                 self._monitor_process.wait(timeout=3)
             self._monitor_process = None
             atexit.unregister(self.stop)
-        if self.window:
+        if self.window is not None and threading.current_thread() is self._tk_thread:
+            # Called from a Tk callback (as the macOS child process does): end
+            # the main loop; _serve_window() destroys the window after it.
             try:
                 self.window.quit()
-                self.window.destroy()
             except Exception:
                 pass
-            if IS_MACOS:
-                self.window = None
+            return
+        thread = self.monitor_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=_STOP_JOIN_TIMEOUT)
+            if thread.is_alive():
+                logger.warning(
+                    "DataMonitor window thread did not end within %.1f s of stop(); leaving it running",
+                    _STOP_JOIN_TIMEOUT,
+                )
 
     def _run_monitor(self) -> None:
         """Run the tkinter monitor window"""
@@ -182,7 +217,23 @@ class DataMonitor:
             self.running = False
             return
 
-        self.window = tk.Tk()
+        try:
+            self.window = tk.Tk()
+        except tk.TclError as error:
+            # Tk is installed but cannot open a window, as on a host with no
+            # display: keep writing the file, as without Tk.
+            logger.warning(
+                "DataMonitor GUI was requested but Tk could not open the monitor window (%s); "
+                "falling back to file-only mode (data still written to %s).",
+                error,
+                self.data_file,
+            )
+            self.enable_gui = False
+            self.running = False
+            return
+        finally:
+            if self._window_attempted is not None:
+                self._window_attempted.set()
         self.window.title(self.title)
         self.window.geometry(self.geometry_string)
         self.window.configure(bg="black")
@@ -298,13 +349,32 @@ class DataMonitor:
         if self._parent_poll is not None:
             self.window.after(100, self._parent_poll)
 
-        # Start the tkinter main loop
+        self._serve_window()
+
+    def _serve_window(self) -> None:
+        """Run the window's main loop in this thread until stop(), then destroy it."""
+        self._tk_thread = threading.current_thread()
+        self.window.after(_STOP_POLL_MS, self._poll_stop)
         try:
             self.window.mainloop()
         except Exception:
             pass
         finally:
             self.running = False
+            try:
+                self.window.destroy()
+            except Exception:
+                pass  # already destroyed, as when the user closed it
+            self.window = None
+
+    def _poll_stop(self) -> None:
+        """Tk thread: end the main loop once stop() has cleared ``running``."""
+        if self.window is None:
+            return
+        if self.running:
+            self.window.after(_STOP_POLL_MS, self._poll_stop)
+        else:
+            self.window.quit()
 
     def _update_display(self) -> None:
         """Update the display with latest data"""
@@ -573,6 +643,8 @@ def _process_main() -> None:
 def main():
     """Run standalone data monitor"""
     monitor = DataMonitor("PyBullet Simulation Monitor")
+    if not monitor.enable_gui:
+        sys.exit("The data monitor window needs Tk; see the warning above.")
     print("Starting data monitor window...")
     print("Press Ctrl+C to exit")
 
@@ -584,6 +656,8 @@ def main():
             monitor.start()
             while monitor.running:
                 time.sleep(1)
+        if not monitor.enable_gui:
+            sys.exit("The data monitor window could not open; see the warning above.")
     except KeyboardInterrupt:
         print("\nStopping monitor...")
         monitor.stop()

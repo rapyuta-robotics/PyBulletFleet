@@ -6,7 +6,7 @@ Collision detection mode comparison tool
 Overview:
     Compares the performance of 3 collision detection modes:
     1. No Collision (CollisionMode.DISABLED): Completely disable collision detection
-    2. 2D Collision (CollisionMode.NORMAL_2D): XY collision; z must actually overlap
+    2. 2D Collision (CollisionMode.NORMAL_2D, deprecated): XY collision; z must actually overlap
     3. 3D Collision (CollisionMode.NORMAL_3D): Full 3D collision
 
 Usage:
@@ -229,7 +229,7 @@ def print_results(results_list, num_agents):
 
     print("\nInterpretation:")
     print("  - NORMAL_2D and NORMAL_3D search the same cells; any time difference is noise or the z clearance.")
-    print("  - Select NORMAL_2D only when a body within the clearance above or below must not count.")
+    print("  - NORMAL_2D is deprecated and emits a FutureWarning; it is measured here for comparison only.")
     print("  - Select NORMAL_3D otherwise; it is the default.")
     print("  - Select DISABLED only when collision detection is intentionally out of scope.")
     print("=" * 70)

@@ -56,14 +56,8 @@ def test_apply_texture_reloads_a_stale_cached_id_after_client_reconnect(monkeypa
 
 
 @pytest.fixture
-def sim_core():
-    sim = MultiRobotSimulationCore(SimulationParams(gui=False, monitor=False, enable_floor=False))
-    sim.initialize_simulation()
-    yield sim
-    try:
-        p.disconnect(sim.client)
-    except p.error:
-        pass
+def sim_core_params():
+    return {"enable_floor": False}
 
 
 def test_import_normalizes_y_up_units_and_preserves_world_pose(sim_core):

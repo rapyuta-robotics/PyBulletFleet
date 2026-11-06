@@ -37,7 +37,7 @@ from urllib.parse import quote, unquote, urlparse
 import pybullet as p
 
 from pybullet_fleet.geometry import Pose
-from pybullet_fleet.sim_object import SimObject, ShapeParams
+from pybullet_fleet.sim_object import SimObject, ShapeParams, _physics_client_of
 from pybullet_fleet.types import CollisionMode
 
 logger = logging.getLogger(__name__)
@@ -583,7 +583,7 @@ def load_sdf_world(
                 # during shape creation may be overridden when meshes have
                 # their own materials.
                 if effective_color and len(effective_color) >= 4 and effective_color[3] < 1.0:
-                    pid = sim_core.client if sim_core is not None else 0
+                    pid = _physics_client_of(sim_core)
                     try:
                         p.changeVisualShape(
                             obj.body_id,
@@ -958,7 +958,7 @@ def load_sdf_world_file(
         # objects should not move during simulation).  This is an initial
         # placement, not a runtime move.
         cos_y, sin_y = math.cos(info.iyaw), math.sin(info.iyaw)
-        pid = sim_core.client if sim_core is not None else 0
+        pid = _physics_client_of(sim_core)
         for obj in model_objs:
             obj_pose = obj.get_pose()
             ox, oy, oz = obj_pose.position

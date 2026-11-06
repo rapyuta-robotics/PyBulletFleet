@@ -30,7 +30,7 @@ disabled behaviour.
 | `duration` | `0` | Default `run_simulation()` duration; `0` runs until interrupted or the GUI closes. |
 | `gui` / `physics` | `true` / `false` | Open a GUI / call `p.stepSimulation()` and update physics bodies each step. |
 | `monitor` / `enable_monitor_gui` | `true` / `true` | Enable DataMonitor and its optional tkinter window. The window provides playback controls plus entity selection and camera follow; requests are applied on the simulation step thread. |
-| `monitor_update_interval` | `None` | Simulated seconds between DataMonitor refreshes while `monitor` is on. A refresh builds `last_monitor_frame` and writes the file the monitor window reads (the window reads it every 0.5 wall seconds). `None` is 0.25 s while the monitor window is open (`enable_monitor_gui`, or `gui` when that is unset) and 1 s otherwise; `0` refreshes every step. Simulated time: at a real-time factor above 1 a short interval means more writes per wall second. While paused, a selection, follow or pause change and a single step refresh at once; the final frame of a run is written, `close()` writes the last state, and `flush_monitor()` does so on demand. |
+| `monitor_update_interval` | `None` | Simulated seconds between DataMonitor refreshes while `monitor` is on. A refresh builds `last_monitor_frame` and writes the file the monitor window reads (the window reads it every 0.5 wall seconds). `None` is 0.25 s while the monitor window is open (`enable_monitor_gui`, or `gui` when that is unset) and 1 s otherwise; `0` refreshes every step. Simulated time: at a real-time factor above 1 a short interval means more writes per wall second. While paused, a selection, follow or pause change, a pose set outside a step (edited from the GUI or by `SimObject.set_pose()` in user code) and a single step refresh at once (a paused pose change does not recompute collisions: `active_collisions` stays as of the last step until the simulation steps again); the final frame of a run is written, `close()` writes the last state, and `flush_monitor()` does so on demand, including after `set_pose()` in a program that has stopped stepping. |
 | `monitor_log_interval` | `1.0` | Wall-clock seconds between INFO `[MONITOR]` log lines (real-time factor, collision totals, step count), independent of `monitor`, `gui` and `monitor_update_interval`; `0` logs none. The line shows only when `log_level` is `info` or lower. |
 | `log_level` | `warn` | Python logging level applied to the process root logger. |
 | `max_steps_per_frame` | `10` | Catch-up-step limit used by the pacing loop. |
@@ -60,7 +60,7 @@ their periodic reports.
 |---|---:|---|
 | `collision_check_frequency` | `None` | `None`: every step; `0`: disabled; positive value: Hz. |
 | `collision_detection_method` | automatic | `closest_points`, `contact_points`, or `hybrid`. Automatic selection is closest-points without physics and contact-points with physics. |
-| `collision_margin` | `0.02` | Metres used by closest-points checks; ignored by contact-points checks. |
+| `collision_margin` | `0.02` | Metres used by closest-points checks; ignored by contact-points checks. A list `[x, y, z]` gives one clearance per world axis; see [Per-axis clearance](per-axis-clearance). |
 | `spatial_hash_cell_size_mode` | `auto_initial` | `auto_initial`, `auto_adaptive`, or `constant`. |
 | `spatial_hash_cell_size` | `None` | Fixed cell size in metres when mode is `constant`. |
 | `multi_cell_threshold` | `1.5` | Accepted for compatibility; not used. Every body is registered in each cell it reaches. |
@@ -158,9 +158,10 @@ Common keys are `name`, `pose`, `mass`, `user_data`, `visual_shape`,
 `collision_shape`, and `collision_mode`. Agents also accept `urdf_path`,
 `sdf_path`, `use_fixed_base`, `controller`, and agent `plugins`.
 
-`collision_mode` is per entity: `normal_3d`, `normal_2d`, `static`, or
-`disabled`. `static` is for fixed structures; `ignore_static_collision` skips
-all pairs involving that object.
+`collision_mode` is per entity: `normal_3d`, `static`, or `disabled`.
+`static` is for fixed structures; `ignore_static_collision` skips all pairs
+involving that object. `normal_2d` (no collision clearance in z) is deprecated:
+it still works but emits a `FutureWarning`; use `normal_3d`.
 
 ### Grid entities
 

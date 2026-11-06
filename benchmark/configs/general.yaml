@@ -119,22 +119,16 @@ scenarios:
 # - CollisionMode: Set per-object via spawn parameters (not in config file)
 #   Available modes (default: NORMAL_3D):
 #     - NORMAL_3D: Full 3D collision - default for all moving objects
-#     - NORMAL_2D: XY collision; z must actually overlap - for ground robots
+#     - NORMAL_2D: deprecated (no clearance in z); use NORMAL_3D
 #     - STATIC: One-time AABB registration - for fixed structures
 #     - DISABLED: No collision detection - for visualization objects
 #
 #   Example in code:
 #     from pybullet_fleet.types import CollisionMode
 #
-#     # 2D ground robot
+#     # Moving robot (default)
 #     params = AgentSpawnParams(
 #         urdf_path="robot.urdf",
-#         collision_mode=CollisionMode.NORMAL_2D,
-#     )
-#
-#     # 3D drone (default)
-#     params = AgentSpawnParams(
-#         urdf_path="drone.urdf",
 #         # collision_mode=CollisionMode.NORMAL_3D (default, can be omitted)
 #     )
 #

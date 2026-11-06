@@ -17,18 +17,8 @@ DT = 0.02
 
 
 @pytest.fixture
-def sim_core():
-    import pybullet as p
-
-    sim = MultiRobotSimulationCore(
-        SimulationParams(gui=False, physics=False, timestep=DT, monitor=False, enable_monitor_gui=False)
-    )
-    sim.initialize_simulation()
-    yield sim
-    try:
-        p.disconnect(sim.client)
-    except p.error:
-        pass
+def sim_core_params():
+    return {"timestep": DT}
 
 
 def _lift(sim_core):

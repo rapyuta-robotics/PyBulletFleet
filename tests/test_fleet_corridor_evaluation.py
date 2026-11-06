@@ -35,8 +35,8 @@ def test_monitor_option_configures_core_without_opening_window(monkeypatch):
     import pybullet_fleet.core_simulation as core
 
     class StubMonitor:
-        def __init__(self, *args, **kwargs):
-            pass
+        def __init__(self, *args, enable_gui=True, **kwargs):
+            self.enable_gui = enable_gui
 
         def set_command_sink(self, sink):
             pass

@@ -19,18 +19,6 @@ from pybullet_fleet.sim_object import SimObject
 from pybullet_fleet.types import CollisionMode
 
 
-@pytest.fixture
-def sim_core():
-    """Headless sim_core for SDF tests."""
-    sim = MultiRobotSimulationCore(SimulationParams(gui=False, monitor=False))
-    sim.initialize_simulation()
-    yield sim
-    try:
-        p.disconnect(sim.client)
-    except p.error:
-        pass
-
-
 class TestFromSdf:
     """Tests for SimObject.from_sdf()."""
 

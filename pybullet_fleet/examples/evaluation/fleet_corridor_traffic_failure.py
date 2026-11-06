@@ -125,7 +125,7 @@ def _make_sim(
                     initial_pose=Pose.from_xyz(task["start"][0], task["start"][1], _ROBOT_Z),
                     mass=0.0,
                     pickable=False,
-                    collision_mode=CollisionMode.NORMAL_2D,
+                    collision_mode=CollisionMode.NORMAL_3D,
                     controller={
                         "type": "omni",
                         "navigation_2d": True,
