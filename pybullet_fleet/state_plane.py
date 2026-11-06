@@ -201,10 +201,16 @@ class Snapshot(FleetFrame):
 def collect_fleet_frame(sim_core: Any, agents: Optional[Sequence[Any]] = None) -> FleetFrame:
     """The current state of *sim_core*'s agents as a :class:`FleetFrame`.
 
-    Until the core keeps its state in arrays, this walks the agents once per
-    call. Each column is gathered as a list and converted once, which keeps
-    the per-agent work to attribute reads: about 1 ms for 1000 agents.
+    With a simulation core (``agents`` not given) the frame is a slice of the
+    core's columns: poses, velocities and the moving flags come out as
+    arrays, and only the agents with a battery plugin are read one by one.
+    The agents' rows and names are cached until the fleet changes (an object
+    added, removed or renamed). With an explicit ``agents`` sequence, or a
+    core without columns, the agents are walked once per call.
     """
+    store = getattr(sim_core, "_store", None)
+    if agents is None and store is not None and hasattr(sim_core, "_fleet_revision"):
+        return _collect_from_columns(sim_core, store)
     if agents is None:
         agents = tuple(getattr(sim_core, "agents", ()))
     n = len(agents)
@@ -251,6 +257,53 @@ def collect_fleet_frame(sim_core: Any, agents: Optional[Sequence[Any]] = None) -
         lin_vel=lin_vel,
         ang_vel=ang_vel,
         is_moving=is_moving,
+        battery_soc=battery,
+        is_charging=is_charging,
+    )
+
+
+def _collect_from_columns(sim_core: Any, store: Any) -> FleetFrame:
+    """A :class:`FleetFrame` sliced from the core's columns (see :func:`collect_fleet_frame`)."""
+    revision = sim_core._fleet_revision
+    cache = getattr(sim_core, "_fleet_frame_cache", None)
+    if cache is None or cache["revision"] != revision:
+        agents = tuple(sim_core.agents)
+        n = len(agents)
+        object_id = np.fromiter((int(agent.object_id) for agent in agents), dtype=np.int64, count=n)
+        # The same fallback as FleetStateProvider, so both name a robot alike.
+        names = tuple(str(getattr(agent, "name", None) or f"agent_{oid}") for agent, oid in zip(agents, object_id))
+        batteries = []
+        for i, agent in enumerate(agents):
+            plugin = getattr(agent, "battery_plugin", None)
+            if plugin is not None:
+                batteries.append((i, plugin))
+        cache = {
+            "revision": revision,
+            "object_id": object_id,
+            "names": names,
+            "rows": store.rows(object_id.tolist()),
+            "batteries": batteries,
+        }
+        sim_core._fleet_frame_cache = cache
+    rows = cache["rows"]
+    n = len(rows)
+    ang_vel = np.zeros((n, 3))
+    ang_vel[:, 2] = store.ang_vel[rows]
+    battery = np.ones(n, dtype=np.float32)
+    is_charging = np.zeros(n, dtype=bool)
+    for i, plugin in cache["batteries"]:
+        battery[i] = plugin.soc
+        is_charging[i] = bool(plugin.is_charging)
+    return FleetFrame(
+        sim_time=float(sim_core.sim_time),
+        step=int(sim_core.step_count),
+        names=cache["names"],
+        object_id=cache["object_id"],
+        pos=store.pos[rows].copy(),
+        orn=store.orn[rows].copy(),
+        lin_vel=store.lin_vel[rows].copy(),
+        ang_vel=ang_vel,
+        is_moving=store.is_moving[rows].copy(),
         battery_soc=battery,
         is_charging=is_charging,
     )

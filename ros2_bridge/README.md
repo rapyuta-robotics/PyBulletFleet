@@ -310,9 +310,7 @@ Measured with `docker/test_fleet_scale.sh --robots 1000 --publish-rate 10
 | `--state-plane every_step` | 29.0x | every snapshot (publisher 0.7 ms each) |
 | `--state-plane latest` | 32.6x | newest snapshot; none skipped at this rate |
 
-At this point the simulation step, not the publishing, sets the RTF: the
-step is about 3 ms, of which 2 ms is collecting the frame from the agents
-(see the core how-to on the state plane).
+At this point the simulation step, not the publishing, sets the RTF.
 
 Those rows are an idle fleet. `--rtf-workload moving` sends every robot a
 goal 500 m away (rows alternate direction) just before the RTF window and
@@ -324,10 +322,14 @@ comparison:
 
 | State publishing (1000 robots moving) | Max RTF | Step time | Over core-only |
 |---------------------------------------|---------|-----------|----------------|
-| core only (no ROS) | 5.66x | 17.7 ms | baseline |
-| in-process (default) | 2.71x | 36.9 ms | 19.2 ms |
-| `--state-plane every_step` | 5.14x | 19.5 ms | 1.8 ms |
-| `--state-plane latest` | 5.03x | 19.9 ms | 2.2 ms |
+| core only (no ROS) | 71.8x | 1.39 ms | baseline |
+| in-process (default) | 6.4x | 15.7 ms | 14.3 ms |
+| `--state-plane every_step` | 60.5x | 1.65 ms | 0.26 ms |
+| `--state-plane latest` | 60.3x | 1.66 ms | 0.27 ms |
+
+(Median of three 60 s windows, goals 50 km away so that the fleet keeps
+moving; the core of the fleet scaling plan, P1-P3, with the frame sliced
+from the core's columns.)
 
 ```yaml
 state_plane:

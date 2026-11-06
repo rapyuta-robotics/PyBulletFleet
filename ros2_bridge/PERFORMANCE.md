@@ -335,28 +335,29 @@ scale YAML. For the bridge-only row, run `test_fleet_scale.sh` with
 `--no-state-subscription` for the subscribed row.
 
 The same comparison with every robot moving (2026-11-05, 1,000 `simple_cube`,
-`timestep=0.1`, `target_rtf=0`, `publish_rate=10`, `--rtf-workload moving`
-and `core_scale_rtf.py --moving-distance 500`, one wall-clock second of
-warm-up and a ten second window; the bridge cases have one `/fleet/states`
-subscriber):
+`timestep=0.1`, `target_rtf=0`, `publish_rate=10`, `--rtf-workload moving
+--moving-distance 50000` (far enough that nothing arrives in the window) and
+`core_scale_rtf.py --moving-distance 20000`, two wall-clock seconds of
+warm-up and a sixty second window, the median of three; the bridge cases have
+one `/fleet/states` subscriber; the core of the fleet scaling plan, P1-P3):
 
 | Case | Observed RTF | Approx. step time | Increment over core-only |
 |------|-------------:|------------------:|-------------------------:|
-| Core only, moving | 5.66x | 17.7 ms | baseline |
-| Fleet bridge, in-process state, moving | 2.71x | 36.9 ms | 19.2 ms |
-| Fleet bridge, `--state-plane every_step`, moving | 5.14x | 19.5 ms | 1.8 ms |
-| Fleet bridge, `--state-plane latest`, moving | 5.03x | 19.9 ms | 2.2 ms |
+| Core only, moving | 71.8x | 1.39 ms | baseline |
+| Fleet bridge, in-process state, moving | 6.4x | 15.7 ms | 14.3 ms |
+| Fleet bridge, `--state-plane every_step`, moving | 60.5x | 1.65 ms | 0.26 ms |
+| Fleet bridge, `--state-plane latest`, moving | 60.3x | 1.66 ms | 0.27 ms |
 
-With every robot moving, the state plane costs the stepping thread about 2 ms per
-step over core-only (1.10x): that is `collect_fleet_frame`, which still reads
-each agent's pose, velocity, flags and battery one agent at a time (2 ms for
-1000 agents, down from 3.3 ms before its columns were gathered as lists and
-converted once). The shared-memory write and the ROS node residency are below
-0.1 ms together. The in-process path costs 19 ms per step at this publish
-rate, because `FleetState` is built and serialized on the stepping thread for
-every step. The remaining 2 ms goes away once the core keeps the fleet state in
-arrays and the frame is a slice of them; until then the state plane is 1.10x
-of core-only on a moving fleet, not the 1.05x the scaling plan asks for.
+With every robot moving, the state plane costs the stepping thread about
+0.26 ms per step over core-only (1.19x). `collect_fleet_frame` is now a slice
+of the core's columns (the agents' rows and names cached until the fleet
+changes), so the frame itself is a few tens of microseconds; what remains is
+the bridge's own per-step work on the stepping thread and the ROS node's
+residency, which weigh more now that a step is 1.4 ms rather than 18. The
+in-process path costs 14 ms per step at this publish rate, because
+`FleetState` is built and serialized on the stepping thread for every step.
+The state plane is 1.19x of core-only on a moving fleet, not yet the 1.05x the
+scaling plan asks for.
 
 ### Same-Host Conclusion
 

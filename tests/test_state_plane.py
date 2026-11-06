@@ -466,3 +466,58 @@ def test_reader_notices_when_the_writer_replaced_the_segment(plane_name):
             second.close()
     finally:
         reader.close()
+
+
+def test_a_frame_from_the_columns_equals_one_walked_agent_by_agent():
+    """With a real simulation the frame is sliced from the core's columns and
+    cached rows; it must say what the agent-by-agent walk says, through a
+    step, a goal, a battery plugin and a renamed and a removed agent."""
+    import pybullet as p
+
+    from pybullet_fleet import Agent, AgentSpawnParams, MultiRobotSimulationCore, Pose, SimulationParams
+    from pybullet_fleet.agent_manager import AgentManager
+
+    sim = MultiRobotSimulationCore(SimulationParams(gui=False, physics=False, monitor=False, log_level="warning"))
+    try:
+        manager = AgentManager(sim_core=sim, fleet_controller={"type": "batch_differential"})
+        agents = []
+        for k in range(4):
+            agent = Agent.from_params(
+                AgentSpawnParams(
+                    urdf_path="robots/simple_cube.urdf",
+                    initial_pose=Pose.from_xyz(float(k), 0.0, 0.0),
+                    name=f"r{k}" if k else None,
+                    plugins=[{"type": "battery", "config": {"initial_soc": 0.5}}] if k == 2 else None,
+                ),
+                sim_core=sim,
+            )
+            manager.add_object(agent)
+            agents.append(agent)
+        agents[1].set_goal_pose(Pose.from_xyz(5.0, 0.0, 0.0))
+        agents[2].set_charging(True)
+
+        def same():
+            fast = collect_fleet_frame(sim)
+            slow = collect_fleet_frame(sim, tuple(sim.agents))
+            assert fast.names == slow.names
+            assert fast.object_id.tolist() == slow.object_id.tolist()
+            for column in ("pos", "orn", "lin_vel", "ang_vel", "battery_soc"):
+                assert np.allclose(getattr(fast, column), getattr(slow, column), equal_nan=True), column
+            assert fast.is_moving.tolist() == slow.is_moving.tolist()
+            assert fast.is_charging.tolist() == slow.is_charging.tolist()
+            assert (fast.sim_time, fast.step) == (slow.sim_time, slow.step)
+            return fast
+
+        same()
+        for _ in range(5):
+            sim.step_once()
+        frame = same()
+        assert frame.is_moving.tolist() == [False, True, False, False]
+        assert frame.lin_vel[1, 0] > 0.0
+        assert frame.battery_soc[2] == pytest.approx(0.5, abs=0.05) and frame.is_charging[2]
+        agents[3].name = "renamed"
+        sim.remove_object(agents[0])
+        frame = same()
+        assert frame.names == ("r1", "r2", "renamed")
+    finally:
+        p.disconnect(sim._client)

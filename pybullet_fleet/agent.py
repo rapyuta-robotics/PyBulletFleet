@@ -472,6 +472,8 @@ class Agent(SimObject):
             self._current_velocity = np.zeros(3)
         if not isinstance(getattr(self, "_ang_vel_ref", None), np.ndarray):
             self._ang_vel_ref = np.zeros(1)  # rad/s (for differential drive)
+        if not isinstance(getattr(self, "_is_moving_ref", None), np.ndarray):
+            self._is_moving_ref = np.zeros(1, bool)
         self._is_moving = False  # Private: use property for read-only access
 
         # Set by BatchKinematicController.register_agent(); cleared on unregister.
@@ -764,6 +766,14 @@ class Agent(SimObject):
         return self._motion_mode
 
     @property
+    def _is_moving(self) -> bool:
+        return bool(self._is_moving_ref[0])
+
+    @_is_moving.setter
+    def _is_moving(self, value: bool) -> None:
+        self._is_moving_ref[0] = value
+
+    @property
     def _current_angular_velocity(self) -> float:
         return float(self._ang_vel_ref[0])
 
@@ -780,11 +790,15 @@ class Agent(SimObject):
         ang_vel = store.ang_vel[row : row + 1]
         ang_vel[0] = getattr(self, "_ang_vel_ref", (0.0,))[0]
         self._ang_vel_ref = ang_vel
+        moving = store.is_moving[row : row + 1]
+        moving[0] = getattr(self, "_is_moving_ref", (False,))[0]
+        self._is_moving_ref = moving
 
     def _unbind_rows(self) -> None:
         super()._unbind_rows()
         self._current_velocity = np.array(self._current_velocity, dtype=float)
         self._ang_vel_ref = np.array(self._ang_vel_ref, dtype=float)
+        self._is_moving_ref = np.array(self._is_moving_ref, dtype=bool)
 
     @property
     def velocity(self) -> np.ndarray:

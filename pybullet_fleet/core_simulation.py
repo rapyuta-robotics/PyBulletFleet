@@ -719,6 +719,9 @@ class MultiRobotSimulationCore:
         # The objects with a per-step update() (agents, devices): the step
         # visits these, not every body in the scene.
         self._updatable: List[SimObject] = []
+        #: Bumped when an object is added, removed or renamed: readers that
+        #: cache the fleet's rows and names (the state plane) compare it.
+        self._fleet_revision: int = 0
 
         # --- Plugins ---
         self._plugins: List["SimPlugin"] = []
@@ -4438,6 +4441,7 @@ class MultiRobotSimulationCore:
     def _note_monitor_entities_changed(self) -> None:
         """An object was added, removed or renamed: rebuild the monitor's entity list."""
         self._monitor_frames.objects_changed()
+        self._fleet_revision += 1
 
     def update_monitor(self) -> None:
         """Update simulation monitor with current statistics.

@@ -14,6 +14,13 @@ are not recommended for production use yet.
 
 ### Changed
 
+- `collect_fleet_frame(sim_core)` (the state plane's frame) is a slice of the
+  core's columns: poses, velocities and the moving flags come out as arrays
+  (an agent's moving flag is a column too), only the agents with a battery
+  plugin are read one by one, and the agents' rows and names are cached
+  until the fleet changes (an object added, removed or renamed). With 1000
+  moving robots the state plane now costs the stepping thread about 0.26 ms
+  per step over core-only (60x, from 27x), instead of about 2 ms.
 - With `ignore_attached_collision` (the default) the broad phase no longer
   offers a pair of two bodies of one attachment tree (a carrier and its
   load, two loads on one carrier): every row carries the id of its tree's

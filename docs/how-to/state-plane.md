@@ -9,10 +9,12 @@ their work lands on the stepping thread.
 
 Writing a 1000-robot snapshot costs about 20 µs, a 10,000-robot one under
 0.15 ms; a reader copies them out in about 0.15 ms and 0.9 ms
-(`benchmark/state_plane_bench.py`). Collecting the arrays from the agents
-(`collect_fleet_frame`) costs about 2 ms per 1000 robots until the core keeps
-its state in arrays: it reads each agent's pose, velocity, flags and battery
-and converts each column once.
+(`benchmark/state_plane_bench.py`). Collecting the frame
+(`collect_fleet_frame`) is a slice of the core's columns: poses, velocities
+and the moving flags come out as arrays, only the agents with a battery
+plugin are read one by one, and the agents' rows and names are cached until
+the fleet changes. Given an explicit sequence of agents instead, it walks
+them once per call (about 2 ms per 1000).
 
 ## Publishing from a simulation
 
