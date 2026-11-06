@@ -14,6 +14,17 @@ are not recommended for production use yet.
 
 ### Changed
 
+- The step's per-object update loop visits only the objects that have a
+  per-step `update()` (agents and devices), kept in a list as objects are
+  added and removed, instead of testing every body in the scene; a scene
+  of tens of thousands of static tiles no longer pays for them each step.
+  A batch-driven agent with nothing of its own to run this step (no action,
+  no joint on its way, nothing attached, no plugin, no entity event
+  handlers) is skipped: its motion is the batch controller's. An agent's
+  reported velocity and yaw rate are columns of the simulation (its
+  `velocity` / `angular_velocity` read its row), which the batch controller
+  writes as arrays instead of agent by agent, and the Phase 3 AABB flush
+  and `set_poses()` resolve their rows as arrays too.
 - The PyBullet mirror is lazy (`mirror: lazy`, the default). A kinematic
   body's buffered pose is no longer written to PyBullet at every step: it
   stays in the simulation's pose columns until something reads it in

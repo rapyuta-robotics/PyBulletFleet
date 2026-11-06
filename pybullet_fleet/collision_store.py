@@ -106,6 +106,14 @@ class CollisionStore:
         self.orn[:, 3] = 1.0
         #: Whether the next flush of the row's pose keeps the body's velocity.
         self.preserve_velocity = np.ones(capacity, bool)
+        #: An agent's reported velocity (world frame) and yaw rate.
+        self.lin_vel = np.zeros((capacity, 3))
+        self.ang_vel = np.zeros(capacity)
+        #: The object moves through set_pose (not a physics body, not STATIC).
+        self.kinematic = np.zeros(capacity, bool)
+        #: A buffered pose write must go through the object itself: it has
+        #: link attachments, or riders the array path cannot carry.
+        self.per_object_pose = np.zeros(capacity, bool)
         #: PyBullet does not hold the row's pose yet (a buffered write not mirrored).
         self.mirror_dirty = np.zeros(capacity, bool)
         #: PyBullet must hold the row's pose after every step (a physics body,
@@ -156,6 +164,10 @@ class CollisionStore:
         "pos",
         "orn",
         "preserve_velocity",
+        "lin_vel",
+        "ang_vel",
+        "kinematic",
+        "per_object_pose",
         "mirror_dirty",
         "needs_mirror",
         "attach_pos",
@@ -198,6 +210,10 @@ class CollisionStore:
         self.pos[row] = pos
         self.orn[row] = orn
         self.preserve_velocity[row] = True
+        self.lin_vel[row] = 0.0
+        self.ang_vel[row] = 0.0
+        self.kinematic[row] = False
+        self.per_object_pose[row] = False
         self.mirror_dirty[row] = False
         self.needs_mirror[row] = False
         self.attach_pos[row] = 0.0
@@ -258,7 +274,10 @@ class CollisionStore:
     def rows(self, object_ids: Sequence[int]) -> np.ndarray:
         """The rows of the given objects, skipping ids without a row."""
         row_of = self.row_of
-        return np.fromiter((row_of[i] for i in object_ids if i in row_of), np.int64)
+        try:
+            return np.fromiter(map(row_of.__getitem__, object_ids), np.int64, count=len(object_ids))
+        except (KeyError, TypeError):
+            return np.fromiter((row_of[i] for i in object_ids if i in row_of), np.int64)
 
     # --- AABBs ------------------------------------------------------------
 

@@ -466,8 +466,12 @@ class Agent(SimObject):
         self._cached_movable_indices: list = [i for i, info in enumerate(self.joint_info) if info[2] != p.JOINT_FIXED]
 
         # Goal tracking (only used for non-static robots) - Private internal state
-        self._current_velocity = np.array([0.0, 0.0, 0.0])
-        self._current_angular_velocity = 0.0  # rad/s (for differential drive)
+        # Already row views when the simulation bound them during
+        # super().__init__() (add_object); otherwise storage of their own.
+        if not isinstance(getattr(self, "_current_velocity", None), np.ndarray):
+            self._current_velocity = np.zeros(3)
+        if not isinstance(getattr(self, "_ang_vel_ref", None), np.ndarray):
+            self._ang_vel_ref = np.zeros(1)  # rad/s (for differential drive)
         self._is_moving = False  # Private: use property for read-only access
 
         # Set by BatchKinematicController.register_agent(); cleared on unregister.
@@ -758,6 +762,29 @@ class Agent(SimObject):
             Current MotionMode (OMNIDIRECTIONAL or DIFFERENTIAL)
         """
         return self._motion_mode
+
+    @property
+    def _current_angular_velocity(self) -> float:
+        return float(self._ang_vel_ref[0])
+
+    @_current_angular_velocity.setter
+    def _current_angular_velocity(self, value: float) -> None:
+        self._ang_vel_ref[0] = value
+
+    def _bind_rows(self, store: Any, row: int) -> None:
+        """Pose and velocity caches as views of the agent's row (the batch controller writes the velocities as arrays)."""
+        super()._bind_rows(store, row)
+        lin_vel = store.lin_vel[row]
+        lin_vel[:] = getattr(self, "_current_velocity", 0.0)
+        self._current_velocity = lin_vel
+        ang_vel = store.ang_vel[row : row + 1]
+        ang_vel[0] = getattr(self, "_ang_vel_ref", (0.0,))[0]
+        self._ang_vel_ref = ang_vel
+
+    def _unbind_rows(self) -> None:
+        super()._unbind_rows()
+        self._current_velocity = np.array(self._current_velocity, dtype=float)
+        self._ang_vel_ref = np.array(self._ang_vel_ref, dtype=float)
 
     @property
     def velocity(self) -> np.ndarray:
@@ -2029,6 +2056,20 @@ class Agent(SimObject):
             True if the robot moved (position, orientation, or joint state changed),
             False otherwise
         """
+        # A batch-driven agent with nothing of its own to run this step: no
+        # action, no joint on its way, nothing attached, no plugin, no
+        # entity events. Its motion is the batch controller's.
+        if (
+            self._batch_controller is not None
+            and self._current_action is None
+            and not self._action_queue
+            and not self._active_joints
+            and not self.attached_objects
+            and not self._plugins
+            and self._events is None
+        ):
+            return False
+
         # Per-entity pre_update event (inline check — ~30ns when no handlers)
         if self._events is not None:
             self._events.emit(SimEvents.PRE_UPDATE, dt=dt)

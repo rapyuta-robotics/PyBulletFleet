@@ -1351,15 +1351,17 @@ class SimObject:
     def body_id(self, value: int) -> None:
         self._body_id = value
 
-    def _bind_pose_row(self, position: Any, orientation: Any) -> None:
-        """Make the pose cache read and write the simulation's pose columns (``position`` / ``orientation`` are row views)."""
+    def _bind_rows(self, store: Any, row: int) -> None:
+        """Make the object's cached state read and write its row of the simulation's columns."""
+        position = store.pos[row]
+        orientation = store.orn[row]
         position[:] = self._cached_pose.position
         orientation[:] = self._cached_pose.orientation
         self._cached_pose.position = position
         self._cached_pose.orientation = orientation
 
-    def _unbind_pose_row(self) -> None:
-        """Give the pose cache its own storage again (the object left the simulation)."""
+    def _unbind_rows(self) -> None:
+        """Give the cached state its own storage again (the object left the simulation)."""
         self._cached_pose.position = [float(v) for v in self._cached_pose.position]
         self._cached_pose.orientation = [float(v) for v in self._cached_pose.orientation]
 

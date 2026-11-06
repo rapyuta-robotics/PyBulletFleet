@@ -715,6 +715,9 @@ class MultiRobotSimulationCore:
         self._base_children: Dict[int, List[int]] = {}
         # Plugins and callbacks that asked for every pose in PyBullet after each step.
         self._mirror_requests: int = 0
+        # The objects with a per-step update() (agents, devices): the step
+        # visits these, not every body in the scene.
+        self._updatable: List[SimObject] = []
 
         # --- Plugins ---
         self._plugins: List["SimPlugin"] = []
@@ -1874,13 +1877,23 @@ class MultiRobotSimulationCore:
         for obj in self._sim_objects:
             row = store.row_of.get(obj.object_id)
             if row is not None:
-                obj._bind_pose_row(store.pos[row], store.orn[row])
+                obj._bind_rows(store, row)
 
     def _note_preserve_velocity(self, object_id: int, preserve_velocity: bool) -> None:
         """Remember, for the Phase 2 flush, whether the object's pending pose write keeps its velocity."""
         row = self._store.row_of.get(object_id)
         if row is not None:
             self._store.preserve_velocity[row] = preserve_velocity
+
+    def _set_per_object_pose(self, obj: SimObject) -> None:
+        """Flag ``obj`` and its carriers when a buffered pose write must go through the object (see ``per_object_pose``)."""
+        store = self._store
+        carrier: Optional[SimObject] = obj
+        while carrier is not None:
+            row = store.row_of.get(carrier.object_id)
+            if row is not None:
+                store.per_object_pose[row] = bool(carrier.attached_objects) and not self._carries_as_arrays(carrier)
+            carrier = carrier._attached_to
 
     def _note_base_attachment(self, child_id: int, parent_id: Optional[int], offset: Optional[Pose]) -> None:
         """Record that ``child_id`` rides on ``parent_id``'s base at ``offset`` (``None``: it no longer does)."""
@@ -1893,11 +1906,17 @@ class MultiRobotSimulationCore:
             if row is not None:
                 self._store.attach_pos[row] = 0.0
                 self._store.attach_orn[row] = (0.0, 0.0, 0.0, 1.0)
+            former = self._sim_objects_dict.get(child_id)
+            if former is not None and former._attached_to is not None:
+                self._set_per_object_pose(former._attached_to)
             return
         self._base_children.setdefault(parent_id, []).append(child_id)
         if row is not None:
             self._store.attach_pos[row] = offset.position
             self._store.attach_orn[row] = offset.orientation
+        parent = self._sim_objects_dict.get(parent_id)
+        if parent is not None:
+            self._set_per_object_pose(parent)
 
     # ----------------------------------------------------------------------
     # The PyBullet mirror
@@ -2035,24 +2054,23 @@ class MultiRobotSimulationCore:
         if orientations.shape != (n, 4):
             raise ValueError(f"orientations must have shape ({n}, 4), got {orientations.shape}")
 
-        # Resolve all objects up front so we raise before any partial write.
-        objects = []
-        for oid in object_ids:
-            obj = self._sim_objects_dict.get(oid)
-            if obj is None:
-                raise KeyError(f"object_id {oid} not registered in this simulation")
-            objects.append(obj)
+        # Resolve every row up front so we raise before any partial write.
+        row_of = self._store.row_of
+        try:
+            rows = np.fromiter(map(row_of.__getitem__, object_ids), np.int64, count=n)
+        except KeyError as exc:
+            raise KeyError(f"object_id {exc.args[0]} not registered in this simulation") from None
 
         if self._in_step:
-            self._set_poses_buffered(object_ids, objects, positions, orientations, preserve_velocity)
+            self._set_poses_buffered(rows, positions, orientations, preserve_velocity)
             return
-        for i, obj in enumerate(objects):
-            obj.set_pose_raw(positions[i], orientations[i], preserve_velocity=preserve_velocity)
+        objects = self._sim_objects_dict
+        for i, oid in enumerate(object_ids):
+            objects[oid].set_pose_raw(positions[i], orientations[i], preserve_velocity=preserve_velocity)
 
     def _set_poses_buffered(
         self,
-        object_ids: Sequence[int],
-        objects: List[SimObject],
+        rows: np.ndarray,
         positions: np.ndarray,
         orientations: np.ndarray,
         preserve_velocity: bool,
@@ -2066,8 +2084,6 @@ class MultiRobotSimulationCore:
         which propagates to the children and stamps the cache.
         """
         store = self._store
-        row_of = store.row_of
-        rows = np.fromiter((row_of[oid] for oid in object_ids), np.int64, count=len(object_ids))
         delta = positions - store.pos[rows]
         moved = (delta * delta).sum(axis=1) > 1e-12
         old_orn = store.orn[rows]
@@ -2091,15 +2107,14 @@ class MultiRobotSimulationCore:
         # Rows the array path cannot finish: a physics body (its cache is
         # stamped per object), an object with link attachments, or a carrier
         # whose riders are not all kinematic base attachments.
-        special = np.zeros(len(rows), bool)
-        kinematic = self._kinematic_objects
-        base_children = self._base_children
-        for k in np.flatnonzero(moved).tolist():
-            obj = objects[k]
-            if obj.object_id not in kinematic or (obj.attached_objects and not self._carries_as_arrays(obj)):
-                special[k] = True
+        special = moved & (~store.kinematic[rows] | store.per_object_pose[rows])
+        if special.any():
+            objects = self._sim_objects_dict
+            for k in np.flatnonzero(special).tolist():
+                obj = objects[int(store.object_id[rows[k]])]
                 obj.set_pose_raw(positions[k], orientations[k], preserve_velocity=preserve_velocity)
-        moved &= ~special
+            moved &= ~special
+        base_children = self._base_children
         if not moved.any():
             return
         moved_rows = rows[moved]
@@ -2229,11 +2244,17 @@ class MultiRobotSimulationCore:
         """Track an object whose link-level attachments need post-flush sync."""
         self._link_attachment_parent_ids.add(object_id)
         self._set_needs_mirror(object_id)
+        obj = self._sim_objects_dict.get(object_id)
+        if obj is not None:
+            self._set_per_object_pose(obj)
 
     def _unregister_link_attachment_parent(self, object_id: int) -> None:
         """Stop tracking an object with no remaining link-level attachments."""
         self._link_attachment_parent_ids.discard(object_id)
         self._set_needs_mirror(object_id)
+        obj = self._sim_objects_dict.get(object_id)
+        if obj is not None:
+            self._set_per_object_pose(obj)
 
     def _sync_link_attachments_after_pose_flush(self, ids: Set[int]) -> Set[int]:
         """
@@ -2300,23 +2321,22 @@ class MultiRobotSimulationCore:
             ids = ids | geometry_ids
         if not ids:
             return
-        kinematic = self._kinematic_objects
         store = self._store
-        row_of = store.row_of
-        pybullet_aabb = store.pybullet_aabb
-        rows: List[int] = []
-        for object_id in ids:
-            if object_id not in kinematic and object_id not in geometry_ids:
-                continue
-            row = row_of.get(object_id)
-            if row is None:
-                continue
-            if pybullet_aabb[row] or not store.local_box_known(row):
-                self._update_object_aabb(object_id)
-                continue
-            rows.append(row)
-        if rows:
-            row_array = np.asarray(rows, dtype=np.int64)
+        rows = store.rows(ids)
+        if len(rows) == 0:
+            return
+        refresh = store.kinematic[rows]
+        if geometry_ids:
+            refresh = refresh | np.isin(rows, store.rows(geometry_ids))
+        rows = rows[refresh]
+        if len(rows) == 0:
+            return
+        # Single kinematic bodies from their poses, as arrays; the rest one by one from PyBullet.
+        from_pose = ~store.pybullet_aabb[rows] & ~np.isnan(store.local_half[rows, 0])
+        for object_id in store.object_id[rows[~from_pose]].tolist():
+            self._update_object_aabb(object_id)
+        row_array = rows[from_pose]
+        if len(row_array):
             pos = store.pos[row_array]
             store.set_aabbs_from_poses(row_array, pos, store.orn[row_array])
             self._record_origin_gaps(row_array, pos)
@@ -2792,8 +2812,12 @@ class MultiRobotSimulationCore:
         row = self._store.row_of.get(object_id)
         if row is not None:
             self._store.physics[row] = is_physics
+            self._store.kinematic[row] = object_id in self._kinematic_objects
             self._store.pybullet_aabb[row] = is_physics or self._aabb_links.get(object_id, ()) != ()
             self._set_needs_mirror(object_id)
+            carrier = obj._attached_to
+            if carrier is not None:
+                self._set_per_object_pose(carrier)
 
     def _update_object_collision_mode(self, object_id: int, old_mode: CollisionMode, new_mode: CollisionMode) -> None:
         """
@@ -3096,7 +3120,9 @@ class MultiRobotSimulationCore:
         if self._store.generation != generation:
             self._bind_pose_rows()  # the columns were reallocated: every view is stale
         else:
-            obj._bind_pose_row(self._store.pos[row], self._store.orn[row])
+            obj._bind_rows(self._store, row)
+        if obj._needs_update:
+            self._updatable.append(obj)
 
         # Add to agents list if this is an Agent instance (for O(M) iteration)
         if isinstance(obj, Agent):
@@ -3198,13 +3224,17 @@ class MultiRobotSimulationCore:
             self._base_children.pop(obj_id, None)
             self._note_base_attachment(obj_id, None, None)
         if obj_id in self._store.row_of:
-            obj._unbind_pose_row()
+            obj._unbind_rows()
             relocated = self._store.remove(obj_id)
             if relocated is not None:
                 moved_obj = self._sim_objects_dict.get(relocated)
                 if moved_obj is not None:
-                    row = self._store.row_of[relocated]
-                    moved_obj._bind_pose_row(self._store.pos[row], self._store.orn[row])
+                    moved_obj._bind_rows(self._store, self._store.row_of[relocated])
+        if obj._needs_update:
+            try:
+                self._updatable.remove(obj)
+            except ValueError:
+                pass
 
         # Remove from dynamic collision set
         self._dynamic_collision_objects.discard(obj_id)
@@ -4600,6 +4630,7 @@ class MultiRobotSimulationCore:
         self._cached_collision_modes.clear()
         self._store.clear()
         self._base_children.clear()
+        self._updatable.clear()
         self._aabb_links.clear()
         self._pending_geometry_ids.clear()
         self._origin_gaps.clear()
@@ -5438,11 +5469,11 @@ class MultiRobotSimulationCore:
                 if bc is not None:
                     bc.synchronized_batch_advance(self._params.timestep)
 
-            for obj in self._sim_objects:
-                if obj._needs_update:
-                    moved = obj.update(self._params.timestep)
-                    if moved and obj.object_id in self._kinematic_objects:
-                        self._moved_this_step.add(obj.object_id)
+            kinematic = self._kinematic_objects
+            moved_ids = self._moved_this_step
+            for obj in self._updatable:
+                if obj.update(self._params.timestep) and obj.object_id in kinematic:
+                    moved_ids.add(obj.object_id)
 
             if measure_timing:
                 t1 = time.perf_counter()

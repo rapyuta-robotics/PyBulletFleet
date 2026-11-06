@@ -469,23 +469,23 @@ class BatchKinematicController(GoalReplacementPolicy, Controller):
             return
 
         mask = self._moved_mask
+        store = self._sim_core._store
         # Agents that were moving last flush but not this one have stopped — zero
         # their reported velocity (matches the per-agent controllers going IDLE).
         just_stopped = self._was_moved & ~mask
         if just_stopped.any():
-            for i in np.flatnonzero(just_stopped):
-                ag = self._agents[i]
-                ag._current_velocity[:] = 0.0
-                ag._current_angular_velocity = 0.0
+            rows = store.rows(self._object_ids[just_stopped].tolist())
+            store.lin_vel[rows] = 0.0
+            store.ang_vel[rows] = 0.0
         self._was_moved = mask.copy()
 
         if not bool(mask.any()):
             return
 
-        for i in np.flatnonzero(mask):
-            ag = self._agents[i]
-            ag._current_velocity[:] = self._lin_vel_buf[i]
-            ag._current_angular_velocity = float(self._ang_vel_buf[i])
+        # The agents' velocity caches are views of their rows: one array write.
+        rows = store.rows(self._object_ids[mask].tolist())
+        store.lin_vel[rows] = self._lin_vel_buf[mask]
+        store.ang_vel[rows] = self._ang_vel_buf[mask]
 
         # set_poses accepts a Sequence[int] for object_ids; passing a NumPy
         # boolean-indexed view of int64 ids is cheap (no Python loop).
