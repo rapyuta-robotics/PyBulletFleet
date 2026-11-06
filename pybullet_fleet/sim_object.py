@@ -421,7 +421,7 @@ class SimObject:
         name: Optional[str] = None,
         user_data: Optional[Dict[str, Any]] = None,
     ):
-        self.body_id = body_id
+        self._body_id = body_id
         self.sim_core = sim_core
 
         self.attached_objects: List["SimObject"] = []
@@ -1337,6 +1337,20 @@ class SimObject:
 
         return self._cached_pose
 
+    @property
+    def body_id(self) -> int:
+        """The PyBullet body, holding this object's pose: a pending pose is written to it first."""
+        core = self.sim_core
+        if core is not None:
+            sync = getattr(core, "_sync_object_mirror_if_dirty", None)
+            if sync is not None:
+                sync(self)
+        return self._body_id
+
+    @body_id.setter
+    def body_id(self, value: int) -> None:
+        self._body_id = value
+
     def _bind_pose_row(self, position: Any, orientation: Any) -> None:
         """Make the pose cache read and write the simulation's pose columns (``position`` / ``orientation`` are row views)."""
         position[:] = self._cached_pose.position
@@ -1496,16 +1510,21 @@ class SimObject:
             return moved
 
         # ----- Immediate path (legacy / outside step_once) -----
-        # Use cached is_kinematic flag to avoid PyBullet API calls
+        # Written to PyBullet now, whatever it held: the body is current after this.
+        body_id = self._body_id
         if preserve_velocity and not self.is_kinematic:
             # Get current velocities to preserve them (for dynamic objects only)
-            linear_vel, angular_vel = p.getBaseVelocity(self.body_id, physicsClientId=self._pid)
-            p.resetBasePositionAndOrientation(self.body_id, position, orientation, physicsClientId=self._pid)
-            p.resetBaseVelocity(self.body_id, linear_vel, angular_vel, physicsClientId=self._pid)
+            linear_vel, angular_vel = p.getBaseVelocity(body_id, physicsClientId=self._pid)
+            p.resetBasePositionAndOrientation(body_id, position, orientation, physicsClientId=self._pid)
+            p.resetBaseVelocity(body_id, linear_vel, angular_vel, physicsClientId=self._pid)
         else:
             # Fast path: Just set position without velocity operations
             # (kinematic objects or explicitly requested to skip velocity preservation)
-            p.resetBasePositionAndOrientation(self.body_id, position, orientation, physicsClientId=self._pid)
+            p.resetBasePositionAndOrientation(body_id, position, orientation, physicsClientId=self._pid)
+        if self.sim_core is not None:
+            note_mirrored = getattr(self.sim_core, "_note_mirrored", None)
+            if note_mirrored is not None:
+                note_mirrored(self.object_id)
 
         # Notify sim_core if movement detected
         if moved and self.sim_core is not None:

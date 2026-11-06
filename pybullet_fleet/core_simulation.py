@@ -234,6 +234,13 @@ class SimulationParams:
     duration: float = _SIM_D["duration"]
     gui: bool = _SIM_D["gui"]
     physics: bool = _SIM_D["physics"]
+    #: When PyBullet receives a kinematic body's pose. ``"lazy"`` (the
+    #: default): only when something reads it there, which the simulation
+    #: does itself for a collision pair, an AABB query, an accessor such as
+    #: ``SimObject.body_id`` or ``sim.client``, a recording or a GUI.
+    #: ``"always"``: after every step, for code that calls PyBullet with a
+    #: body id it keeps. See :meth:`MultiRobotSimulationCore.sync_mirror`.
+    mirror: str = _SIM_D["mirror"]
     monitor: bool = _SIM_D["monitor"]
     #: Whether the DataMonitor opens a window. ``None`` (the default) follows
     #: ``gui``: a headless simulation collects monitor data without putting a
@@ -320,6 +327,8 @@ class SimulationParams:
             )
         # A per-axis clearance (a list from YAML) is stored as a validated tuple.
         self.collision_margin = _normalize_margin(self.collision_margin)
+        if self.mirror not in ("lazy", "always"):
+            raise ValueError(f"mirror must be 'lazy' or 'always', got {self.mirror!r}")
         # Coerce a string (e.g. from YAML: collision_detection_method: "closest_points")
         # into the CollisionDetectionMethod enum. Without this the value stays a plain
         # str and the `== CollisionDetectionMethod.X` checks in check_collisions() never
@@ -704,6 +713,8 @@ class MultiRobotSimulationCore:
         # Base-link attachments: carrier object_id -> the object_ids riding on
         # its base. Their poses follow the carrier's as arrays in set_poses().
         self._base_children: Dict[int, List[int]] = {}
+        # Plugins and callbacks that asked for every pose in PyBullet after each step.
+        self._mirror_requests: int = 0
 
         # --- Plugins ---
         self._plugins: List["SimPlugin"] = []
@@ -752,7 +763,12 @@ class MultiRobotSimulationCore:
 
     @property
     def client(self) -> Optional[int]:
-        """PyBullet physics client ID."""
+        """PyBullet physics client ID, with every pending pose written to PyBullet first.
+
+        Code that calls PyBullet through this id sees the current poses.
+        Internally the simulation uses the id without this sync.
+        """
+        self.sync_mirror()
         return self._client
 
     @property
@@ -1237,6 +1253,11 @@ class MultiRobotSimulationCore:
     # Plugin system
     # ------------------------------------------------------------------
 
+    def _request_mirror(self, target: Any) -> None:
+        """Count a plugin or callback that keeps body ids for PyBullet calls (``needs_mirror``)."""
+        if getattr(target, "needs_mirror", False):
+            self._mirror_requests += 1
+
     def register_plugin(
         self,
         plugin_or_cls: "Union[_SimPluginT, Type[_SimPluginT]]",
@@ -1268,6 +1289,7 @@ class MultiRobotSimulationCore:
 
         plugin.frequency = frequency  # validates before the plugin is registered
         self._plugins.append(plugin)
+        self._request_mirror(plugin)
         return plugin
 
     @property
@@ -1380,6 +1402,7 @@ class MultiRobotSimulationCore:
         except ValueError:
             raise ValueError("phase must be one of {}, got {!r}".format([p.value for p in CallbackPhase], phase)) from None
         self._callbacks.append({"func": callback, "phase": phase, "gate": FrequencyGate(frequency or None)})
+        self._request_mirror(callback)
 
     def _run_callbacks(self, phase: CallbackPhase) -> None:
         """Run the callbacks registered for ``phase`` that are due this step.
@@ -1877,6 +1900,98 @@ class MultiRobotSimulationCore:
             self._store.attach_orn[row] = offset.orientation
 
     # ----------------------------------------------------------------------
+    # The PyBullet mirror
+    # ----------------------------------------------------------------------
+
+    @property
+    def _mirror_always(self) -> bool:
+        """Whether every pending pose is written to PyBullet in Phase 2 (GUI, ``mirror: always``, or a request)."""
+        return bool(self._params.gui) or self._params.mirror == "always" or self._mirror_requests > 0
+
+    def sync_mirror(self, object_ids: Optional[Iterable[int]] = None) -> None:
+        """Write every pending pose (or those of ``object_ids``) to PyBullet.
+
+        With ``mirror: lazy`` a kinematic body's buffered pose stays in the
+        simulation's pose columns until PyBullet needs it. The simulation
+        syncs by itself before anything of its own reads PyBullet: the
+        narrow phase of a collision pair, an AABB query, a recording, the
+        accessors ``SimObject.body_id`` and ``sim.client``. Call this before
+        PyBullet calls made with a body id kept from earlier, or run with
+        ``mirror: always``.
+
+        Args:
+            object_ids: The objects to sync; every object when ``None``.
+        """
+        store = self._store
+        n = len(store)
+        if n == 0 or not p.isConnected(physicsClientId=self._client):
+            return  # nothing to write, or no PyBullet to write to (after disconnect)
+        if object_ids is None:
+            dirty = store.mirror_dirty[:n]
+            if not dirty.any():
+                return
+            rows = np.flatnonzero(dirty)
+        else:
+            rows = store.rows(object_ids)
+            if len(rows) == 0:
+                return
+            rows = rows[store.mirror_dirty[rows]]
+            if len(rows) == 0:
+                return
+        self._write_rows_to_pybullet(rows)
+
+    def _write_rows_to_pybullet(self, rows: np.ndarray) -> None:
+        """Write the rows' poses to their PyBullet bodies and mark them mirrored."""
+        store = self._store
+        objects = self._sim_objects_dict
+        client = self._client
+        ids = store.object_id[rows].tolist()
+        positions = store.pos[rows].tolist()
+        orientations = store.orn[rows].tolist()
+        preserve_flags = store.preserve_velocity[rows].tolist()
+        for object_id, position, orientation, preserve_velocity in zip(ids, positions, orientations, preserve_flags):
+            obj = objects.get(object_id)
+            if obj is None:
+                continue
+            body_id = obj._body_id
+            # Match the legacy immediate path exactly: velocity preservation for
+            # non-kinematic objects, fast path for kinematics.
+            if preserve_velocity and not obj.is_kinematic:
+                linear_vel, angular_vel = p.getBaseVelocity(body_id, physicsClientId=client)
+                p.resetBasePositionAndOrientation(body_id, position, orientation, physicsClientId=client)
+                p.resetBaseVelocity(body_id, linear_vel, angular_vel, physicsClientId=client)
+            else:
+                p.resetBasePositionAndOrientation(body_id, position, orientation, physicsClientId=client)
+        store.mirror_dirty[rows] = False
+
+    def _sync_object_mirror_if_dirty(self, obj: SimObject) -> None:
+        """Write ``obj``'s pose to PyBullet if PyBullet does not hold it (``SimObject.body_id`` calls this)."""
+        row = self._store.row_of.get(obj.object_id)
+        if row is not None and self._store.mirror_dirty[row]:
+            self._write_rows_to_pybullet(np.array([row], dtype=np.int64))
+
+    def _note_mirrored(self, object_id: int) -> None:
+        """The object's pose was just written to PyBullet outside the flush."""
+        row = self._store.row_of.get(object_id)
+        if row is not None:
+            self._store.mirror_dirty[row] = False
+
+    def _set_needs_mirror(self, object_id: int) -> None:
+        """Whether PyBullet must hold the object's pose after every step.
+
+        A physics body, an articulated body or a link-attachment parent.
+        """
+        row = self._store.row_of.get(object_id)
+        if row is None:
+            return
+        needs = (
+            object_id in self._physics_objects
+            or self._aabb_links.get(object_id, ()) != ()
+            or object_id in self._link_attachment_parent_ids
+        )
+        self._store.needs_mirror[row] = needs
+
+    # ----------------------------------------------------------------------
     # Public batch pose API (D8: two-phase-step spec)
     # ----------------------------------------------------------------------
     def set_poses(
@@ -2078,14 +2193,15 @@ class MultiRobotSimulationCore:
 
     def _flush_pending_poses(self, ids: Set[int]) -> None:
         """
-        Two-phase step Phase 2: drain pending pose writes into PyBullet.
+        Two-phase step Phase 2: write the pending poses PyBullet must hold.
 
         Called once per step_once() right after the agent/plugin update loop and
-        before stepSimulation(). The source of truth for each write is
-        ``obj._cached_pose`` (kept up-to-date eagerly in ``_set_pose_internal``);
-        we only need per-object ``preserve_velocity`` from
-        ``obj._pending_preserve_velocity``. This means no per-call tuple
-        allocation in the buffered write path.
+        before stepSimulation(). The poses are the rows of the pose columns.
+        With ``mirror: lazy`` only the rows PyBullet needs after every step
+        are written (physics bodies, articulated bodies, link-attachment
+        parents); the others are marked pending in PyBullet and written when
+        something reads them there (:meth:`sync_mirror`). With ``mirror:
+        always``, a GUI or a plugin that asked for it, every row is written.
 
         Args:
             ids: Snapshot of object_ids to flush. The caller owns the lifecycle
@@ -2098,32 +2214,26 @@ class MultiRobotSimulationCore:
         if not ids:
             return
         store = self._store
-        objects = self._sim_objects_dict
-        # The rows' poses as plain lists, converted once for all of them:
-        # PyBullet reads lists of floats faster than array rows.
-        id_list = [object_id for object_id in ids if object_id in store.row_of and object_id in objects]
-        rows = store.rows(id_list)
-        positions = store.pos[rows].tolist()
-        orientations = store.orn[rows].tolist()
-        preserve_flags = store.preserve_velocity[rows].tolist()
-        for object_id, position, orientation, preserve_velocity in zip(id_list, positions, orientations, preserve_flags):
-            obj = objects[object_id]
-            # Match the legacy immediate path exactly: velocity preservation for
-            # non-kinematic objects, fast path for kinematics.
-            if preserve_velocity and not obj.is_kinematic:
-                linear_vel, angular_vel = p.getBaseVelocity(obj.body_id, physicsClientId=self._client)
-                p.resetBasePositionAndOrientation(obj.body_id, position, orientation, physicsClientId=self._client)
-                p.resetBaseVelocity(obj.body_id, linear_vel, angular_vel, physicsClientId=self._client)
-            else:
-                p.resetBasePositionAndOrientation(obj.body_id, position, orientation, physicsClientId=self._client)
+        rows = store.rows(ids)
+        if len(rows) == 0:
+            return
+        if self._mirror_always:
+            self._write_rows_to_pybullet(rows)
+            return
+        needs = store.needs_mirror[rows]
+        store.mirror_dirty[rows[~needs]] = True
+        if needs.any():
+            self._write_rows_to_pybullet(rows[needs])
 
     def _register_link_attachment_parent(self, object_id: int) -> None:
         """Track an object whose link-level attachments need post-flush sync."""
         self._link_attachment_parent_ids.add(object_id)
+        self._set_needs_mirror(object_id)
 
     def _unregister_link_attachment_parent(self, object_id: int) -> None:
         """Stop tracking an object with no remaining link-level attachments."""
         self._link_attachment_parent_ids.discard(object_id)
+        self._set_needs_mirror(object_id)
 
     def _sync_link_attachments_after_pose_flush(self, ids: Set[int]) -> Set[int]:
         """
@@ -2683,6 +2793,7 @@ class MultiRobotSimulationCore:
         if row is not None:
             self._store.physics[row] = is_physics
             self._store.pybullet_aabb[row] = is_physics or self._aabb_links.get(object_id, ()) != ()
+            self._set_needs_mirror(object_id)
 
     def _update_object_collision_mode(self, object_id: int, old_mode: CollisionMode, new_mode: CollisionMode) -> None:
         """
@@ -3981,6 +4092,11 @@ class MultiRobotSimulationCore:
                 else:
                     pairs_to_check.add(pair)
 
+            # The narrow phase reads PyBullet: the bodies of the pairs it
+            # judges must hold their poses there.
+            if pairs_to_check:
+                self.sync_mirror({object_id for pair in pairs_to_check for object_id in pair})
+
             # Check contact points for all pairs. A pair the broad phase did not
             # offer (an active one checked again) first gets the broad phase's
             # per-axis AABB test, so it is judged as the broad phase would judge
@@ -4912,7 +5028,7 @@ class MultiRobotSimulationCore:
 
                 # Check if PyBullet connection is still active (e.g., GUI window not closed)
                 try:
-                    p.getConnectionInfo(physicsClientId=self.client)
+                    p.getConnectionInfo(physicsClientId=self._client)
                 except p.error:
                     logger.info("PyBullet connection lost (GUI window closed)")
                     break
@@ -5232,7 +5348,7 @@ class MultiRobotSimulationCore:
 
         # Check if PyBullet is still connected
         try:
-            p.getConnectionInfo(physicsClientId=self.client)
+            p.getConnectionInfo(physicsClientId=self._client)
         except p.error:
             # PyBullet disconnected, skip this step
             return
@@ -5364,7 +5480,7 @@ class MultiRobotSimulationCore:
                 self._profiling_stats["phase2_pose_flush"][-1] = (time.perf_counter() - t_phase2) * 1000
 
             # Check if PyBullet is still connected before stepping
-            if not p.isConnected(physicsClientId=self.client):
+            if not p.isConnected(physicsClientId=self._client):
                 raise RuntimeError("PyBullet disconnected (GUI window closed)")
 
             if measure_timing:

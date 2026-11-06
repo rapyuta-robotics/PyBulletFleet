@@ -30,6 +30,9 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "duration": 0,
         "gui": True,
         "physics": False,
+        # "lazy": PyBullet receives a kinematic body's pose only when something
+        # reads it there; "always": after every step, as before.
+        "mirror": "lazy",
         "monitor": True,
         # None: follow `gui`, so a headless run opens no window.
         "enable_monitor_gui": None,

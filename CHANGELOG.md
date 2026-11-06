@@ -14,6 +14,17 @@ are not recommended for production use yet.
 
 ### Changed
 
+- The PyBullet mirror is lazy (`mirror: lazy`, the default). A kinematic
+  body's buffered pose is no longer written to PyBullet at every step: it
+  stays in the simulation's pose columns until something reads it in
+  PyBullet, and the simulation syncs by itself before anything of its own
+  does (the narrow phase of a collision pair, an AABB query, a recording,
+  the accessors `SimObject.body_id` and `sim.client`). Physics bodies,
+  articulated bodies and link-attachment parents are written at every
+  step. `sim.sync_mirror()` writes every pending pose on demand. Code that
+  calls PyBullet with a body id kept from earlier should run with
+  `mirror: always` (in `SimulationParams` or YAML), or a plugin or callback
+  can set `needs_mirror = True` to ask for the same.
 - Poses are columns of the simulation. Every registered object's position
   and orientation live in one array each (in the collision store), an
   object's pose cache (what `get_pose()` returns for a kinematic object) is

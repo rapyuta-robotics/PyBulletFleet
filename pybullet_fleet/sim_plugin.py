@@ -161,6 +161,11 @@ class SimPlugin:
     via ``_registry_name`` class attribute (e.g. ``_registry_name = "workcell"``).
     """
 
+    #: Set True in a plugin that calls PyBullet directly with body ids it
+    #: keeps: the simulation then mirrors every pose to PyBullet after each
+    #: step, as ``mirror: always`` does.
+    needs_mirror: bool = False
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         _registry.auto_register_subclass(cls)

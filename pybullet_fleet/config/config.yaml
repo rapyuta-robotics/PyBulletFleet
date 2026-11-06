@@ -29,6 +29,11 @@ simulation:
   # Enable physics engine (true/false)
   physics: false
 
+  # When PyBullet receives a kinematic body's pose: "lazy" (only when
+  # something reads it there: a collision pair, a query, a GUI) or "always"
+  # (after every step, for code that calls PyBullet with a kept body id)
+  mirror: lazy
+
   # Enable external data monitor (true/false)
   monitor: true
   # Simulated seconds between monitor refreshes (build and write a frame).

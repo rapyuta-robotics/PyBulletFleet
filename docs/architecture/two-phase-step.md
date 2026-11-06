@@ -87,6 +87,25 @@ their bases ride along the same way). So:
   not a same-step pose API. The framework refreshes kinematic AABBs and grid
   entries during post-commit synchronization, after the base-pose flush.
 
+### The PyBullet mirror is lazy
+
+With the default `mirror: lazy`, a kinematic body's buffered pose is not
+written to PyBullet at Phase 2 either: it stays in the pose columns until
+something reads it in PyBullet. The simulation syncs by itself before
+anything of its own does: the narrow phase of a collision pair, an AABB
+query, a recording, and the accessors `sim_object.body_id` and `sim.client`
+(both write the pending poses first, so `p.getAABB(obj.body_id, ...)` is
+right). Physics bodies, articulated bodies and bodies whose links carry
+attachments are written at every step, as PyBullet owns or needs them.
+`sim.sync_mirror()` writes every pending pose (or those of given objects).
+
+What is **not** supported with `mirror: lazy`: calling PyBullet with a body
+id kept from earlier (`body = obj.body_id` once, then `p.getAABB(body)`
+after a step). Such code reads the pose of the last sync. Set
+`mirror: always` in `SimulationParams` or YAML to write every pose after
+every step as before, or give a plugin or callback `needs_mirror = True`,
+which does the same while it is registered.
+
 ### Rule of thumb
 
 > Inside a callback or plugin `on_step`, **always use the framework getter**

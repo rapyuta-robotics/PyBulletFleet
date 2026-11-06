@@ -106,6 +106,11 @@ class CollisionStore:
         self.orn[:, 3] = 1.0
         #: Whether the next flush of the row's pose keeps the body's velocity.
         self.preserve_velocity = np.ones(capacity, bool)
+        #: PyBullet does not hold the row's pose yet (a buffered write not mirrored).
+        self.mirror_dirty = np.zeros(capacity, bool)
+        #: PyBullet must hold the row's pose after every step (a physics body,
+        #: an articulated body, a body whose links carry attachments).
+        self.needs_mirror = np.zeros(capacity, bool)
         #: The pose of a base-attached object in its carrier's frame (identity when not attached).
         self.attach_pos = np.zeros((capacity, 3))
         self.attach_orn = np.zeros((capacity, 4))
@@ -151,6 +156,8 @@ class CollisionStore:
         "pos",
         "orn",
         "preserve_velocity",
+        "mirror_dirty",
+        "needs_mirror",
         "attach_pos",
         "attach_orn",
         "aabb_min",
@@ -191,6 +198,8 @@ class CollisionStore:
         self.pos[row] = pos
         self.orn[row] = orn
         self.preserve_velocity[row] = True
+        self.mirror_dirty[row] = False
+        self.needs_mirror[row] = False
         self.attach_pos[row] = 0.0
         self.attach_orn[row] = (0.0, 0.0, 0.0, 1.0)
         self.aabb_min[row] = np.nan

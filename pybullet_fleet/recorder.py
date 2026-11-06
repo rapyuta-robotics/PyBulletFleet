@@ -285,6 +285,8 @@ class SimulationRecorder:
 
     def _capture_frame(self, sim_core: "MultiRobotSimulationCore", dt: float) -> None:
         """Callback: capture one RGB frame at the simulation's current time."""
+        if self._recording:
+            sim_core.sync_mirror()  # the renderer reads PyBullet
         self._capture_at(sim_core.sim_time)
 
     def _capture_at(self, sim_time: float) -> None:
