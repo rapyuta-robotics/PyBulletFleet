@@ -343,7 +343,7 @@ sparse の目標 2.0 ms (50x) まで残り 0.2 ms。残る内訳は phase1 1.3 (
 `_current_angular_velocity` は 1 要素ビューのプロパティにし、batch controller は動いた行の速度を配列で書く
 (per-agent のコピーループを削除)。`set_poses()` は行を配列で解決し、per-object 経路が要る行は store の列
 (`kinematic`、`per_object_pose`) のマスクで決める。Phase 3 の AABB flush も id のループをやめた。
-テスト `tests/test_update_loop.py` 6 件、parity 11 シーン同一、フルスイート 3126 passed。
+テスト `tests/test_update_loop.py` 6 件、parity 11 シーン同一、フルスイート 3123 passed、ブリッジ統合テスト PASSED。
 
 同一セッションで 2 周交互に測った結果 (before は P2 後 `c9b4488`):
 
