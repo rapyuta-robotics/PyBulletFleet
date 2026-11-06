@@ -123,6 +123,11 @@ class CollisionStore:
         self.attach_pos = np.zeros((capacity, 3))
         self.attach_orn = np.zeros((capacity, 4))
         self.attach_orn[:, 3] = 1.0
+        #: The row of the carrier a base-attached object rides on; -1 when it rides on nothing.
+        self.parent_row = np.full(capacity, -1, np.int64)
+        #: The object at the top of the row's attachment chain (its own id when not attached):
+        #: two rows with the same root are one body for the collision check.
+        self.attach_root = np.zeros(capacity, np.int64)
         self.aabb_min = np.full((capacity, 3), np.nan)
         self.aabb_max = np.full((capacity, 3), np.nan)
         #: The body's box in its own frame, at identity orientation. NaN until known.
@@ -172,6 +177,8 @@ class CollisionStore:
         "needs_mirror",
         "attach_pos",
         "attach_orn",
+        "parent_row",
+        "attach_root",
         "aabb_min",
         "aabb_max",
         "local_center",
@@ -218,6 +225,8 @@ class CollisionStore:
         self.needs_mirror[row] = False
         self.attach_pos[row] = 0.0
         self.attach_orn[row] = (0.0, 0.0, 0.0, 1.0)
+        self.parent_row[row] = -1
+        self.attach_root[row] = object_id
         self.aabb_min[row] = np.nan
         self.aabb_max[row] = np.nan
         self.local_center[row] = np.nan
@@ -243,12 +252,16 @@ class CollisionStore:
             self._static_keys, self._static_rows = self._drop_row(self._static_keys, self._static_rows, row, last)
             self._moving_keys, self._moving_rows = self._drop_row(self._moving_keys, self._moving_rows, row, last)
         moved: Optional[int] = None
+        n = self._n
+        parent_row = self.parent_row[:n]
+        parent_row[parent_row == row] = -1  # its riders ride on nothing now
         if last != row:
             for name in self._COLUMNS:
                 column = getattr(self, name)
                 column[row] = column[last]
             moved = int(self.object_id[row])
             self.row_of[moved] = row
+            parent_row[parent_row == last] = row
         self._n = last
         return moved
 
@@ -492,7 +505,13 @@ class CollisionStore:
         return contents
 
     def candidate_pairs(
-        self, rows: np.ndarray, clearance: Sequence[float], *, ignore_static: bool, hybrid: bool
+        self,
+        rows: np.ndarray,
+        clearance: Sequence[float],
+        *,
+        ignore_static: bool,
+        hybrid: bool,
+        ignore_attached: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """The pairs of the moved ``rows`` with the bodies sharing one of their cells, within the clearance.
 
@@ -500,7 +519,9 @@ class CollisionStore:
         the clearance when the AABBs, each axis enlarged by that axis's
         clearance, overlap; no z clearance with a NORMAL_2D body, and no
         clearance at all for a pair with a physics body under ``hybrid``.
-        With ``ignore_static`` STATIC bodies take part in no pair.
+        With ``ignore_static`` STATIC bodies take part in no pair; with
+        ``ignore_attached`` two bodies of one attachment tree (the same
+        ``attach_root``) are no pair.
         """
         self.sync_hash()
         empty = np.empty(0, np.int64)
@@ -544,6 +565,9 @@ class CollisionStore:
         b = packed % self._n
         if ignore_static:
             keep = (self.mode[a] != MODE_STATIC) & (self.mode[b] != MODE_STATIC)
+            a, b = a[keep], b[keep]
+        if ignore_attached:
+            keep = self.attach_root[a] != self.attach_root[b]
             a, b = a[keep], b[keep]
         margin = np.broadcast_to(np.asarray(clearance, dtype=float), (len(a), 3)).copy()
         two_d = (self.mode[a] == MODE_NORMAL_2D) | (self.mode[b] == MODE_NORMAL_2D)

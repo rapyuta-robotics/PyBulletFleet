@@ -14,6 +14,17 @@ are not recommended for production use yet.
 
 ### Changed
 
+- With `ignore_attached_collision` (the default) the broad phase no longer
+  offers a pair of two bodies of one attachment tree (a carrier and its
+  load, two loads on one carrier): every row carries the id of its tree's
+  root and pairs with the same root are dropped as arrays, instead of
+  reaching the narrow phase and being set aside there one by one each
+  step. A rider that leaves its carrier counts as moved, so a pair the two
+  make is checked on the next collision check even if neither moves, as
+  before. The riders of the carriers a buffered `set_poses()` moved are
+  found through a `parent_row` column, level by level, with no Python loop
+  over the carriers, and a batch-driven agent whose only attachments ride
+  on its base takes the fast path (they ride along in the batch write).
 - The step's per-object update loop visits only the objects that have a
   per-step `update()` (agents and devices), kept in a list as objects are
   added and removed, instead of testing every body in the scene; a scene

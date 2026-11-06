@@ -6,6 +6,7 @@ import numpy as np
 import pybullet as p
 import pytest
 
+from pybullet_fleet import Agent, AgentSpawnParams
 from pybullet_fleet.core_simulation import MultiRobotSimulationCore, SimulationParams
 from pybullet_fleet.geometry import Pose
 from pybullet_fleet.sim_object import ShapeParams, SimObject
@@ -247,3 +248,87 @@ def test_a_carrier_with_a_physics_rider_takes_the_per_object_path(sim):
     assert not sim._carries_as_arrays(carrier)
     _step_with_poses(sim, [carrier.object_id], np.array([[2.0, 0.0, 0.1]]), np.array([[0.0, 0.0, 0.0, 1.0]]))
     assert heavy.get_pose().x == pytest.approx(2.0)
+
+
+# --- one attachment tree is one body for the broad phase ---------------------
+
+
+def test_a_carrier_and_its_riders_are_never_a_candidate_pair(sim):
+    carrier = box(sim, 0.0)
+    load = box(sim, 0.0, z=0.3)
+    on_top = box(sim, 0.0, z=0.5)
+    carrier.attach_object(load, keep_world_pose=True)
+    load.attach_object(on_top, keep_world_pose=True)
+    sim._moved_this_step.update({carrier.object_id, load.object_id, on_top.object_id})
+    assert sim.filter_aabb_pairs()[0] == []
+    store = sim._store
+    assert {int(store.attach_root[store.row_of[o.object_id]]) for o in (carrier, load, on_top)} == {carrier.object_id}
+    assert store.parent_row[store.row_of[load.object_id]] == store.row_of[carrier.object_id]
+    assert store.parent_row[store.row_of[on_top.object_id]] == store.row_of[load.object_id]
+
+
+def test_with_attached_collisions_counted_the_pair_is_offered():
+    sim = MultiRobotSimulationCore(
+        SimulationParams(
+            gui=False,
+            physics=False,
+            monitor=False,
+            collision_detection_method=CollisionDetectionMethod.CLOSEST_POINTS,
+            ignore_attached_collision=False,
+            log_level="warning",
+        )
+    )
+    try:
+        carrier = box(sim, 0.0)
+        load = box(sim, 0.0, z=0.3)
+        carrier.attach_object(load, keep_world_pose=True)
+        sim._moved_this_step.update({carrier.object_id, load.object_id})
+        assert sim.filter_aabb_pairs()[0] == [tuple(sorted((carrier.object_id, load.object_id)))]
+    finally:
+        p.disconnect(sim._client)
+
+
+def test_a_detached_rider_in_contact_is_reported_without_moving(sim):
+    carrier = box(sim, 0.0)
+    load = box(sim, 0.0, z=0.3)
+    carrier.attach_object(load, keep_world_pose=True)
+    sim.step_once()
+    assert sim.get_active_collision_pairs() == []
+    carrier.detach_object(load)  # still touching, nothing moves
+    sim.step_once()
+    assert sim.get_active_collision_pairs() == [tuple(sorted((carrier.object_id, load.object_id)))]
+    store = sim._store
+    assert int(store.attach_root[store.row_of[load.object_id]]) == load.object_id
+    assert store.parent_row[store.row_of[load.object_id]] == -1
+
+
+def test_parent_rows_follow_a_removal(sim):
+    first = box(sim, 5.0)
+    carrier = box(sim, 0.0)
+    load = box(sim, 0.0, z=0.3)
+    carrier.attach_object(load, keep_world_pose=True)
+    sim.remove_object(first)  # the last row (load's) moves into first's
+    store = sim._store
+    assert store.parent_row[store.row_of[load.object_id]] == store.row_of[carrier.object_id]
+    sim.remove_object(carrier)
+    assert store.parent_row[store.row_of[load.object_id]] == -1
+    assert sim._base_children == {} and sim._base_parent_of == {}
+
+
+def test_a_carrier_with_only_base_riders_takes_the_batch_fast_path(sim):
+    from pybullet_fleet.agent_manager import AgentManager
+
+    manager = AgentManager(sim_core=sim, fleet_controller={"type": "batch_differential"})
+    a = Agent.from_params(
+        AgentSpawnParams(urdf_path="robots/simple_cube.urdf", initial_pose=Pose.from_xyz(0.0, 0.0, 0.0)), sim_core=sim
+    )
+    manager.add_object(a)
+    load = box(sim, 0.0, z=0.4)
+    a.attach_object(load, keep_world_pose=True)
+    assert a._link_attached_count == 0
+    assert a.update(0.1) is False  # nothing of its own to run
+    a.set_goal_pose(Pose.from_xyz(3.0, 0.0, 0.0))
+    for _ in range(10):
+        sim.step_once()
+    assert a.get_pose().x > 0.1
+    assert load.get_pose().x == pytest.approx(a.get_pose().x, abs=1e-6)

@@ -2057,14 +2057,15 @@ class Agent(SimObject):
             False otherwise
         """
         # A batch-driven agent with nothing of its own to run this step: no
-        # action, no joint on its way, nothing attached, no plugin, no
-        # entity events. Its motion is the batch controller's.
+        # action, no joint on its way, nothing riding on a link (base
+        # attachments ride along in the batch write), no plugin, no entity
+        # events. Its motion is the batch controller's.
         if (
             self._batch_controller is not None
             and self._current_action is None
             and not self._action_queue
             and not self._active_joints
-            and not self.attached_objects
+            and not self._link_attached_count
             and not self._plugins
             and self._events is None
         ):

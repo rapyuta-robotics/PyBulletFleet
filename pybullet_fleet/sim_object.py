@@ -425,6 +425,7 @@ class SimObject:
         self.sim_core = sim_core
 
         self.attached_objects: List["SimObject"] = []
+        self._link_attached_count: int = 0  # how many of them ride on a link, not the base
         self.callbacks: List[dict] = []
         self._pickable = pickable
         _warn_if_new_object_is_normal_2d(self, collision_mode)
@@ -1681,9 +1682,14 @@ class SimObject:
         obj._attached_link_index = parent_link_index
         if parent_link_index >= 0 and self.sim_core is not None and hasattr(self, "update_attached_objects_kinematics"):
             self.sim_core._register_link_attachment_parent(self.object_id)
+        if parent_link_index >= 0:
+            self._link_attached_count += 1
         note_attachment = getattr(self.sim_core, "_note_base_attachment", None)
         if note_attachment is not None and parent_link_index == -1:
             note_attachment(obj.object_id, self.object_id, relative_pose)
+        note_tree = getattr(self.sim_core, "_note_attachment_tree", None)
+        if note_tree is not None:
+            note_tree(self)
         self._log.debug(
             lambda: f"attach_object: obj={obj.body_id} _attach_offset.position={obj._attach_offset.position} "
             f"_attach_offset.orientation={obj._attach_offset.orientation}"
@@ -1788,12 +1794,18 @@ class SimObject:
 
         # Reset attachment state to default values
         was_base_attachment = obj._attached_link_index == -1
+        if not was_base_attachment:
+            self._link_attached_count = max(0, self._link_attached_count - 1)
         obj._attach_offset = Pose(position=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 0.0, 1.0])
         obj._attached_to = None
         obj._attached_link_index = -1
         note_attachment = getattr(self.sim_core, "_note_base_attachment", None)
         if note_attachment is not None and was_base_attachment:
             note_attachment(obj.object_id, None, None)
+        note_tree = getattr(self.sim_core, "_note_attachment_tree", None)
+        if note_tree is not None:
+            note_tree(self)
+            note_tree(obj)
 
         # Teleport to final pose if requested
         if drop_relative_pose is not None:

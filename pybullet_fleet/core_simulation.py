@@ -713,6 +713,7 @@ class MultiRobotSimulationCore:
         # Base-link attachments: carrier object_id -> the object_ids riding on
         # its base. Their poses follow the carrier's as arrays in set_poses().
         self._base_children: Dict[int, List[int]] = {}
+        self._base_parent_of: Dict[int, int] = {}  # rider object_id -> carrier object_id
         # Plugins and callbacks that asked for every pose in PyBullet after each step.
         self._mirror_requests: int = 0
         # The objects with a per-step update() (agents, devices): the step
@@ -1896,31 +1897,61 @@ class MultiRobotSimulationCore:
             carrier = carrier._attached_to
 
     def _note_base_attachment(self, child_id: int, parent_id: Optional[int], offset: Optional[Pose]) -> None:
-        """Record that ``child_id`` rides on ``parent_id``'s base at ``offset`` (``None``: it no longer does)."""
-        for children in self._base_children.values():
-            if child_id in children:
-                children.remove(child_id)
-        self._base_children = {k: v for k, v in self._base_children.items() if v}
-        row = self._store.row_of.get(child_id)
+        """Record that ``child_id`` rides on ``parent_id``'s base at ``offset`` (``None``: it no longer does).
+
+        A rider that leaves its carrier counts as moved, so a pair the two
+        made is checked on the next collision check even if neither moves.
+        """
+        store = self._store
+        row = store.row_of.get(child_id)
+        former_parent = self._base_parent_of.pop(child_id, None)
+        if former_parent is not None:
+            riders = self._base_children.get(former_parent)
+            if riders is not None:
+                try:
+                    riders.remove(child_id)
+                except ValueError:
+                    pass
+                if not riders:
+                    del self._base_children[former_parent]
         if parent_id is None or offset is None:
             if row is not None:
-                self._store.attach_pos[row] = 0.0
-                self._store.attach_orn[row] = (0.0, 0.0, 0.0, 1.0)
-            former = self._sim_objects_dict.get(child_id)
-            if former is not None and former._attached_to is not None:
-                self._set_per_object_pose(former._attached_to)
+                store.attach_pos[row] = 0.0
+                store.attach_orn[row] = (0.0, 0.0, 0.0, 1.0)
+                store.parent_row[row] = -1
+            if former_parent is not None:
+                self._moved_this_step.add(child_id)
+                former = self._sim_objects_dict.get(former_parent)
+                if former is not None:
+                    self._set_per_object_pose(former)
             return
         self._base_children.setdefault(parent_id, []).append(child_id)
+        self._base_parent_of[child_id] = parent_id
+        parent_row = store.row_of.get(parent_id)
         if row is not None:
-            self._store.attach_pos[row] = offset.position
-            self._store.attach_orn[row] = offset.orientation
+            store.attach_pos[row] = offset.position
+            store.attach_orn[row] = offset.orientation
+            store.parent_row[row] = -1 if parent_row is None else parent_row
         parent = self._sim_objects_dict.get(parent_id)
         if parent is not None:
             self._set_per_object_pose(parent)
 
-    # ----------------------------------------------------------------------
-    # The PyBullet mirror
-    # ----------------------------------------------------------------------
+    def _note_attachment_tree(self, obj: SimObject) -> None:
+        """Record the root of the attachment tree ``obj`` is in, for every member (``attach_root``)."""
+        store = self._store
+        root = obj._attachment_root()
+        root_id = root.object_id
+        pending = [root]
+        seen = set()
+        while pending:
+            member = pending.pop()
+            if id(member) in seen:
+                continue
+            seen.add(id(member))
+            row = store.row_of.get(member.object_id)
+            if row is not None:
+                store.attach_root[row] = root_id
+            pending.extend(member.attached_objects)
 
     @property
     def _mirror_always(self) -> bool:
@@ -2125,7 +2156,7 @@ class MultiRobotSimulationCore:
         self._pending_pose_ids.update(moved_ids)
         self._moved_this_step.update(moved_ids)
         if base_children:
-            self._carry_as_arrays(moved_ids, preserve_velocity)
+            self._carry_as_arrays(moved_rows, preserve_velocity)
 
     def _carries_as_arrays(self, obj: SimObject) -> bool:
         """Whether every object riding on ``obj`` is a kinematic base attachment the array path can carry."""
@@ -2140,8 +2171,8 @@ class MultiRobotSimulationCore:
                     pending.append(child)
         return True
 
-    def _carry_as_arrays(self, carrier_ids: List[int], preserve_velocity: bool) -> None:
-        """Move the base attachments of the carriers that just moved, level by level, as arrays.
+    def _carry_as_arrays(self, carrier_rows: np.ndarray, preserve_velocity: bool) -> None:
+        """Move the base attachments of the carrier rows that just moved, level by level, as arrays.
 
         Each rider's world pose is its carrier's pose composed with its
         attachment offset, as ``p.multiplyTransforms`` composes them; the
@@ -2150,29 +2181,22 @@ class MultiRobotSimulationCore:
         level.
         """
         store = self._store
-        row_of = store.row_of
-        base_children = self._base_children
-        level = carrier_ids
-        while level:
-            parents: List[int] = []
-            children: List[int] = []
-            for parent_id in level:
-                riders = base_children.get(parent_id)
-                if riders:
-                    for child_id in riders:
-                        parents.append(parent_id)
-                        children.append(child_id)
-            if not children:
+        n = len(store)
+        parent_col = store.parent_row[:n]
+        level = carrier_rows
+        while len(level):
+            child_rows = np.flatnonzero(np.isin(parent_col, level))
+            if len(child_rows) == 0:
                 return
-            parent_rows = np.fromiter((row_of[i] for i in parents), np.int64, count=len(parents))
-            child_rows = np.fromiter((row_of[i] for i in children), np.int64, count=len(children))
+            parent_rows = parent_col[child_rows]
             pos, orn = store.attached_poses(child_rows, parent_rows)
             store.pos[child_rows] = pos
             store.orn[child_rows] = orn
             store.preserve_velocity[child_rows] = preserve_velocity
-            self._pending_pose_ids.update(children)
-            self._moved_this_step.update(children)
-            level = children
+            child_ids = store.object_id[child_rows].tolist()
+            self._pending_pose_ids.update(child_ids)
+            self._moved_this_step.update(child_ids)
+            level = child_rows
 
     def get_poses(self, object_ids: Sequence[int]) -> Tuple[np.ndarray, np.ndarray]:
         """Return ``(positions, orientations)`` arrays for N objects (batch read).
@@ -3220,8 +3244,12 @@ class MultiRobotSimulationCore:
 
         # Remove from collision system (AABB, spatial grid)
         self._remove_object_from_collision_system(obj_id)
-        if obj_id in self._base_children or any(obj_id in riders for riders in self._base_children.values()):
-            self._base_children.pop(obj_id, None)
+        for rider_id in self._base_children.pop(obj_id, []):
+            self._base_parent_of.pop(rider_id, None)
+            rider_row = self._store.row_of.get(rider_id)
+            if rider_row is not None:
+                self._store.parent_row[rider_row] = -1
+        if obj_id in self._base_parent_of:
             self._note_base_attachment(obj_id, None, None)
         if obj_id in self._store.row_of:
             obj._unbind_rows()
@@ -3961,7 +3989,11 @@ class MultiRobotSimulationCore:
             moved_objects = self._moved_this_step
         hybrid = self._params.collision_detection_method == CollisionDetectionMethod.HYBRID
         ids_a, ids_b = self._store.candidate_pairs(
-            self._store.rows(moved_objects), clearance, ignore_static=ignore_static, hybrid=hybrid
+            self._store.rows(moved_objects),
+            clearance,
+            ignore_static=ignore_static,
+            hybrid=hybrid,
+            ignore_attached=bool(self._params.ignore_attached_collision),
         )
         pairs = [(a, b) if a < b else (b, a) for a, b in zip(ids_a.tolist(), ids_b.tolist())]
 
@@ -4630,6 +4662,7 @@ class MultiRobotSimulationCore:
         self._cached_collision_modes.clear()
         self._store.clear()
         self._base_children.clear()
+        self._base_parent_of.clear()
         self._updatable.clear()
         self._aabb_links.clear()
         self._pending_geometry_ids.clear()
