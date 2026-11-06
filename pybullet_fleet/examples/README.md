@@ -6,7 +6,7 @@ Runnable demos for PyBulletFleet, grouped by area:
 |--------|---------------|
 | `basics/` | Spawning, the action system, the event bus |
 | `mobile/` | Path following and mobile-robot navigation |
-| `arm/` | Arm pick/drop, end-effector (IK) control, mobile manipulators |
+| `arm/` | Arm pick/drop, end-effector (IK) control, mobile manipulators, collision of an arm's links |
 | `models/` | Bundled model names, `robot_descriptions`, SDF and OpenUSD worlds |
 | `scale/` | 100–1000 robot fleets |
 | `evaluation/` | Synthetic fleet scenarios and external policy/evaluator comparisons |

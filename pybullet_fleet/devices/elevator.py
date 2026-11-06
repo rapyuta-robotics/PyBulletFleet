@@ -20,6 +20,7 @@ from pybullet_fleet.agent import (  # noqa: F401 - Agent/AgentSpawnParams/IKPara
     validate_joint_motion_profile,
 )
 from pybullet_fleet.controller import Controller  # noqa: F401 - resolves inherited API type hints
+from pybullet_fleet.config_utils import config_get_bool
 from pybullet_fleet.controller_params import ControllerParams  # noqa: F401 - resolves inherited API type hints
 from pybullet_fleet.devices.elevator_state_machine import (
     ElevatorRequestPolicy,
@@ -63,6 +64,20 @@ class ElevatorParams(AgentSpawnParams):
             travel a trapezoid, which is what a real cabin does: 0.6 m at
             0.4 m/s takes 1.5 s flat and 1.9 s with 1.0 m/s^2 ramps.
         max_decel: Cabin deceleration.  Defaults to ``max_accel``.
+        report_platform_contacts: Report a body standing on the platform as
+            in collision with the elevator.  Off by default: a robot waiting
+            on the platform before departure, or left there on arrival, rests
+            on it, which is not a collision.  A body counts as standing on the
+            platform when it is over the platform's footprint and its lowest
+            point is not below the platform's mid-height; a body touching the
+            platform from below (the cabin coming down onto it) is still
+            reported.  Passengers attached for a ride are not affected: they
+            follow ``SimulationParams.ignore_attached_collision``.  The
+            rule leaves the body out of contact with the whole elevator, so
+            it only applies when the platform link is the elevator's one
+            collider: an elevator URDF with collider walls, a ceiling or
+            doors reports bodies on the platform as if this were on (and
+            logs a warning at spawn), so that driving into a wall is seen.
     """
 
     floors: Optional[Dict[str, float]] = None
@@ -74,6 +89,7 @@ class ElevatorParams(AgentSpawnParams):
     max_speed: Optional[float] = None
     max_accel: Optional[float] = None
     max_decel: Optional[float] = None
+    report_platform_contacts: bool = False
 
     def __post_init__(self):
         super().__post_init__()
@@ -90,7 +106,7 @@ class ElevatorParams(AgentSpawnParams):
 
         Delegates base-field parsing to ``AgentSpawnParams.from_dict``
         and adds elevator-specific fields (``floors``, ``initial_floor``,
-        ``joint_name``, ``platform_link``).
+        ``joint_name``, ``platform_link``, ...).
         """
         with _normal_2d_warning_already_given():  # cls(...) below warns about a deprecated collision mode
             base = AgentSpawnParams.from_dict(config)
@@ -106,6 +122,7 @@ class ElevatorParams(AgentSpawnParams):
             platform_link=config.get("platform_link", "platform"),
             request_policy=config.get("request_policy", ElevatorRequestPolicy.REJECT),
             boarding_height=float(config.get("boarding_height", 1.0)),
+            report_platform_contacts=config_get_bool(config, "report_platform_contacts", False),
         )
 
 
@@ -140,6 +157,7 @@ class Elevator(Agent):
         platform_link: platform
         request_policy: queue  # reject (default), replace_next, queue, or redirect
         boarding_height: 1.0  # metres above the platform that count as on board
+        report_platform_contacts: false  # bodies standing on the platform are not collisions
     """
 
     _spawn_params_cls = ElevatorParams
@@ -151,6 +169,7 @@ class Elevator(Agent):
     _platform_link: str
     # A class default, so an Elevator built without from_params still has one.
     _boarding_height: float = 1.0
+    _platform_link_index: Optional[int] = None
     _passengers: List["SimObject"]
     _state_machine: ElevatorStateMachine
 
@@ -183,6 +202,11 @@ class Elevator(Agent):
             agent._platform_link = spawn_params.platform_link
             agent._boarding_height = float(spawn_params.boarding_height)
             _warn_if_boarding_reaches_next_floor(agent._boarding_height, spawn_params.floors)
+            # Bodies standing on the platform are not collisions unless asked.
+            # The rule covers the whole elevator body (it is decided before the
+            # narrow phase, which has no link to go by), so it only holds when
+            # the platform is the elevator's one collider.
+            agent._filters_own_contacts = not spawn_params.report_platform_contacts and not agent._warn_other_colliders()
             agent._passengers = []  # Currently attached passengers
             if has_profile:
                 # Only the joint name is left to go wrong here, the values
@@ -366,7 +390,13 @@ class Elevator(Agent):
     # ------------------------------------------------------------------
 
     def _get_platform_link_index(self) -> int:
-        """Resolve the platform link name to a PyBullet link index."""
+        """Resolve the platform link name to a PyBullet link index (looked up once)."""
+        if self._platform_link_index is None:
+            self._platform_link_index = self._find_platform_link_index()
+        return self._platform_link_index
+
+    def _find_platform_link_index(self) -> int:
+        """Look the platform link up by name among the body's links."""
         num_joints = p.getNumJoints(self.body_id, physicsClientId=self._pid)
         for i in range(num_joints):
             info = p.getJointInfo(self.body_id, i, physicsClientId=self._pid)
@@ -376,6 +406,31 @@ class Elevator(Agent):
         logger.warning("Platform link '%s' not found, using link 0", self._platform_link)
         return 0
 
+    def _warn_other_colliders(self) -> bool:
+        """Whether the elevator has colliders besides its platform; if so, say so once.
+
+        Bodies standing on the platform are then reported as collisions, so
+        that contact with a cabin wall, ceiling or door is not hidden.
+        """
+        platform = self._get_platform_link_index()
+        others = []
+        for link in range(-1, p.getNumJoints(self.body_id, physicsClientId=self._pid)):
+            if link != platform and p.getCollisionShapeData(self.body_id, link, physicsClientId=self._pid):
+                name = (
+                    "base" if link == -1 else p.getJointInfo(self.body_id, link, physicsClientId=self._pid)[12].decode("utf-8")
+                )
+                others.append(name)
+        if not others:
+            return False
+        logger.warning(
+            "Elevator '%s' has colliders besides its platform link '%s' (%s): bodies standing on the "
+            "platform are reported as collisions with it, as with report_platform_contacts=True",
+            self.name,
+            self._platform_link,
+            ", ".join(others),
+        )
+        return True
+
     def _get_platform_aabb(self) -> tuple:
         """Get the AABB of the platform link.
 
@@ -384,6 +439,46 @@ class Elevator(Agent):
         """
         link_idx = self._get_platform_link_index()
         return p.getAABB(self.body_id, link_idx, physicsClientId=self._pid)
+
+    def _ignores_contact_with(self, other: "SimObject") -> bool:
+        """A body standing on the platform is not in collision with the elevator.
+
+        Standing on it: its base over the platform's footprint, and no link
+        below the platform's mid-height. The footprint is the base link's, as
+        for boarding: an arm beside the cabin reaching over the platform is not
+        standing on it, and its contact is reported. The height is every
+        link's, so a robot whose wheels (child links) sink through the platform
+        is reported too. A passenger (attached to the elevator) is left to the
+        attached-object rule. Only asked while ``report_platform_contacts`` is
+        off and the platform is the elevator's only collider: the rule covers
+        every link of the elevator.
+        """
+        if other._attachment_root() is self:
+            return False
+        core = self.sim_core
+        object_id = other.object_id
+        # Only the collision check asks, so the cache holds every link of
+        # ``other`` as of this step. Not cached (collision off, not initialised
+        # yet): its base link from PyBullet.
+        whole = core._cached_aabbs_dict.get(object_id)
+        if whole is not None and core._aabb_links.get(object_id) == ():
+            base = whole  # no child link with a collider: the cached box is the base's
+        else:
+            base = p.getAABB(other.body_id, physicsClientId=self._pid)
+            if whole is None:
+                whole = base
+        (b_min_x, b_min_y, _), (b_max_x, b_max_y, _) = base
+        lowest = whole[0][2]
+        (p_min_x, p_min_y, p_min_z), (p_max_x, p_max_y, p_max_z) = p.getAABB(
+            self.body_id, self._get_platform_link_index(), physicsClientId=self._pid
+        )
+        return (
+            lowest >= 0.5 * (p_min_z + p_max_z)
+            and b_min_x <= p_max_x
+            and b_max_x >= p_min_x
+            and b_min_y <= p_max_y
+            and b_max_y >= p_min_y
+        )
 
     def _find_objects_on_platform(self) -> List["SimObject"]:
         """Find sim_objects whose AABB overlaps the platform AABB.
@@ -412,6 +507,9 @@ class Elevator(Agent):
                 continue
             if obj.is_attached():
                 continue
+            # The base link's box, not the whole-body box the collision cache
+            # holds: boarding asks where the body stands. With every link, an
+            # arm beside the cabin reaching over the platform would be boarded.
             try:
                 obj_min, obj_max = p.getAABB(obj.body_id, physicsClientId=self._pid)
             except Exception:

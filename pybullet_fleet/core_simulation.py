@@ -622,6 +622,11 @@ class MultiRobotSimulationCore:
         self._cached_aabbs_dict: Dict[int, Tuple[Tuple[float, float, float], Tuple[float, float, float]]] = (
             {}
         )  # object_id -> AABB
+        # The links (-1 = base) whose boxes make up each body's AABB: those
+        # with a collision shape, read once from PyBullet. Empty for a body
+        # without child links (or without any collider): its AABB is one
+        # getAABB() call. An articulated body's is the union over these links.
+        self._aabb_links: Dict[int, Tuple[int, ...]] = {}
         # Pickable objects whose base origin lies outside their cached AABB,
         # with the largest per-axis distance from the origin to the box. Lets
         # a search by base origin (pickable_candidates_near) go through the
@@ -677,6 +682,10 @@ class MultiRobotSimulationCore:
         self._in_pre_step: bool = False
         self._resume_ready: bool = False  # Set only by a validated completed-step restore.
         self._pending_pose_ids: Set[int] = set()
+        # Kinematic objects whose links moved inside the step without a pose
+        # write (a joint): their AABB and grid cells are refreshed in Phase 3
+        # with the flushed poses. See notify_geometry_changed().
+        self._pending_geometry_ids: Set[int] = set()
         # Parent object ids that have link-level kinematic attachments.
         # Used to avoid scanning every flushed object in the hot path when no
         # link attachments exist.
@@ -2001,7 +2010,7 @@ class MultiRobotSimulationCore:
             to_sync = synced_ids & self._link_attachment_parent_ids
         return all_synced_ids
 
-    def _flush_aabb_and_grid(self, ids: Set[int]) -> None:
+    def _flush_aabb_and_grid(self, ids: Set[int], geometry_ids: Set[int] = frozenset()) -> None:
         """
         Two-phase step Phase 3: refresh AABB + spatial grid for buffered objects.
 
@@ -2014,17 +2023,103 @@ class MultiRobotSimulationCore:
             ids: Snapshot of object_ids to refresh (same set passed to
                 ``_flush_pending_poses``). Independent of ``_pending_pose_ids``
                 so the two flush helpers have no implicit ordering coupling.
+            geometry_ids: Objects whose links moved in the step
+                (``notify_geometry_changed``): refreshed too, kinematic or
+                ``STATIC``.
         """
+        if geometry_ids:
+            ids = ids | geometry_ids
         if not ids:
             return
         kinematic = self._kinematic_objects
         cell_size_set = self._cached_cell_size is not None
         for object_id in ids:
-            if object_id in kinematic:
+            if object_id in kinematic or object_id in geometry_ids:
                 # One grid update per object (the AABB update would do one too).
                 self._update_object_aabb(object_id, update_grid=False)
                 if cell_size_set:
                     self._update_object_spatial_grid(object_id)
+
+    def _body_aabb(self, obj: SimObject) -> Tuple[Sequence[float], Sequence[float]]:
+        """The AABB of every link of ``obj``'s body, as PyBullet has them now.
+
+        ``p.getAABB(body)`` alone is the base link's box. A body without child
+        links (a mobile robot box, a tile, a pallet) costs that one call; an
+        articulated body's box is the union of its link boxes, one call per
+        link. A link without a collision shape (an elevator shaft, a tool or
+        sensor frame) is a point at its frame for PyBullet and is left out:
+        nothing there can collide. The links are read from PyBullet once per
+        object.
+        """
+        body_id = obj.body_id
+        client = self._client
+        links = self._aabb_links.get(obj.object_id)
+        if links is None:
+            links = self._collider_links(body_id)
+            self._aabb_links[obj.object_id] = links
+        if not links:
+            return p.getAABB(body_id, physicsClientId=client)
+        (x0, y0, z0), (x1, y1, z1) = p.getAABB(body_id, links[0], physicsClientId=client)
+        for link in links[1:]:
+            (a0, b0, c0), (a1, b1, c1) = p.getAABB(body_id, link, physicsClientId=client)
+            if a0 < x0:
+                x0 = a0
+            if b0 < y0:
+                y0 = b0
+            if c0 < z0:
+                z0 = c0
+            if a1 > x1:
+                x1 = a1
+            if b1 > y1:
+                y1 = b1
+            if c1 > z1:
+                z1 = c1
+        return (x0, y0, z0), (x1, y1, z1)
+
+    def _collider_links(self, body_id: int) -> Tuple[int, ...]:
+        """The links (-1 = base) of ``body_id`` that have a collision shape, for ``_body_aabb``.
+
+        Empty when the body has no child links, or no link with a collider:
+        its AABB is then the base link's, one ``getAABB()`` call, as before.
+        """
+        client = self._client
+        num_links = p.getNumJoints(body_id, physicsClientId=client)
+        if not num_links:
+            return ()
+        links = tuple(link for link in range(-1, num_links) if p.getCollisionShapeData(body_id, link, physicsClientId=client))
+        return links if links != (-1,) else ()
+
+    def notify_geometry_changed(self, obj: SimObject) -> None:
+        """Tell the simulation that ``obj``'s links moved without its base pose being set.
+
+        A joint moved by :meth:`Agent.set_joint_position`, by the joint
+        interpolation of a kinematic agent or by restoring a checkpoint calls
+        this already. Call it after moving a body's joints directly through
+        PyBullet (``p.resetJointState``).
+
+        The body counts as moved for the next collision check, and its
+        broadphase AABB (the union of its link boxes) and spatial-hash cells
+        follow the links. Outside a step that happens at once. Inside a step
+        a kinematic or ``STATIC`` body is refreshed with the flushed poses
+        before the collision check; a physics body is re-read after
+        ``stepSimulation()`` anyway.
+
+        Args:
+            obj: The object whose links moved.
+        """
+        object_id = obj.object_id
+        if object_id not in self._sim_objects_dict:
+            return
+        self._moved_this_step.add(object_id)
+        if object_id not in self._cached_aabbs_dict:
+            # Collision DISABLED (no cached box) or not yet initialised: the
+            # box is read from PyBullet when it is needed.
+            return
+        if self._in_step:
+            if object_id not in self._physics_objects:
+                self._pending_geometry_ids.add(object_id)
+            return
+        self._update_object_aabb(object_id)
 
     def _update_object_aabb(self, object_id: int, update_grid: bool = True) -> None:
         """
@@ -2044,7 +2139,14 @@ class MultiRobotSimulationCore:
             return
 
         try:
-            aabb = p.getAABB(obj.body_id, physicsClientId=self._client)
+            if self._aabb_links.get(object_id) == ():
+                # Hot path, one getAABB() call (no child links): _body_aabb() inlined
+                # on purpose, to save a method call for every moved object every
+                # step. Both read the same _aabb_links entry, so the two cannot
+                # disagree.
+                aabb = p.getAABB(obj.body_id, physicsClientId=self._client)
+            else:
+                aabb = self._body_aabb(obj)
             self._cached_aabbs_dict[object_id] = aabb
             self._record_origin_gap(obj, aabb)
             logger.debug(f"Updated AABB for object {object_id}")
@@ -2174,6 +2276,12 @@ class MultiRobotSimulationCore:
         # Every object on one attachment tree -- an agent, its loads, a load's
         # loads -- belongs to one body: no contact among them is a collision.
         if self._params.ignore_attached_collision and obj_a._attachment_root() is obj_b._attachment_root():
+            return True
+        # An object's own rule for its contacts (an elevator ignores the
+        # bodies standing on its platform).
+        if obj_a._filters_own_contacts and obj_a._ignores_contact_with(obj_b):
+            return True
+        if obj_b._filters_own_contacts and obj_b._ignores_contact_with(obj_a):
             return True
         return self._collision_ignore_filter is not None and bool(self._collision_ignore_filter(obj_a, obj_b))
 
@@ -2848,6 +2956,8 @@ class MultiRobotSimulationCore:
         self._static_collision_objects.discard(obj_id)
         self._disabled_collision_objects.discard(obj_id)
         self._origin_gaps.pop(obj_id, None)
+        self._aabb_links.pop(obj_id, None)
+        self._pending_geometry_ids.discard(obj_id)
 
         # Remove from collision mode cache
         self._cached_collision_modes.pop(obj_id, None)
@@ -3364,6 +3474,9 @@ class MultiRobotSimulationCore:
         callback or a controller), a written pose is buffered and reaches
         PyBullet only when the step flushes it: until then such an object is
         tested against the AABB of the pose it had when the step began.
+        Joints are not buffered: an object whose links moved in the step
+        (``notify_geometry_changed``) is tested against its links as they
+        are now, at the base pose PyBullet holds.
 
         Args:
             aabb_min: ``(x, y, z)`` lower corner of the box, world frame.
@@ -3387,6 +3500,8 @@ class MultiRobotSimulationCore:
         objects = self._sim_objects_dict
         cached = self._cached_aabbs_dict
         stale = self._pending_pose_ids
+        if self._pending_geometry_ids:
+            stale = stale | self._pending_geometry_ids
         candidate_ids: Iterable[int] = objects.keys()
         if self._cached_cell_size is not None:
             x_range = range(self._coord_to_cell(lo[0]), self._coord_to_cell(hi[0]) + 1)
@@ -3412,7 +3527,7 @@ class MultiRobotSimulationCore:
             box = cached.get(object_id)
             if box is None or object_id in stale:
                 try:
-                    box = p.getAABB(obj.body_id, physicsClientId=self._client)
+                    box = self._body_aabb(obj)
                 except p.error:
                     continue
             if overlaps(box):
@@ -3458,8 +3573,8 @@ class MultiRobotSimulationCore:
         return list(found.values())
 
     def get_aabbs(self) -> List[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]:
-        """Get AABBs for all simulation objects."""
-        return [p.getAABB(obj.body_id, physicsClientId=self._client) for obj in self._sim_objects]
+        """Get the AABB of every simulation object, each covering all of the body's links."""
+        return [self._body_aabb(obj) for obj in self._sim_objects]
 
     def filter_aabb_pairs(
         self, ignore_static: Optional[bool] = None, moved_objects: Optional[Set[int]] = None, return_profiling: bool = False
@@ -3534,7 +3649,7 @@ class MultiRobotSimulationCore:
                 p.performCollisionDetection(physicsClientId=self._client)
             logger.debug(f"Full AABB rebuild for {len(self._sim_objects)} objects")
             for obj in self._sim_objects:
-                aabb = p.getAABB(obj.body_id, physicsClientId=self._client)
+                aabb = self._body_aabb(obj)
                 self._cached_aabbs_dict[obj.object_id] = aabb
                 self._record_origin_gap(obj, aabb)
             # Mark cache as valid after update
@@ -4325,6 +4440,8 @@ class MultiRobotSimulationCore:
         self._dynamic_collision_objects.clear()
         self._cached_collision_modes.clear()
         self._cached_aabbs_dict.clear()
+        self._aabb_links.clear()
+        self._pending_geometry_ids.clear()
         self._origin_gaps.clear()
         self._cached_spatial_grid.clear()
         self._cached_object_to_cell.clear()
@@ -5242,7 +5359,10 @@ class MultiRobotSimulationCore:
             # so the two flush helpers can be reordered or invoked independently if needed.
             if measure_timing:
                 t_phase3 = time.perf_counter()
-            self._flush_aabb_and_grid(flushed_ids)
+            geometry_ids = self._pending_geometry_ids
+            if geometry_ids:
+                self._pending_geometry_ids = set()
+            self._flush_aabb_and_grid(flushed_ids, geometry_ids)
             if measure_timing:
                 self._profiling_stats["phase3_aabb_grid_flush"][-1] = (time.perf_counter() - t_phase3) * 1000
 

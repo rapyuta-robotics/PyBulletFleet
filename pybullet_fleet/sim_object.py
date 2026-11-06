@@ -387,6 +387,12 @@ class SimObject:
     # Subclasses override to True for per-step update() calls in step_once().
     _needs_update: bool = False
 
+    # True on an object that excludes some of its own contacts from collision
+    # results through _ignores_contact_with() (an elevator and the bodies
+    # standing on its platform). A plain flag, so every other pair pays one
+    # attribute read in the collision check.
+    _filters_own_contacts: bool = False
+
     # Class-level shared shapes cache (for optimization)
     _shared_shapes: Dict[str, Tuple[int, int]] = {}
 
@@ -565,6 +571,15 @@ class SimObject:
             obj = obj._attached_to
             seen.add(id(obj))
         return obj
+
+    def _ignores_contact_with(self, other: "SimObject") -> bool:
+        """Whether a contact between this object and ``other`` is not a collision.
+
+        Asked by the collision check only when ``_filters_own_contacts`` is
+        set, for every broad-phase candidate pair and active pair involving
+        this object; keep it cheap. ``False`` here.
+        """
+        return False
 
     def set_name(self, name: Optional[str]) -> None:
         """

@@ -9,24 +9,11 @@ up far from its cause: an attach that silently returns False.
 
 import pytest
 
-from pybullet_fleet import Agent, AgentSpawnParams, MultiRobotSimulationCore, SimulationParams
+from pybullet_fleet import Agent, AgentSpawnParams
 from pybullet_fleet.geometry import Pose
 from pybullet_fleet.sim_object import ShapeParams
 
 URDF = "cube_small.urdf"
-
-
-@pytest.fixture
-def sim_core():
-    import pybullet as p
-
-    sim = MultiRobotSimulationCore(SimulationParams(gui=False, monitor=False, enable_monitor_gui=False))
-    sim.initialize_simulation()
-    yield sim
-    try:
-        p.disconnect(sim.client)
-    except p.error:
-        pass
 
 
 class TestAgentPickable:

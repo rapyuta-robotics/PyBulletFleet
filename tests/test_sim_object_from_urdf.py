@@ -6,26 +6,14 @@ had to be created as an ``Agent`` and then visited by the per-step update
 loop for the life of the process.
 """
 
-import pybullet as p
 import pytest
 
-from pybullet_fleet import Agent, AgentSpawnParams, MultiRobotSimulationCore, SimulationParams
+from pybullet_fleet import Agent, AgentSpawnParams
 from pybullet_fleet.geometry import Pose
 from pybullet_fleet.sim_object import ShapeParams, SimObject, SimObjectSpawnParams
 from pybullet_fleet.types import CollisionMode
 
 URDF = "cube_small.urdf"  # ships with pybullet_data
-
-
-@pytest.fixture
-def sim_core():
-    sim = MultiRobotSimulationCore(SimulationParams(gui=False, monitor=False, enable_monitor_gui=False))
-    sim.initialize_simulation()
-    yield sim
-    try:
-        p.disconnect(sim.client)
-    except p.error:
-        pass
 
 
 class TestFromUrdf:

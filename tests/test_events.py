@@ -8,7 +8,7 @@ import pybullet_data
 import pytest
 
 from pybullet_fleet.events import EventBus, SimEvents
-from pybullet_fleet import MultiRobotSimulationCore, SimulationParams, Agent, AgentSpawnParams, Pose
+from pybullet_fleet import Agent, AgentSpawnParams, Pose
 from pybullet_fleet.sim_object import SimObject, ShapeParams
 from pybullet_fleet.types import MotionMode, CollisionMode
 
@@ -208,18 +208,6 @@ class TestPerEntityEventBus:
 
 
 # === core_simulation integration tests ===
-
-
-@pytest.fixture
-def sim_core():
-    """Headless sim_core for integration tests."""
-    sim = MultiRobotSimulationCore(SimulationParams(gui=False, monitor=False))
-    sim.initialize_simulation()
-    yield sim
-    try:
-        p.disconnect(sim.client)
-    except p.error:
-        pass
 
 
 class TestGlobalEventBus:

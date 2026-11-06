@@ -65,6 +65,21 @@ are not recommended for production use yet.
   a list for every joint or a dict by name or index, as `set_joints_targets`
   does. Attached objects follow once, after all of them are placed.
 
+- `MultiRobotSimulationCore.notify_geometry_changed(obj)`: tell the simulation
+  that a body's links moved without its base pose being set, after moving its
+  joints directly with `p.resetJointState()`. The body counts as moved for the
+  next collision check, and its broadphase AABB (which covers every link) and
+  spatial-hash cells follow the links: at once outside a step, and before the
+  collision check when called inside one (from a step callback, for example).
+  `Agent.set_joint_position()`, `set_joints_positions()` and kinematic joint
+  motion call it already.
+- `examples/arm/link_collision_demo.py`: collision of an articulated body's
+  links, not only its base -- a fixed arm sweeping through a box outside its
+  base, a mobile manipulator whose arm hits a pillar its base clears, and a
+  joint reset by hand followed by `notify_geometry_changed`. It checks that
+  each obstacle was hit by a link and never by a base, and runs headless
+  (`--no-gui`) as a test.
+
 - `Elevator.request_floor(floor, instant=True)`: the cabin is at the floor at
   once with its passengers aboard, instead of riding there; the next update
   observes the arrival and releases them as after any trip. Accepted also
@@ -86,6 +101,12 @@ are not recommended for production use yet.
   floors 0.6 m apart, a robot waiting on the floor above the cabin was taken
   along and arrived 0.6 m above the floor it was carried to. `Elevator.from_params`
   warns when it reaches the smallest floor spacing.
+
+- `ElevatorParams.report_platform_contacts` (default `false`; YAML
+  `report_platform_contacts`, a boolean or `"true"` / `"false"`): report a
+  body standing on the elevator's platform as a collision with the elevator.
+  Off by default, so a robot waiting on the platform is not a collision (see
+  the articulated-AABB entry under Fixed for when the rule applies).
 
 - `ControllerParams.stop_on_collision`: an agent that sets it stops dead, as
   `stop()` does, on the step a collision starts that involves it or an object
@@ -595,6 +616,44 @@ are not recommended for production use yet.
   deprecation, and the design plans under `docs/design/` are left as written.
 
 ### Fixed
+
+- The collision broadphase AABB of an articulated body covers all of its
+  links, not only the base link (issue #68). `p.getAABB(body)` returns the base
+  link's box, so a child link touching another object (an arm's wrist, a
+  wheel below a mobile base) never reached the narrow phase, and `query_aabb()`
+  could not find a body by its upper links. The cached box is now the union of
+  the boxes of the links that have a collision shape (a link without one, such
+  as the elevator's `shaft` base, is a point at its frame for PyBullet and is
+  left out), and it follows the joints: `Agent.set_joint_position()`,
+  `set_joints_positions()`, kinematic joint interpolation and a joint
+  checkpoint restore refresh it (at once outside a step, before the collision
+  check inside one) and mark the body moved; physics bodies are re-read after
+  every `stepSimulation()` as before. For joints moved directly with
+  `p.resetJointState()`, call `notify_geometry_changed(obj)` (see Added).
+  A body without child links still costs one `getAABB()` call per update:
+  refreshing the AABB and grid cells of 1,000 single-link agents took 2.48 ms
+  before and 2.55 ms after. An articulated body costs one call per link: one
+  AABB and grid refresh went from 2.6 to 4.6 µs for the bundled `mobile_robot`
+  and `arm_robot` (4 joints each) and from 2.6 to 6.0 µs for a 7-joint
+  `kuka_iiwa`. Scenes of articulated robots also get larger boxes, so more
+  broadphase candidates, and now find the contacts of their child links: with
+  1,000 `mobile_robot` agents in a 40 m square, about 10% more pairs were in
+  collision, the AABB refresh took 11.1 ms instead of 7.8 ms per step and the
+  collision check 69.6 ms instead of 62.4 ms.
+  An elevator's box now includes its platform, so a robot resting on the
+  platform (waiting before departure, or after arrival) would be in
+  collision with the elevator; the elevator leaves such pairs out, as before.
+  `ElevatorParams.report_platform_contacts` (see Added) reports them.
+  The rule applies only when the platform is the elevator's one collider:
+  an elevator URDF with other collider links (walls, a ceiling, doors)
+  reports bodies on the platform and logs a warning at spawn.
+  A body touching the platform from below is reported either way, and
+  passengers attached for a ride follow `ignore_attached_collision`.
+
+- `auto_detect_profile(body_id)` puts every movable joint back at the
+  position and velocity it had before probing the arm reach, also when
+  probing raises partway. It set them all to zero, which changed the pose of
+  a live body and left an agent's joint state and cached AABB out of date.
 
 - An active `CLOSEST_POINTS` (or kinematic `HYBRID`) pair with a `NORMAL_2D`
   body now resolves once the bodies no longer overlap in z, as a pair in that

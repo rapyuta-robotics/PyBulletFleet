@@ -65,6 +65,9 @@ class MockSimCore:
     def _mark_object_moved(self, object_id):
         pass
 
+    def notify_geometry_changed(self, obj):
+        pass
+
     def _register_link_attachment_parent(self, object_id: int) -> None:
         self._link_attachment_parent_ids.add(object_id)
 
@@ -184,3 +187,33 @@ def arm_sim(request, pybullet_env):
     if request.param == "kinematic":
         return sc, 0.0
     return sc, None
+
+
+@pytest.fixture
+def sim_core_params():
+    """``SimulationParams`` overrides for :func:`sim_core`.
+
+    Override this fixture in a module or class to change the timestep or any
+    other parameter, e.g. ``return {"timestep": 0.02}``.
+    """
+    return {}
+
+
+@pytest.fixture
+def sim_core(sim_core_params):
+    """Headless, initialised ``MultiRobotSimulationCore`` with physics off.
+
+    The PyBullet client is disconnected on teardown.  Modules that need a
+    different simulation override :func:`sim_core_params`, or ``sim_core``
+    itself.
+    """
+    from pybullet_fleet import MultiRobotSimulationCore, SimulationParams
+
+    params = {"gui": False, "physics": False, "monitor": False, "enable_monitor_gui": False, **sim_core_params}
+    sim = MultiRobotSimulationCore(SimulationParams(**params))
+    sim.initialize_simulation()
+    yield sim
+    try:
+        p.disconnect(sim.client)
+    except p.error:
+        pass

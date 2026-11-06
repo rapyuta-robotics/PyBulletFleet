@@ -10,7 +10,7 @@ regardless, raising AttributeError as soon as either controller was attached.
 
 import pytest
 
-from pybullet_fleet import Agent, AgentManager, AgentSpawnParams, MultiRobotSimulationCore, SimulationParams
+from pybullet_fleet import Agent, AgentManager, AgentSpawnParams
 from pybullet_fleet.geometry import Pose
 from pybullet_fleet.sim_object import ShapeParams, SimObject, SimObjectSpawnParams
 
@@ -24,19 +24,6 @@ OBJECT_DEF = {
     "collision_shape": {"shape_type": "box", "half_extents": [0.3, 0.3, 0.1]},
     "pose": [3, 0, 0.1],
 }
-
-
-@pytest.fixture
-def sim_core():
-    import pybullet as p
-
-    sim = MultiRobotSimulationCore(SimulationParams(gui=False, monitor=False, enable_monitor_gui=False))
-    sim.initialize_simulation()
-    yield sim
-    try:
-        p.disconnect(sim.client)
-    except p.error:
-        pass
 
 
 def _sim_object(sim_core, name):
