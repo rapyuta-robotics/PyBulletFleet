@@ -335,6 +335,35 @@ sparse の目標 2.0 ms (50x) まで残り 0.2 ms。残る内訳は phase1 1.3 (
 
 ### P3. batch controller の store 直結と Agent 更新のイベント駆動化
 
+**実装済み (2026-11-07、ブランチ `perf/p1-collision-store`、P2 の上): #87 に依らない前半。** step の per-object
+ループは、`update()` を持つオブジェクト (Agent、Device) のリストを core が add / remove で保守し、それだけを
+回す (倉庫型シーンの 33k 静的ボディを毎ステップ見なくなった)。batch 管理下で自分の仕事がない Agent (アクション
+なし、動いている関節なし、アタッチなし、プラグインなし、エンティティイベントなし) は `update()` の先頭で
+返る。Agent の速度と yaw rate は store の列 (`lin_vel` / `ang_vel`) で、`_current_velocity` は行のビュー、
+`_current_angular_velocity` は 1 要素ビューのプロパティにし、batch controller は動いた行の速度を配列で書く
+(per-agent のコピーループを削除)。`set_poses()` は行を配列で解決し、per-object 経路が要る行は store の列
+(`kinematic`、`per_object_pose`) のマスクで決める。Phase 3 の AABB flush も id のループをやめた。
+テスト `tests/test_update_loop.py` 6 件、parity 11 シーン同一、フルスイート 3126 passed。
+
+同一セッションで 2 周交互に測った結果 (before は P2 後 `c9b4488`):
+
+| シーン | P2 後 | P3 前半後 | phase1 | AABB flush |
+|---|---|---|---|---|
+| sparse 1000 | 2.2 ms (45x) | 1.19 ms (84x) | 1.24 → 0.50 ms | 0.31 → 0.14 ms |
+| dense 1000 | 2.2 ms (46x) | 1.25 ms (80x) | 1.23 → 0.49 ms | 0.28 → 0.13 ms |
+| carrying 1000 | 3.9 ms (25x) | 2.8 ms (36x) | 2.0 → 1.3 ms | 0.65 → 0.32 ms |
+| warehouse 200 + 33k | 1.6 ms | 0.52 ms | 1.12 → 0.17 ms | 0.11 → 0.05 ms |
+| idle 1000 | 0.45 ms (231x) | 0.17 ms (585x) | 0.41 → 0.14 ms | |
+
+**1000 台・疎シナリオの目標 (2.0 ms、50x) に到達した** (ベースライン `2e2a86a` の 9.6 ms から 8 分の 1)。
+sparse の残り 1.19 ms は phase1 0.50 (batch advance 約 0.3、`set_poses` 0.15、イベント)、collision 0.47
+(narrow phase の Python ループ、active ペアの再判定、`_moved_this_step` の set 操作)、AABB flush 0.14。
+carrying の残り 2.8 ms は phase1 1.3 (子 1000 体ぶんの行の計算と pending / moved の set 更新) と
+collision 1.07 (親子ペアの除外は `_is_ignored_collision` の per-pair Python)。
+**残り (#87 待ち):** 到着イベント (`MoveAction` の毎ステップ `execute()` ポーリングをやめる)、
+`MoveAction` 経由で全台を動かす構成でも同じ値になること、関節補間の `joint_target_pending`、
+`AgentPlugin.on_batch_update` と `BatteryPlugin` の配列化、`FleetStateProvider` の一括読み出し。
+
 現状の phase1 (5.4-6.0 ms) の内訳 (`6551125`、1000 台 diff、batch): batch カーネル本体 0.27 ms、
 `_apply_phase1` 3.85 ms (うち `set_poses` 3.2 ms、per-agent の速度コピーループ
 [batch_base.py#L474](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/pybullet_fleet/controllers/batch_base.py#L474)
