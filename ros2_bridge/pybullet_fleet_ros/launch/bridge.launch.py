@@ -19,7 +19,7 @@ def _launch_setup(context: LaunchContext):
     if target_rtf:
         params["target_rtf"] = float(target_rtf)
 
-    return [
+    nodes = [
         Node(
             package="pybullet_fleet_ros",
             executable="bridge_node",
@@ -28,6 +28,24 @@ def _launch_setup(context: LaunchContext):
             output="screen",
         ),
     ]
+    state_publisher = context.launch_configurations.get("state_publisher", "")
+    if state_publisher.lower() in ("true", "1", "yes"):
+        # Reads the bridge's shared-memory state plane (state_plane.enabled in the
+        # config) and publishes /clock and /fleet/states from another process.
+        publisher_params = {
+            "plane_name": context.launch_configurations.get("plane_name", "pbf_state") or "pbf_state",
+            "mode": context.launch_configurations.get("plane_mode", "every_step") or "every_step",
+        }
+        nodes.append(
+            Node(
+                package="pybullet_fleet_ros",
+                executable="state_publisher",
+                name="pybullet_fleet_state_publisher",
+                parameters=[publisher_params],
+                output="screen",
+            )
+        )
+    return nodes
 
 
 def generate_launch_description():
@@ -41,6 +59,13 @@ def generate_launch_description():
                 description="Show the tkinter monitor window. Empty = follow gui (hidden when gui:=false).",
             ),
             DeclareLaunchArgument("target_rtf", default_value=""),
+            DeclareLaunchArgument(
+                "state_publisher",
+                default_value="",
+                description="Also start the state_publisher node; the config needs state_plane.enabled: true.",
+            ),
+            DeclareLaunchArgument("plane_name", default_value="pbf_state"),
+            DeclareLaunchArgument("plane_mode", default_value="every_step"),
             OpaqueFunction(function=_launch_setup),
         ]
     )

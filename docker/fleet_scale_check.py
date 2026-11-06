@@ -19,6 +19,7 @@ from rosgraph_msgs.msg import Clock
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from simulation_interfaces.srv import GetEntitiesStates
 
+from fleet_scale_config import moving_workload_direction
 from ros_check_utils import RosCheckNode
 
 try:
@@ -75,6 +76,9 @@ class FleetScaleClient(RosCheckNode):
         super().__init__("pybullet_fleet_scale_check")
         self.names: set[str] = set()
         self.positions: dict[str, tuple[float, float]] = {}
+        self.moving_count = 0
+        self._record_moving = False
+        self._moving_samples: list[tuple[int, int]] = []
         self._clock_samples: list[tuple[float, float]] = []
         self._latest_sim_time: float | None = None
         self._state_endpoints = tuple(state_endpoints)
@@ -125,8 +129,13 @@ class FleetScaleClient(RosCheckNode):
         # keep pose caching scoped to the primary endpoint rather than adding
         # every manager stream's client-side bookkeeping to the measurement.
         if endpoint == self._state_endpoints[0]:
+            moving = 0
             for robot in msg.robots:
                 self.positions[robot.name] = (robot.pose.position.x, robot.pose.position.y)
+                moving += robot.is_moving
+            self.moving_count = moving
+            if self._record_moving:
+                self._moving_samples.append((moving, len(msg.robots)))
         stamp_key = _time_msg_key(msg.header.stamp)
         metrics = self._state_metrics[endpoint]
         metrics.receives_by_stamp[stamp_key] = receive_wall_ns
@@ -284,8 +293,13 @@ class FleetScaleClient(RosCheckNode):
             self.spin_for(warmup)
 
         self._clock_samples.clear()
+        self._moving_samples.clear()
+        self._record_moving = True
         start_wall = time.perf_counter()
-        self.spin_for(duration)
+        try:
+            self.spin_for(duration)
+        finally:
+            self._record_moving = False
         end_wall = time.perf_counter()
 
         if len(self._clock_samples) < 2:
@@ -298,6 +312,10 @@ class FleetScaleClient(RosCheckNode):
         if sim_delta <= 0.0:
             raise RuntimeError(f"/clock did not advance during RTF measurement: sim_delta={sim_delta:.6f}s")
         return sim_delta / wall_delta, sim_delta, wall_delta
+
+    def moving_fractions(self) -> list[float]:
+        """Fraction of robots reported moving, per FleetState received in the last RTF window."""
+        return [moving / total for moving, total in self._moving_samples if total]
 
 
 def _robot_name(index: int) -> str:
@@ -627,14 +645,80 @@ def _check_per_robot_goal_pose_topics(
     return 0
 
 
-def _measure_rtf(node: FleetScaleClient, warmup: float, duration: float, timeout: float) -> int:
-    print(f"Measuring /clock RTF for {duration:.1f}s after {warmup:.1f}s warmup...")
+def _start_moving_workload(node: FleetScaleClient, robot_count: int, distance: float, timeout: float) -> int:
+    """Send every robot a goal far enough away that it keeps moving through the RTF window."""
+    expected = _wait_for_fleet_state(node, robot_count, timeout)
+    if expected is None:
+        return 1
+    goals = []
+    for index in range(robot_count):
+        name = _robot_name(index)
+        x, y = node.positions[name]
+        goals.append(
+            RobotGoal2D(
+                name=name,
+                position=[x + moving_workload_direction(index, robot_count) * distance, y],
+                yaw=0.0,
+                z=0.05,
+            )
+        )
+    # A robot still travelling to an earlier goal only takes a goal along its
+    # line of motion, so let the fleet come to rest before turning rows around.
+    if not node.spin_until(lambda: node.moving_count == 0, timeout):
+        print(f"FAIL: {node.moving_count} robots still moving before the moving workload")
+        return 1
+    response = node.call_navigate(goals, timeout)
+    accepted = set(response.ack.accepted_names)
+    if accepted != expected or response.ack.rejected_names:
+        print(
+            "FAIL: moving workload /fleet/navigate ack mismatch "
+            f"accepted={len(accepted)}, rejected={list(response.ack.rejected_names)[:10]}"
+        )
+        return 1
+    start = time.perf_counter()
+    if not node.spin_until(lambda: node.moving_count >= robot_count, timeout):
+        print(f"FAIL: only {node.moving_count}/{robot_count} robots reported moving within {timeout:.1f}s")
+        return 1
+    print(
+        f"PASS: moving workload started, {robot_count} robots moving {distance:.0f} m "
+        f"(all moving after {time.perf_counter() - start:.3f}s)"
+    )
+    return 0
+
+
+def _measure_rtf(
+    node: FleetScaleClient,
+    warmup: float,
+    duration: float,
+    timeout: float,
+    *,
+    workload: str = "idle",
+    min_moving_fraction: float = 0.0,
+) -> int:
+    print(f"Measuring /clock RTF for {duration:.1f}s after {warmup:.1f}s warmup ({workload} workload)...")
     try:
         rtf, sim_delta, wall_delta = node.measure_rtf(warmup=warmup, duration=duration, timeout=timeout)
     except RuntimeError as exc:
         print(f"FAIL: {exc}")
         return 1
-    print(f"PASS: max RTF {rtf:.2f}x (sim={sim_delta:.3f}s, wall={wall_delta:.3f}s)")
+    if workload == "moving":
+        fractions = node.moving_fractions()
+        if not fractions:
+            print("FAIL: no /fleet/states received during the RTF window")
+            return 1
+        lowest = min(fractions)
+        mean = sum(fractions) / len(fractions)
+        print(
+            f"Moving robots during the RTF window: mean {mean:.1%}, min {lowest:.1%} "
+            f"over {len(fractions)} FleetState messages"
+        )
+        if lowest < min_moving_fraction:
+            print(
+                f"FAIL: moving fraction fell to {lowest:.1%} (< {min_moving_fraction:.0%}); "
+                "raise --moving-distance or shorten --rtf-duration"
+            )
+            return 1
+    print(f"PASS: max RTF {rtf:.2f}x (sim={sim_delta:.3f}s, wall={wall_delta:.3f}s, {workload} workload)")
     return 0
 
 
@@ -742,6 +826,27 @@ def main() -> int:
         default=10.0,
         help="Wall seconds to collect FleetState transport samples",
     )
+    parser.add_argument(
+        "--rtf-workload",
+        choices=["idle", "moving"],
+        default="idle",
+        help=(
+            "Workload during the RTF window: idle (robots at rest) or moving (every robot is sent a goal "
+            "--moving-distance away through /fleet/navigate just before the window)"
+        ),
+    )
+    parser.add_argument(
+        "--moving-distance",
+        type=float,
+        default=500.0,
+        help="Metres each robot travels in the moving workload; must outlast --rtf-duration at the measured RTF",
+    )
+    parser.add_argument(
+        "--min-moving-fraction",
+        type=float,
+        default=0.95,
+        help="Fail the moving workload when the moving fraction in any FleetState of the window is below this",
+    )
     parser.add_argument("--rtf-warmup", type=float, default=1.0, help="Wall seconds to spin before RTF measurement")
     parser.add_argument("--rtf-duration", type=float, default=10.0, help="Wall seconds to measure observed /clock RTF")
     parser.add_argument(
@@ -785,6 +890,15 @@ def main() -> int:
         parser.error("--manager-count must be between 0 and --robots")
     if args.manager_count and args.command_interface != "none":
         parser.error("manager scale scenarios currently measure state streams only; use --command-interface none")
+    if args.rtf_workload == "moving":
+        if not args.measure_rtf:
+            parser.error("--rtf-workload moving requires --measure-rtf")
+        if args.interface_mode not in {"fleet", "hybrid"} or args.manager_count:
+            parser.error("--rtf-workload moving requires the /fleet/navigate service (--interface-mode fleet or hybrid)")
+        if args.no_state_subscription:
+            parser.error("--rtf-workload moving needs /fleet/states to confirm that the robots move")
+        if args.moving_distance <= 0.0:
+            parser.error("--moving-distance must be positive")
     if args.fleet_service_repeats < 1:
         parser.error("--fleet-service-repeats must be at least 1")
     if args.fleet_topic_repeats < 1:
@@ -875,7 +989,18 @@ def main() -> int:
             if rc != 0:
                 return rc
         if args.measure_rtf:
-            rc = _measure_rtf(node, args.rtf_warmup, args.rtf_duration, args.timeout)
+            if args.rtf_workload == "moving":
+                rc = _start_moving_workload(node, args.robots, args.moving_distance, args.timeout)
+                if rc != 0:
+                    return rc
+            rc = _measure_rtf(
+                node,
+                args.rtf_warmup,
+                args.rtf_duration,
+                args.timeout,
+                workload=args.rtf_workload,
+                min_moving_fraction=args.min_moving_fraction,
+            )
             if rc != 0:
                 return rc
         if args.measure_transport:

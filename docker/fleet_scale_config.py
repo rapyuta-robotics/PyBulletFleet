@@ -43,6 +43,17 @@ def _parse_groups(raw: str) -> set[str]:
     return groups
 
 
+def moving_workload_direction(index: int, robot_count: int) -> float:
+    """Sign of the x travel of robot ``index`` in the moving RTF workload.
+
+    Rows of the spawn grid alternate direction, so every robot keeps moving
+    for the whole measurement while neighbouring rows pass each other and the
+    collision broad phase sees a changing set of candidate pairs.
+    """
+    side = int(math.ceil(math.sqrt(robot_count)))
+    return -1.0 if (index // side) % 2 else 1.0
+
+
 def _default_template() -> Path:
     for path in DEFAULT_TEMPLATE_CANDIDATES:
         if path.exists():
@@ -75,6 +86,7 @@ def generate_bridge_config(
     manager_count: int,
     enable_time_profiling: bool,
     profiling_interval: int,
+    state_plane: str | None = None,
 ) -> None:
     side = int(math.ceil(math.sqrt(robot_count)))
     fleet_enabled = interface_mode in {"fleet", "hybrid"}
@@ -101,6 +113,10 @@ def generate_bridge_config(
         "transport_probe": fleet_enabled and manager_count == 0 and transport_probe,
         "state_qos": state_qos,
     }
+    if state_plane:
+        # The bridge writes the fleet state to shared memory; the state_publisher
+        # process (started by test_fleet_scale.sh) publishes /clock and /fleet/states.
+        config["state_plane"] = {"enabled": True, "name": "pbf_state", "mode": state_plane}
     config["per_robot_api"] = {
         "enabled": per_robot_enabled,
         "state_publishers": per_robot_enabled and "state_publishers" in per_robot_groups,
@@ -247,6 +263,12 @@ def main() -> int:
     )
     parser.add_argument("--transport-probe", action="store_true", help="Enable the isolated ROS transport timing probe")
     parser.add_argument(
+        "--state-plane",
+        choices=["every_step", "latest"],
+        default=None,
+        help="Publish /fleet/states and /clock from the state_publisher process through shared memory, in this mode",
+    )
+    parser.add_argument(
         "--enable-time-profiling",
         action="store_true",
         help="Enable core per-step profiling in the generated bridge configuration",
@@ -307,6 +329,7 @@ def main() -> int:
         manager_count=args.manager_count,
         enable_time_profiling=args.enable_time_profiling,
         profiling_interval=args.profiling_interval,
+        state_plane=args.state_plane,
     )
     print(f"[config] wrote generated bridge config: {args.config_out} (template={template_path})")
     return 0

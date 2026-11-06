@@ -109,6 +109,35 @@ are not recommended for production use yet.
   before. A margin change, through the setter or `params`, rechecks
   stationary pairs as a scalar change does.
 
+- `docker/test_fleet_scale.sh --rtf-workload moving` (and
+  `fleet_scale_check.py`): measure the maximum RTF with every robot moving.
+  The checker sends each robot a goal `--moving-distance` metres away (rows
+  alternate direction) just before the RTF window and fails when fewer than
+  `--min-moving-fraction` of the robots are moving in any `FleetState` of the
+  window. `docker/core_scale_rtf.py --moving-distance` runs the same workload
+  without ROS for the core-only comparison.
+- ROS 2 bridge: `state_plane` config section and the `state_publisher` node.
+  With `state_plane.enabled`, the bridge writes each step's fleet state to the
+  shared-memory plane instead of building `FleetState` on the stepping thread,
+  and the `state_publisher` process publishes `/clock` and `/fleet/states`
+  from it. `FleetStateEncoder` serializes the message straight from the
+  arrays (byte for byte what rclpy serializes, 0.05 ms for 1000 robots
+  instead of about 11 ms), so one publish costs about 0.6 ms with the DDS
+  write. At 1000 robots the scale check's maximum RTF goes from 4.3-4.9x to
+  29x idle with every snapshot delivered, and from 2.7x to 5.1x with every
+  robot moving (core-only: 5.7x). `bridge.launch.py state_publisher:=true`
+  starts both processes; `docker/test_fleet_scale.sh --state-plane every_step|latest`
+  measures them.
+- Shared-memory state plane (`pybullet_fleet.state_plane`): `StatePlanePublisher`
+  writes a snapshot of every agent (pose, velocity, moving flag, battery, names)
+  into a ring of slots in a `multiprocessing.shared_memory` segment after each
+  step, and `SharedStateReader` reads it from any process. `every_step` delivers
+  every snapshot to every reader (the writer waits for a slow reader up to
+  `wait_timeout`, then overwrites); `latest` never waits. Wakeups and
+  backpressure go through named pipes, so nobody busy-waits. Writing 1000 rows
+  costs about 20 us; `collect_fleet_frame` gathers the agents' state as
+  columns (about 2 ms for 1000 agents). `benchmark/state_plane_bench.py`
+  measures it.
 - `MultiRobotSimulationCore.query_aabb(aabb_min, aabb_max)`: the objects whose
   AABB overlaps a box, looked up through the collision spatial hash, so the
   cost follows how crowded the box is rather than how many objects the

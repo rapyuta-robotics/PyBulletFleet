@@ -483,6 +483,59 @@ def robot_state3d_to_msg(state: RobotState3D, xy_offset: tuple[float, float] = (
     return msg
 
 
+def snapshot_to_fleet_state_msg(
+    snapshot,
+    stamp=None,
+    frame_id: str = "odom",
+    xy_offset: tuple[float, float] = (0.0, 0.0),
+) -> FleetState:
+    """Convert a state-plane :class:`~pybullet_fleet.state_plane.Snapshot` into a FleetState message.
+
+    Same encoding as :func:`fleet_state_to_msg`, built from the snapshot's
+    arrays: one ``RobotState3D`` per row, in row order.
+    """
+    _require_fleet_msgs()
+    msg = FleetState()
+    msg.header = Header(frame_id=frame_id)
+    if stamp is not None:
+        msg.header.stamp = stamp
+    n = snapshot.n_rows
+    pos = snapshot.pos.tolist()
+    orn = snapshot.orn.tolist()
+    lin = snapshot.lin_vel.tolist()
+    ang = snapshot.ang_vel.tolist()
+    moving = snapshot.is_moving.tolist()
+    battery = snapshot.battery_soc.tolist()
+    charging = snapshot.is_charging.tolist()
+    ids = snapshot.object_id.tolist()
+    dx, dy = xy_offset
+    robots = []
+    for i in range(n):
+        robot = RobotState3DMsg()
+        robot.name = snapshot.names[i] if i < len(snapshot.names) else ""
+        robot.object_id = int(ids[i])
+        position = robot.pose.position
+        position.x = pos[i][0] + dx
+        position.y = pos[i][1] + dy
+        position.z = pos[i][2]
+        orientation = robot.pose.orientation
+        orientation.x, orientation.y, orientation.z, orientation.w = orn[i]
+        linear = robot.twist.linear
+        linear.x, linear.y, linear.z = lin[i]
+        angular = robot.twist.angular
+        angular.x, angular.y, angular.z = ang[i]
+        robot.is_moving = bool(moving[i])
+        soc = battery[i]
+        has_battery = not (soc != soc)  # NaN marks a robot without a battery
+        robot.has_battery_soc = has_battery
+        robot.battery_soc = float(soc) if has_battery else 0.0
+        robot.has_is_charging = has_battery
+        robot.is_charging = bool(charging[i])
+        robots.append(robot)
+    msg.robots = robots
+    return msg
+
+
 def command_ack_to_msg(ack: PbfCommandAck) -> CommandAck:
     """Convert a Python command acknowledgement into a ROS message."""
     _require_fleet_msgs()

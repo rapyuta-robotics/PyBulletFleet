@@ -27,6 +27,7 @@ from pybullet_fleet import (
 )
 from pybullet_fleet.config_utils import load_yaml_config
 from pybullet_fleet.controller import OmniController
+from pybullet_fleet.state_plane import StatePlanePublisher
 from pybullet_fleet.types import MotionMode
 
 from .bridge_plugin import BridgePlugin
@@ -34,7 +35,7 @@ from .conversions import sim_time_to_ros_time
 from .fleet_ros_interface import FleetRosInterface
 from .fleet_endpoints import manager_fleet_namespace
 from .handler_registry import HandlerMap, load_handler_map_from_config, resolve_handler_classes
-from .interface_config import BridgeApiConfig, StateScope, resolve_bridge_api_config
+from .interface_config import BridgeApiConfig, StateScope, resolve_bridge_api_config, resolve_state_plane_config
 from .param_utils import get_bool_param, get_float_param
 from .robot_handler import RobotHandler
 from .robot_handler_base import RobotHandlerBase
@@ -235,8 +236,25 @@ class BridgeNode(Node):
         self._post_step_handlers: List["RobotHandlerBase"] = []
         self._throttled_post_step_handlers: List["RobotHandlerBase"] = []
 
+        # Shared-memory state plane: when enabled, the fleet state goes to another
+        # process (the state_publisher node), which publishes /clock and the global
+        # /fleet/states from it. This node then publishes neither.
+        self._state_plane_config = resolve_state_plane_config(bridge_config)
+        self._state_plane: StatePlanePublisher | None = None
+        if self._state_plane_config.enabled:
+            cfg = self._state_plane_config
+            self._state_plane = StatePlanePublisher(
+                self.sim,
+                name=cfg.name,
+                capacity=cfg.capacity,
+                slots=cfg.slots,
+                mode=cfg.mode,
+                wait_timeout=cfg.wait_timeout,
+                publish_rate=publish_rate_param if publish_rate_param > 0 else None,
+            ).install()
+
         # /clock publisher and throttle state
-        self._clock_pub = self.create_publisher(Clock, "/clock", 10)
+        self._clock_pub = self.create_publisher(Clock, "/clock", 10) if self._state_plane is None else None
         self._last_clock_time: float = -1.0
         self._clock_min_interval: float = 1.0 / publish_rate  # throttle /clock
         self._last_publish_time: float = -1.0
@@ -525,7 +543,7 @@ class BridgeNode(Node):
 
             # Publish /clock and publish-oriented post-step handlers (throttled)
             should_run_throttled_post_step = sim_time - self._last_publish_time >= self._publish_min_interval
-            if sim_time - self._last_clock_time >= self._clock_min_interval:
+            if self._clock_pub is not None and sim_time - self._last_clock_time >= self._clock_min_interval:
                 clock_msg = Clock()
                 clock_msg.clock = stamp
                 self._clock_pub.publish(clock_msg)
@@ -533,7 +551,8 @@ class BridgeNode(Node):
 
             # Per-robot update (odom, TF, joint_states, diagnostics)
             if should_run_throttled_post_step:
-                self._fleet_ros.post_step(stamp=stamp)
+                if self._state_plane is None:
+                    self._fleet_ros.post_step(stamp=stamp)
                 for interface in self._manager_fleet_ros:
                     interface.post_step(stamp=stamp)
                 with self._handler_lock:
@@ -562,6 +581,9 @@ class BridgeNode(Node):
             if self._shutdown_requested:
                 return False
             self._shutdown_requested = True
+        if self._state_plane is not None:
+            self._state_plane.close()
+            self._state_plane = None
         return super().destroy_node()
 
     def reset(self) -> None:

@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "bridge_node = pybullet_fleet_ros.bridge_node:main",
+            "state_publisher = pybullet_fleet_ros.state_publisher_node:main",
             "fleet_nav_demo = pybullet_fleet_ros.fleet_nav_demo:main",
             "fleet_rviz = pybullet_fleet_ros.fleet_rviz:main",
         ],
