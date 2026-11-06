@@ -61,6 +61,7 @@ from pybullet_fleet.collision_visualizer import CollisionVisualizer  # deprecate
 from pybullet_fleet.config_utils import load_yaml_config
 from pybullet_fleet.data_monitor import DataMonitor
 from pybullet_fleet.events import EventBus, SimEvents
+from pybullet_fleet.geometry import Pose
 from pybullet_fleet.gui_commands import (
     GuiCommand,
     GuiCommandType,
@@ -700,6 +701,9 @@ class MultiRobotSimulationCore:
         # Used to avoid scanning every flushed object in the hot path when no
         # link attachments exist.
         self._link_attachment_parent_ids: Set[int] = set()
+        # Base-link attachments: carrier object_id -> the object_ids riding on
+        # its base. Their poses follow the carrier's as arrays in set_poses().
+        self._base_children: Dict[int, List[int]] = {}
 
         # --- Plugins ---
         self._plugins: List["SimPlugin"] = []
@@ -1855,6 +1859,23 @@ class MultiRobotSimulationCore:
         if row is not None:
             self._store.preserve_velocity[row] = preserve_velocity
 
+    def _note_base_attachment(self, child_id: int, parent_id: Optional[int], offset: Optional[Pose]) -> None:
+        """Record that ``child_id`` rides on ``parent_id``'s base at ``offset`` (``None``: it no longer does)."""
+        for children in self._base_children.values():
+            if child_id in children:
+                children.remove(child_id)
+        self._base_children = {k: v for k, v in self._base_children.items() if v}
+        row = self._store.row_of.get(child_id)
+        if parent_id is None or offset is None:
+            if row is not None:
+                self._store.attach_pos[row] = 0.0
+                self._store.attach_orn[row] = (0.0, 0.0, 0.0, 1.0)
+            return
+        self._base_children.setdefault(parent_id, []).append(child_id)
+        if row is not None:
+            self._store.attach_pos[row] = offset.position
+            self._store.attach_orn[row] = offset.orientation
+
     # ----------------------------------------------------------------------
     # Public batch pose API (D8: two-phase-step spec)
     # ----------------------------------------------------------------------
@@ -1952,13 +1973,15 @@ class MultiRobotSimulationCore:
                 "If these objects need to move, change collision_mode to NORMAL_3D."
             )
             moved &= ~static
-        # Rows the array path cannot finish: attachments to propagate, or a
-        # physics body whose cache is stamped per object.
+        # Rows the array path cannot finish: a physics body (its cache is
+        # stamped per object), an object with link attachments, or a carrier
+        # whose riders are not all kinematic base attachments.
         special = np.zeros(len(rows), bool)
         kinematic = self._kinematic_objects
+        base_children = self._base_children
         for k in np.flatnonzero(moved).tolist():
             obj = objects[k]
-            if obj.attached_objects or obj.object_id not in kinematic:
+            if obj.object_id not in kinematic or (obj.attached_objects and not self._carries_as_arrays(obj)):
                 special[k] = True
                 obj.set_pose_raw(positions[k], orientations[k], preserve_velocity=preserve_velocity)
         moved &= ~special
@@ -1971,6 +1994,55 @@ class MultiRobotSimulationCore:
         moved_ids = store.object_id[moved_rows].tolist()
         self._pending_pose_ids.update(moved_ids)
         self._moved_this_step.update(moved_ids)
+        if base_children:
+            self._carry_as_arrays(moved_ids, preserve_velocity)
+
+    def _carries_as_arrays(self, obj: SimObject) -> bool:
+        """Whether every object riding on ``obj`` is a kinematic base attachment the array path can carry."""
+        kinematic = self._kinematic_objects
+        pending = [obj]
+        while pending:
+            carrier = pending.pop()
+            for child in carrier.attached_objects:
+                if child._attached_link_index >= 0 or child.object_id not in kinematic:
+                    return False
+                if child.attached_objects:
+                    pending.append(child)
+        return True
+
+    def _carry_as_arrays(self, carrier_ids: List[int], preserve_velocity: bool) -> None:
+        """Move the base attachments of the carriers that just moved, level by level, as arrays.
+
+        Each rider's world pose is its carrier's pose composed with its
+        attachment offset, as ``p.multiplyTransforms`` composes them; the
+        rows are written, and the riders are pending and moved like their
+        carriers. A rider that carries something is a carrier of the next
+        level.
+        """
+        store = self._store
+        row_of = store.row_of
+        base_children = self._base_children
+        level = carrier_ids
+        while level:
+            parents: List[int] = []
+            children: List[int] = []
+            for parent_id in level:
+                riders = base_children.get(parent_id)
+                if riders:
+                    for child_id in riders:
+                        parents.append(parent_id)
+                        children.append(child_id)
+            if not children:
+                return
+            parent_rows = np.fromiter((row_of[i] for i in parents), np.int64, count=len(parents))
+            child_rows = np.fromiter((row_of[i] for i in children), np.int64, count=len(children))
+            pos, orn = store.attached_poses(child_rows, parent_rows)
+            store.pos[child_rows] = pos
+            store.orn[child_rows] = orn
+            store.preserve_velocity[child_rows] = preserve_velocity
+            self._pending_pose_ids.update(children)
+            self._moved_this_step.update(children)
+            level = children
 
     def get_poses(self, object_ids: Sequence[int]) -> Tuple[np.ndarray, np.ndarray]:
         """Return ``(positions, orientations)`` arrays for N objects (batch read).
@@ -2026,20 +2098,16 @@ class MultiRobotSimulationCore:
         if not ids:
             return
         store = self._store
-        row_of = store.row_of
-        for object_id in ids:
-            obj = self._sim_objects_dict.get(object_id)
-            if obj is None:
-                continue
-            row = row_of.get(object_id)
-            if row is None:
-                position = obj._cached_pose.position
-                orientation = obj._cached_pose.orientation
-                preserve_velocity = obj._pending_preserve_velocity
-            else:
-                position = store.pos[row]
-                orientation = store.orn[row]
-                preserve_velocity = bool(store.preserve_velocity[row])
+        objects = self._sim_objects_dict
+        # The rows' poses as plain lists, converted once for all of them:
+        # PyBullet reads lists of floats faster than array rows.
+        id_list = [object_id for object_id in ids if object_id in store.row_of and object_id in objects]
+        rows = store.rows(id_list)
+        positions = store.pos[rows].tolist()
+        orientations = store.orn[rows].tolist()
+        preserve_flags = store.preserve_velocity[rows].tolist()
+        for object_id, position, orientation, preserve_velocity in zip(id_list, positions, orientations, preserve_flags):
+            obj = objects[object_id]
             # Match the legacy immediate path exactly: velocity preservation for
             # non-kinematic objects, fast path for kinematics.
             if preserve_velocity and not obj.is_kinematic:
@@ -3015,6 +3083,9 @@ class MultiRobotSimulationCore:
 
         # Remove from collision system (AABB, spatial grid)
         self._remove_object_from_collision_system(obj_id)
+        if obj_id in self._base_children or any(obj_id in riders for riders in self._base_children.values()):
+            self._base_children.pop(obj_id, None)
+            self._note_base_attachment(obj_id, None, None)
         if obj_id in self._store.row_of:
             obj._unbind_pose_row()
             relocated = self._store.remove(obj_id)
@@ -4412,6 +4483,7 @@ class MultiRobotSimulationCore:
         self._dynamic_collision_objects.clear()
         self._cached_collision_modes.clear()
         self._store.clear()
+        self._base_children.clear()
         self._aabb_links.clear()
         self._pending_geometry_ids.clear()
         self._origin_gaps.clear()

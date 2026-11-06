@@ -56,6 +56,27 @@ def rotation_matrices(orn: np.ndarray) -> np.ndarray:
     return r
 
 
+def quaternion_products(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Row-wise products ``a * b`` of ``(k, 4)`` xyzw quaternions, as ``p.multiplyTransforms`` composes orientations.
+
+    Computed in double precision; PyBullet's own result agrees to about 1e-7.
+    """
+    ax, ay, az, aw = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+    bx, by, bz, bw = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+    out = np.empty((len(a), 4))
+    out[:, 0] = aw * bx + ax * bw + ay * bz - az * by
+    out[:, 1] = aw * by - ax * bz + ay * bw + az * bx
+    out[:, 2] = aw * bz + ax * by - ay * bx + az * bw
+    out[:, 3] = aw * bw - ax * bx - ay * by - az * bz
+    # The same rotation with the sign PyBullet reports: it reads the product
+    # back from a rotation matrix (btMatrix3x3::getRotation), which makes w
+    # positive when |w| > 1/2 and otherwise the largest of x, y, z positive.
+    w_large = np.abs(out[:, 3]) > 0.5
+    lead = np.where(w_large, 3, np.argmax(np.abs(out[:, :3]), axis=1))
+    out[out[np.arange(len(out)), lead] < 0.0] *= -1.0
+    return out
+
+
 class CollisionStore:
     """Per-object collision columns and the spatial hash over them."""
 
@@ -85,6 +106,10 @@ class CollisionStore:
         self.orn[:, 3] = 1.0
         #: Whether the next flush of the row's pose keeps the body's velocity.
         self.preserve_velocity = np.ones(capacity, bool)
+        #: The pose of a base-attached object in its carrier's frame (identity when not attached).
+        self.attach_pos = np.zeros((capacity, 3))
+        self.attach_orn = np.zeros((capacity, 4))
+        self.attach_orn[:, 3] = 1.0
         self.aabb_min = np.full((capacity, 3), np.nan)
         self.aabb_max = np.full((capacity, 3), np.nan)
         #: The body's box in its own frame, at identity orientation. NaN until known.
@@ -126,6 +151,8 @@ class CollisionStore:
         "pos",
         "orn",
         "preserve_velocity",
+        "attach_pos",
+        "attach_orn",
         "aabb_min",
         "aabb_max",
         "local_center",
@@ -164,6 +191,8 @@ class CollisionStore:
         self.pos[row] = pos
         self.orn[row] = orn
         self.preserve_velocity[row] = True
+        self.attach_pos[row] = 0.0
+        self.attach_orn[row] = (0.0, 0.0, 0.0, 1.0)
         self.aabb_min[row] = np.nan
         self.aabb_max[row] = np.nan
         self.local_center[row] = np.nan
@@ -259,6 +288,13 @@ class CollisionStore:
         self.aabb_max[rows] = center + extent
         self.has_aabb[rows] = True
         self.hash_dirty[rows] = True
+
+    def attached_poses(self, child_rows: np.ndarray, parent_rows: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """The world poses of base-attached ``child_rows`` carried by ``parent_rows`` (one parent row per child)."""
+        parent_orn = self.orn[parent_rows]
+        r = rotation_matrices(parent_orn)
+        pos = self.pos[parent_rows] + np.einsum("kij,kj->ki", r, self.attach_pos[child_rows])
+        return pos, quaternion_products(parent_orn, self.attach_orn[child_rows])
 
     def set_aabb_from_pose(self, row: int, pos: Sequence[float], orn: Sequence[float]) -> None:
         """:meth:`set_aabbs_from_poses` for one row, in plain arithmetic (a few microseconds, no array overhead)."""

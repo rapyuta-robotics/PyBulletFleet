@@ -77,7 +77,8 @@ mid-step. That cache is the simulation's pose columns: every registered
 object's position and orientation live in one array each, an object's
 `get_pose()` returns a view into its row, and `sim.get_poses()` /
 `sim.set_poses()` read and write the rows as arrays (a buffered `set_poses()`
-writes the moved rows in one array operation). So:
+writes the moved rows in one array operation, and the objects attached to
+their bases ride along the same way). So:
 
 - ✅ `agent.get_pose()` / `sim_object.get_pose()` — returns the new cached pose.
 - ⚠️ `p.getBasePositionAndOrientation(object_id)` — returns the **previous

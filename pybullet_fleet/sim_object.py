@@ -1660,6 +1660,9 @@ class SimObject:
         obj._attached_link_index = parent_link_index
         if parent_link_index >= 0 and self.sim_core is not None and hasattr(self, "update_attached_objects_kinematics"):
             self.sim_core._register_link_attachment_parent(self.object_id)
+        note_attachment = getattr(self.sim_core, "_note_base_attachment", None)
+        if note_attachment is not None and parent_link_index == -1:
+            note_attachment(obj.object_id, self.object_id, relative_pose)
         self._log.debug(
             lambda: f"attach_object: obj={obj.body_id} _attach_offset.position={obj._attach_offset.position} "
             f"_attach_offset.orientation={obj._attach_offset.orientation}"
@@ -1763,9 +1766,13 @@ class SimObject:
             obj._constraint_id = None
 
         # Reset attachment state to default values
+        was_base_attachment = obj._attached_link_index == -1
         obj._attach_offset = Pose(position=[0.0, 0.0, 0.0], orientation=[0.0, 0.0, 0.0, 1.0])
         obj._attached_to = None
         obj._attached_link_index = -1
+        note_attachment = getattr(self.sim_core, "_note_base_attachment", None)
+        if note_attachment is not None and was_base_attachment:
+            note_attachment(obj.object_id, None, None)
 
         # Teleport to final pose if requested
         if drop_relative_pose is not None:

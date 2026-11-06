@@ -157,3 +157,93 @@ def test_a_physics_body_pose_is_in_its_row_after_the_step():
         assert ball.get_pose().z == pytest.approx(expected[2])
     finally:
         p.disconnect(sim.client)
+
+
+# --- base attachments carried as arrays -------------------------------------
+
+
+def test_quaternion_products_compose_as_multiply_transforms():
+    import random
+
+    from pybullet_fleet.collision_store import quaternion_products
+
+    rng = random.Random(2)
+    for _ in range(20):
+        a = np.array([rng.gauss(0, 1) for _ in range(4)])
+        b = np.array([rng.gauss(0, 1) for _ in range(4)])
+        a /= np.linalg.norm(a)
+        b /= np.linalg.norm(b)
+        _, expected = p.multiplyTransforms([0, 0, 0], a.tolist(), [0, 0, 0], b.tolist())
+        # PyBullet composes in single precision and reads the result back from a matrix.
+        assert quaternion_products(a[None, :], b[None, :])[0] == pytest.approx(expected, abs=1e-6)
+
+
+def _step_with_poses(sim, ids, positions, orientations):
+    sim.register_callback(lambda _sim, _dt: sim.set_poses(ids, positions, orientations))
+    sim.step_once()
+
+
+def test_riders_follow_their_carrier_through_the_array_path(sim):
+    carrier = box(sim, 0.0)
+    load = box(sim, 0.1, y=0.05, z=0.3)
+    on_top = box(sim, 0.1, y=0.05, z=0.5)
+    carrier.attach_object(load, keep_world_pose=True)
+    load.attach_object(on_top, keep_world_pose=True)
+    positions = np.array([[3.0, -1.0, 0.1]])
+    orientations = np.array([p.getQuaternionFromEuler([0.1, -0.2, 1.3])])
+    seen = {}
+
+    def cb(_sim, _dt):
+        sim.set_poses([carrier.object_id], positions, orientations)
+        seen["pending"] = set(sim._pending_pose_ids)
+
+    sim.register_callback(cb)
+    sim.step_once()
+
+    assert seen["pending"] == {carrier.object_id, load.object_id, on_top.object_id}
+    pos, orn = p.multiplyTransforms(
+        positions[0], orientations[0], load._attach_offset.position, load._attach_offset.orientation
+    )
+    assert list(load.get_pose().position) == pytest.approx(pos, abs=1e-6)  # PyBullet composes in single precision
+    assert list(load.get_pose().orientation) == pytest.approx(orn, abs=1e-6)
+    pos2, orn2 = p.multiplyTransforms(pos, orn, on_top._attach_offset.position, on_top._attach_offset.orientation)
+    assert list(on_top.get_pose().position) == pytest.approx(pos2, abs=1e-6)
+    assert list(on_top.get_pose().orientation) == pytest.approx(orn2, abs=1e-6)
+    # PyBullet and the collision boxes followed too.
+    assert p.getBasePositionAndOrientation(on_top.body_id, physicsClientId=sim.client)[0] == pytest.approx(pos2, abs=1e-6)
+    assert sim.cached_aabb(on_top.object_id)[0][0] == pytest.approx(pos2[0] - 0.1, abs=0.2)
+
+
+def test_a_detached_rider_stays_behind(sim):
+    carrier = box(sim, 0.0)
+    load = box(sim, 0.0, z=0.3)
+    carrier.attach_object(load, keep_world_pose=True)
+    _step_with_poses(sim, [carrier.object_id], np.array([[1.0, 0.0, 0.1]]), np.array([[0.0, 0.0, 0.0, 1.0]]))
+    assert load.get_pose().x == pytest.approx(1.0)
+    carrier.detach_object(load)
+    assert sim._base_children == {}
+    _step_with_poses(sim, [carrier.object_id], np.array([[2.0, 0.0, 0.1]]), np.array([[0.0, 0.0, 0.0, 1.0]]))
+    assert load.get_pose().x == pytest.approx(1.0)
+    assert carrier.get_pose().x == pytest.approx(2.0)
+
+
+def test_removing_a_carrier_or_rider_clears_the_attachment_bookkeeping(sim):
+    carrier = box(sim, 0.0)
+    load = box(sim, 0.0, z=0.3)
+    other = box(sim, 5.0)
+    rider = box(sim, 5.0, z=0.3)
+    carrier.attach_object(load, keep_world_pose=True)
+    other.attach_object(rider, keep_world_pose=True)
+    sim.remove_object(load)
+    assert carrier.object_id not in sim._base_children
+    sim.remove_object(other)
+    assert sim._base_children == {}
+
+
+def test_a_carrier_with_a_physics_rider_takes_the_per_object_path(sim):
+    carrier = box(sim, 0.0)
+    heavy = box(sim, 0.0, z=0.3, mass=1.0)
+    carrier.attach_object(heavy, keep_world_pose=True)
+    assert not sim._carries_as_arrays(carrier)
+    _step_with_poses(sim, [carrier.object_id], np.array([[2.0, 0.0, 0.1]]), np.array([[0.0, 0.0, 0.0, 1.0]]))
+    assert heavy.get_pose().x == pytest.approx(2.0)

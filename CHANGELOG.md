@@ -19,10 +19,14 @@ are not recommended for production use yet.
   object's pose cache (what `get_pose()` returns for a kinematic object) is
   a view into its row, and `sim.get_poses()` is a gather from the columns.
   A buffered `sim.set_poses()` (inside a step) judges which rows moved and
-  writes them in one array operation instead of one `set_pose` per object;
-  an object with attachments, a physics body and a STATIC object take the
-  per-object path there (the last does not move, with one warning for the
-  batch). The AABBs of the moved kinematic bodies are then computed from
+  writes them in one array operation instead of one `set_pose` per object,
+  and carries the objects attached to the moved ones' bases the same way,
+  level by level (their attachment offsets are columns too; the composed
+  pose is computed in double precision, where `p.multiplyTransforms` works
+  in single, so the two agree to about 1e-7). A physics body, an object
+  with link attachments, a carrier with a rider that is not a kinematic
+  base attachment, and a STATIC object take the per-object path there (the
+  last does not move, with one warning for the batch). The AABBs of the moved kinematic bodies are then computed from
   the columns directly. A physics body's row is read back after every
   `stepSimulation()`. `Pose` compares by value whether its fields are lists
   or arrays; compare or serialize a field with `list(pose.position)`, as
