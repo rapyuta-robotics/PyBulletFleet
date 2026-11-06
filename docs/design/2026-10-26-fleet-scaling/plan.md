@@ -27,6 +27,7 @@ P1 は #94 + #114 の意味論を、P3 は #87 の request 状態を、それぞ
 ## 予算 (1000 台, 2.0 ms/step, 疎シナリオ)
 
 現状は `2e2a86a` (#115 入り) の 2026-11-06 の計測 (P0 の sparse シーン、3 回の中央値、他の負荷なし)。
+P1 前半 (`49ffec6`) 後の値は P1 の節の表にある (sparse 6.5 ms: AABB flush 0.7、collision 0.55)。
 2026-11-05 に `6ee451e` で測った 14.2 ms (phase 別 6.1 / 2.0 / 3.7 / 1.8) は、同じ日に他の作業が
 走っていた状態の値で、同一セッションで `6ee451e` と `2e2a86a` を交互に測ると差はノイズ以下
 (sparse 10.2-11.5 ms、carrying 30.7-31.7 ms がどちらにも出る)。つまり #106-#115 は step 時間を変えず、
@@ -167,7 +168,39 @@ carrier と load は接触したままなので、次の判定からペアとし
 箱に触れるシーン `link_contact` (上の箱に手先が接触、肘を曲げて上腕が横の箱に接触、関節補間で離れる) を
 足した。このシーンは `275b9f0` では 3 ペアとも見つからない (29 差分)。golden は 11 シーン、参照は `2e2a86a`。
 P0 の定常状態ベンチマークは `2e2a86a` で測り直した (上の予算表)。
-**残り:** store と配列 broad phase の実装。
+
+**実装済み (2026-11-06、ブランチ `perf/p1-collision-store`、P1 parity ブランチの上、`49ffec6`): 衝突の列ストアと
+配列 broad phase (P1 の前半)。** `pybullet_fleet/collision_store.py` に、全オブジェクトの AABB、ローカル箱、
+collision mode、physics フラグを列で持つ `CollisionStore` と、その上の空間ハッシュを置いた。ハッシュは
+パックしたセルキーのソート済み配列 2 本 (STATIC の行は変更時だけ差し替え、それ以外の行は 1 つでも動けば
+ソートし直す) で、動いた行のセルをまとめて `searchsorted` し、配列の AABB 判定 (#94 の登録規則、#114 の
+軸ごとの clearance、NORMAL_2D の z=0、HYBRID の物理ペアは 0、`ignore_static`、DISABLED) を通して object_id の
+ペアを返す。運動学の単一ボディの AABB は pose から計算する (ローカル箱を生成時に identity 姿勢で 1 回読み、
+|R| で変換する。PyBullet の `btTransformAabb` と同じで、球だけ extents を回さない。Phase 3 で動いた分を 1 回の
+配列演算で出す)。物理ボディと多リンクは従来どおり PyBullet から読む。`_cached_aabbs_dict` /
+`_cached_spatial_grid` / `_cached_object_to_cell` と per-object のグリッド更新は削除し、`sim.cached_aabb()` /
+`sim.grid_cells_of()` を代わりに置いた。parity 11 シーンは同一、store の単体テスト 54 件 (総当たり比較、
+増分同期と全再構築の一致)、フルスイート 3091 passed。
+
+同一セッションで before / after を 2 周交互に測った結果 (P0 の定常状態ベンチ、中央値):
+
+| シーン | before (`2e2a86a`) | after (`49ffec6`) | AABB flush | collision |
+|---|---|---|---|---|
+| sparse 1000 | 9.6 ms (10.5x) | 6.5 ms (15.4x) | 2.6 → 0.7 ms | 1.25 → 0.55 ms |
+| dense 1000 | 8.6 ms (11.6x) | 6.1 ms (16.4x) | 2.1 → 0.6 ms | 1.37 → 0.63 ms |
+| carrying 1000 | 27.7 ms (3.6x) | 15.3 ms (6.5x) | 7.0 → 1.5 ms | 5.7 → 1.2 ms |
+| warehouse 200 + 33k 静止体 | 3.5 ms (28x) | 3.3 ms (31x) | 0.5 → 0.2 ms | 0.34 → 0.37 ms |
+| idle 1000 | 0.43 ms | 0.43 ms | 0 | 0.01 → 0.02 ms |
+
+collision は目標 (≤ 0.8 ms) に入った。AABB flush の残り 0.7 ms は、動いた object ごとに `_cached_pose` を
+Python で集めて配列にする分で、pose のキャッシュを store の列にする (下の残り) まで消えない。
+生成は object あたり約 25 µs 増えた (ローカル箱とコライダーのリンクを add 時に読む。倉庫シーンの spawn
+10.8 → 11.7 s)。生成の支配項は従来からの `deepcopy` (ShapeParams、約 100 µs) と `createMultiBody` (約 95 µs) で、
+P1 の対象外だが後で下げる余地がある。
+**残り (P1 の後半):** `SimObject` の pose キャッシュを store の列へのアクセサにする (Phase 3 の gather と
+pose flush の per-object ループを消す)、`set_poses()` の配列書き込み、ベースアタッチの子を `parent_row` /
+`attach_offset` から配列で計算する (carrying の phase1 8.9 ms と pose flush 3.2 ms の対象)、衝突結果の
+object_id 配列化。多リンクの AABB は #115 の union のまま。
 
 - core が所有する `StateStore` (pos, orn, vel, aabb, local_aabb, footprint, mode, owner, parent_row,
   attach_offset, flags, object_id ↔ row の対応) を新設する。行の追加・削除は、既存 batch controller と同じ
