@@ -283,6 +283,32 @@ AABB flush 0.3、collision 0.5 (narrow phase の Python ループ含む)。
 
 ### P2. PyBullet 遅延ミラー
 
+**実装済み (2026-11-07、ブランチ `perf/p1-collision-store`、P1 の上、`c9b4488`)。** `SimulationParams.mirror`
+(`lazy` 既定 / `always`) を追加した。`lazy` では Phase 2 の flush は PyBullet が毎ステップ持つ必要のある行
+(物理ボディ、多リンク (AABB を PyBullet から読む)、link アタッチの親) だけを書き、他の行は store に
+`mirror_dirty` を立てて保留する。シミュレーション自身が PyBullet を読む前には自分で同期する: narrow phase は
+判定するペアのボディを、`query_aabb` の live 判定と recorder は読む前に、`SimObject.body_id` と `sim.client` の
+アクセサは返す前に保留分を書く。`sim.sync_mirror(object_ids=None)` を公開した。`mirror: always`、GUI、
+`needs_mirror = True` を持つプラグインとコールバックは従来どおり毎ステップ全件を書く。step 外の `set_pose`
+(即時経路) は PyBullet に直接書いて保留を消す。切断後の同期は no-op (切断後に `sim.client` を読む例が
+あった)。`docs/architecture/two-phase-step.md` に「保持した body_id での PyBullet 直接呼び出しは
+`mirror: always` でだけ対応」と書いた。ROS サービスの `getAABB` は `obj.body_id` 経由なので同期される。
+テスト `tests/test_lazy_mirror.py` 13 件、parity 11 シーン同一、フルスイート 3117 passed。
+
+同一セッションで 2 周交互に測った結果 (before は P1 後 `486cef8`):
+
+| シーン | P1 後 | P2 後 (`c9b4488`) | pose flush |
+|---|---|---|---|
+| sparse 1000 | 3.4 ms (29.7x) | 2.2 ms (46x) | 1.2 → 0.06 ms |
+| dense 1000 | 3.3 ms (30.6x) | 2.2 ms (46x) | 1.1 → 0.06 ms |
+| carrying 1000 | 7.8 ms (12.8x) | 4.0 ms (25x) | 3.1 → 0.12 ms |
+| warehouse 200 + 33k | 2.5 ms | 1.7 ms | 0.5 → 0.03 ms |
+| idle 1000 | 0.44 ms | 0.44 ms | |
+
+sparse の目標 2.0 ms (50x) まで残り 0.2 ms。残る内訳は phase1 1.3 (batch advance 約 0.3、per-object の
+`update()` ループ 0.4、`set_poses` 0.3、イベント)、collision 0.5、AABB flush 0.3。P3 の対象。
+**残り:** headless でプリミティブ形状の静的ボディを Bullet に作らない (起動時間、follow-up)。
+
 - store に `mirror_dirty` フラグを持たせる。Phase 2 の flush では、ミラーが必要な行だけを書き込む。
   ミラーが必要なのは、GUI 有効時 (GUI のマウス選択は `rayTest` を使う:
   [core_simulation.py#L907](https://github.com/yuokamoto/PyBulletFleet/blob/6551125ec55a8a2861f0f18a0ad810f20e4f1b81/pybullet_fleet/core_simulation.py#L907))、
