@@ -557,7 +557,20 @@ collision 1.07 (親子ペアの除外は `_is_ignored_collision` の per-pair Py
   P1-P4 でコアの step が下がってから測り直す (ブリッジ側はもう律速ではない)。
 - **検証 (済):** ブリッジ単体テスト 199 件 (Docker)、`docker/test_bridge_api.sh` PASSED (state plane なしの既定構成)、
   コア 2746 件、`make lint` / `make docs`。
-  **未:** 受け入れ条件 6 の 3 回中央値・60 s 窓での正式計測 (コアの高速化後)。
+  **正式計測 (2026-11-07、P1-P3 前半のコア `e6ef956` + P5b を統合した scratch ブランチ、1000 台、全台移動
+  (20000 m / 5000 m 先へ)、衝突判定毎ステップ、publish 10 Hz = 毎ステップ、60 s 窓 × 3 回の中央値):**
+
+  | 構成 | max RTF (3 回) | 中央値 | step | コア単体との差 |
+  |---|---|---|---|---|
+  | コア単体 (ROS なし) | 75.7 / 71.8 / 70.5x | 71.8x | 1.39 ms | 基準 |
+  | in-process (現行) | 6.16 / 6.37 / 6.42x | 6.37x | 15.7 ms | +14.3 ms |
+  | state plane every_step | 27.3 / 26.4 / 26.6x | 26.6x | 3.76 ms | +2.4 ms (2.7 倍) |
+  | state plane latest | 26.4 / 26.8 / 26.9x | 26.8x | 3.73 ms | +2.3 ms (2.7 倍) |
+
+  publisher は 0.47-0.51 ms / publish。受け入れ条件 6 の「10x 以上」は every_step / latest とも満たした。
+  「latest で 1.05 倍以内」は未達 (2.7 倍): コアが 5 倍速くなった一方、`collect_fleet_frame` が agent ごとに
+  pose / velocity / is_moving / battery を読む約 2 ms が残っている。P5c (下) で frame を store の列の
+  スライスにして解消する。
 - **ブリッジを C++ にする判断:** 不要になった。rclpy + `FleetStateEncoder` で 1 publish 0.7 ms なので、
   `every_step` のままでも 1000 台で 1500 publish/s 程度までは配信側が律速にならない。
   sim 側は共有メモリのレイアウトにしか依存しないので、必要になれば C++ の reader を後から足せる。
