@@ -62,6 +62,8 @@ class CollisionStore:
     def __init__(self, capacity: int = 256) -> None:
         self._n = 0
         self.row_of: Dict[int, int] = {}
+        #: Incremented whenever the columns are reallocated: views into them are then stale.
+        self.generation = 0
         self._allocate(max(capacity, 1))
         self.cell_size: Optional[float] = None
         self.half_margin = np.zeros(3)
@@ -76,6 +78,13 @@ class CollisionStore:
 
     def _allocate(self, capacity: int) -> None:
         self.object_id = np.zeros(capacity, np.int64)
+        #: The pose the simulation holds for the object (its source of truth
+        #: for a kinematic object; a physics body's as of its last read).
+        self.pos = np.zeros((capacity, 3))
+        self.orn = np.zeros((capacity, 4))
+        self.orn[:, 3] = 1.0
+        #: Whether the next flush of the row's pose keeps the body's velocity.
+        self.preserve_velocity = np.ones(capacity, bool)
         self.aabb_min = np.full((capacity, 3), np.nan)
         self.aabb_max = np.full((capacity, 3), np.nan)
         #: The body's box in its own frame, at identity orientation. NaN until known.
@@ -110,9 +119,13 @@ class CollisionStore:
         n = self._n
         for name, column in old.items():
             getattr(self, name)[:n] = column[:n]
+        self.generation += 1
 
     _COLUMNS = (
         "object_id",
+        "pos",
+        "orn",
+        "preserve_velocity",
         "aabb_min",
         "aabb_max",
         "local_center",
@@ -128,8 +141,18 @@ class CollisionStore:
         "_cell_hi",
     )
 
-    def add(self, object_id: int, *, mode: int, physics: bool, pickable: bool, pybullet_aabb: bool) -> int:
-        """Add a row for ``object_id`` with no AABB yet, and return it."""
+    def add(
+        self,
+        object_id: int,
+        *,
+        mode: int,
+        physics: bool,
+        pickable: bool,
+        pybullet_aabb: bool,
+        pos: Sequence[float] = (0.0, 0.0, 0.0),
+        orn: Sequence[float] = (0.0, 0.0, 0.0, 1.0),
+    ) -> int:
+        """Add a row for ``object_id`` at the pose, with no AABB yet, and return it."""
         if object_id in self.row_of:
             raise ValueError(f"object {object_id} already has a row")
         if self._n == self.capacity:
@@ -138,6 +161,9 @@ class CollisionStore:
         self._n += 1
         self.row_of[object_id] = row
         self.object_id[row] = object_id
+        self.pos[row] = pos
+        self.orn[row] = orn
+        self.preserve_velocity[row] = True
         self.aabb_min[row] = np.nan
         self.aabb_max[row] = np.nan
         self.local_center[row] = np.nan
@@ -151,19 +177,26 @@ class CollisionStore:
         self.hash_dirty[row] = True
         return row
 
-    def remove(self, object_id: int) -> None:
-        """Drop the row of ``object_id``; the last row takes its place."""
+    def remove(self, object_id: int) -> Optional[int]:
+        """Drop the row of ``object_id``; the last row takes its place.
+
+        Returns the object whose row moved into the freed one (its views into
+        the columns are stale), or None when the last row was the one dropped.
+        """
         row = self.row_of.pop(object_id)
         last = self._n - 1
         if self._hash_built:
             self._static_keys, self._static_rows = self._drop_row(self._static_keys, self._static_rows, row, last)
             self._moving_keys, self._moving_rows = self._drop_row(self._moving_keys, self._moving_rows, row, last)
+        moved: Optional[int] = None
         if last != row:
             for name in self._COLUMNS:
                 column = getattr(self, name)
                 column[row] = column[last]
-            self.row_of[int(self.object_id[row])] = row
+            moved = int(self.object_id[row])
+            self.row_of[moved] = row
         self._n = last
+        return moved
 
     @staticmethod
     def _drop_row(keys: np.ndarray, rows: np.ndarray, row: int, last: int) -> Tuple[np.ndarray, np.ndarray]:

@@ -159,6 +159,14 @@ class Pose:
         """Yaw angle in radians (rotation around z-axis)."""
         return p.getEulerFromQuaternion(self.orientation)[2]
 
+    def __eq__(self, other: object) -> bool:
+        """Equal when position and orientation hold the same numbers (lists or arrays alike)."""
+        if not isinstance(other, Pose):
+            return NotImplemented
+        return list(self.position) == list(other.position) and list(self.orientation) == list(other.orientation)
+
+    __hash__ = None  # type: ignore[assignment]  # mutable, as the dataclass default
+
     def __str__(self) -> str:
         """Concise string: ``Pose(x=1.00, y=2.00, z=0.00, yaw=90.0°)``."""
         yaw_deg = np.degrees(self.yaw)

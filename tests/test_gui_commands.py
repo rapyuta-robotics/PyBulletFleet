@@ -157,7 +157,7 @@ def test_paused_pose_edit_is_applied_at_step_boundary():
         sim.step_once()
 
         pose = obj.get_pose()
-        assert pose.position == [2.0, 3.0, 0.4]
+        assert list(pose.position) == [2.0, 3.0, 0.4]
         assert pose.roll == pytest.approx(0.2)
         assert pose.pitch == pytest.approx(-0.3)
         assert pose.yaw == pytest.approx(1.0)
@@ -173,11 +173,11 @@ def test_running_pose_edit_is_rejected():
 
         sim.initialize_simulation()
         obj = SimObject.from_mesh(sim_core=sim, name="movable")
-        initial_position = obj.get_pose().position[:]
+        initial_position = list(obj.get_pose().position)
         sim.enqueue_gui_command(GuiCommand(GuiCommandType.SET_ENTITY_POSE, entity_id=obj.object_id, position=(2.0, 3.0, 0.4)))
         sim.step_once()
 
-        assert obj.get_pose().position == initial_position
+        assert list(obj.get_pose().position) == initial_position
     finally:
         p.disconnect(sim.client)
 

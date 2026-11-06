@@ -14,6 +14,19 @@ are not recommended for production use yet.
 
 ### Changed
 
+- Poses are columns of the simulation. Every registered object's position
+  and orientation live in one array each (in the collision store), an
+  object's pose cache (what `get_pose()` returns for a kinematic object) is
+  a view into its row, and `sim.get_poses()` is a gather from the columns.
+  A buffered `sim.set_poses()` (inside a step) judges which rows moved and
+  writes them in one array operation instead of one `set_pose` per object;
+  an object with attachments, a physics body and a STATIC object take the
+  per-object path there (the last does not move, with one warning for the
+  batch). The AABBs of the moved kinematic bodies are then computed from
+  the columns directly. A physics body's row is read back after every
+  `stepSimulation()`. `Pose` compares by value whether its fields are lists
+  or arrays; compare or serialize a field with `list(pose.position)`, as
+  the package does (`pose.position == [x, y, z]` on an array view raises).
 - The collision broad phase works on arrays. Every object's AABB, local
   box, collision mode and physics flag live in one column store
   (`pybullet_fleet/collision_store.py`) and the spatial hash is two sorted

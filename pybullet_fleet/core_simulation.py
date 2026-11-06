@@ -1841,6 +1841,20 @@ class MultiRobotSimulationCore:
         self._moved_this_step.add(object_id)
         logger.debug(f"Object {object_id} marked as moved")
 
+    def _bind_pose_rows(self) -> None:
+        """Point every object's pose cache at its row of the pose columns (after a reallocation)."""
+        store = self._store
+        for obj in self._sim_objects:
+            row = store.row_of.get(obj.object_id)
+            if row is not None:
+                obj._bind_pose_row(store.pos[row], store.orn[row])
+
+    def _note_preserve_velocity(self, object_id: int, preserve_velocity: bool) -> None:
+        """Remember, for the Phase 2 flush, whether the object's pending pose write keeps its velocity."""
+        row = self._store.row_of.get(object_id)
+        if row is not None:
+            self._store.preserve_velocity[row] = preserve_velocity
+
     # ----------------------------------------------------------------------
     # Public batch pose API (D8: two-phase-step spec)
     # ----------------------------------------------------------------------
@@ -1893,8 +1907,70 @@ class MultiRobotSimulationCore:
                 raise KeyError(f"object_id {oid} not registered in this simulation")
             objects.append(obj)
 
+        if self._in_step:
+            self._set_poses_buffered(object_ids, objects, positions, orientations, preserve_velocity)
+            return
         for i, obj in enumerate(objects):
             obj.set_pose_raw(positions[i], orientations[i], preserve_velocity=preserve_velocity)
+
+    def _set_poses_buffered(
+        self,
+        object_ids: Sequence[int],
+        objects: List[SimObject],
+        positions: np.ndarray,
+        orientations: np.ndarray,
+        preserve_velocity: bool,
+    ) -> None:
+        """The buffered path of :meth:`set_poses`: the rows that moved are written as arrays.
+
+        Movement is judged as ``SimObject.set_pose`` judges it (a squared
+        distance above 1e-12 in position, or in orientation up to the sign
+        of the quaternion). A STATIC object does not move, as there; an
+        object with attachments or a physics body takes the per-object path,
+        which propagates to the children and stamps the cache.
+        """
+        store = self._store
+        row_of = store.row_of
+        rows = np.fromiter((row_of[oid] for oid in object_ids), np.int64, count=len(object_ids))
+        delta = positions - store.pos[rows]
+        moved = (delta * delta).sum(axis=1) > 1e-12
+        old_orn = store.orn[rows]
+        diff = orientations - old_orn
+        orn_diff = (diff * diff).sum(axis=1)
+        flipped = orn_diff > 1e-12
+        if flipped.any():
+            total = orientations + old_orn
+            orn_sum = (total * total).sum(axis=1)
+            orn_diff = np.where(orn_sum < orn_diff, orn_sum, orn_diff)
+        moved |= orn_diff > 1e-12
+        if not moved.any():
+            return
+        static = store.mode[rows] == MODE_STATIC
+        if (moved & static).any():
+            logger.warning(
+                "Attempting to move static objects. Static objects (CollisionMode.STATIC) should not be moved. "
+                "If these objects need to move, change collision_mode to NORMAL_3D."
+            )
+            moved &= ~static
+        # Rows the array path cannot finish: attachments to propagate, or a
+        # physics body whose cache is stamped per object.
+        special = np.zeros(len(rows), bool)
+        kinematic = self._kinematic_objects
+        for k in np.flatnonzero(moved).tolist():
+            obj = objects[k]
+            if obj.attached_objects or obj.object_id not in kinematic:
+                special[k] = True
+                obj.set_pose_raw(positions[k], orientations[k], preserve_velocity=preserve_velocity)
+        moved &= ~special
+        if not moved.any():
+            return
+        moved_rows = rows[moved]
+        store.pos[moved_rows] = positions[moved]
+        store.orn[moved_rows] = orientations[moved]
+        store.preserve_velocity[moved_rows] = preserve_velocity
+        moved_ids = store.object_id[moved_rows].tolist()
+        self._pending_pose_ids.update(moved_ids)
+        self._moved_this_step.update(moved_ids)
 
     def get_poses(self, object_ids: Sequence[int]) -> Tuple[np.ndarray, np.ndarray]:
         """Return ``(positions, orientations)`` arrays for N objects (batch read).
@@ -1917,16 +1993,12 @@ class MultiRobotSimulationCore:
         Raises:
             KeyError: if any ``object_id`` is not registered in this sim.
         """
-        n = len(object_ids)
-        positions = np.empty((n, 3), dtype=np.float64)
-        orientations = np.empty((n, 4), dtype=np.float64)
-        for i, oid in enumerate(object_ids):
-            obj = self._sim_objects_dict.get(oid)
-            if obj is None:
-                raise KeyError(f"object_id {oid} not registered in this simulation")
-            positions[i] = obj._cached_pose.position
-            orientations[i] = obj._cached_pose.orientation
-        return positions, orientations
+        row_of = self._store.row_of
+        try:
+            rows = np.fromiter((row_of[oid] for oid in object_ids), np.int64, count=len(object_ids))
+        except KeyError as exc:
+            raise KeyError(f"object_id {exc.args[0]} not registered in this simulation") from None
+        return self._store.pos[rows].copy(), self._store.orn[rows].copy()
 
     # ------------------------------------------------------------------ #
     # Batch controller registration (Phase B opt-in)
@@ -1953,13 +2025,21 @@ class MultiRobotSimulationCore:
         """
         if not ids:
             return
+        store = self._store
+        row_of = store.row_of
         for object_id in ids:
             obj = self._sim_objects_dict.get(object_id)
             if obj is None:
                 continue
-            position = obj._cached_pose.position
-            orientation = obj._cached_pose.orientation
-            preserve_velocity = obj._pending_preserve_velocity
+            row = row_of.get(object_id)
+            if row is None:
+                position = obj._cached_pose.position
+                orientation = obj._cached_pose.orientation
+                preserve_velocity = obj._pending_preserve_velocity
+            else:
+                position = store.pos[row]
+                orientation = store.orn[row]
+                preserve_velocity = bool(store.preserve_velocity[row])
             # Match the legacy immediate path exactly: velocity preservation for
             # non-kinematic objects, fast path for kinematics.
             if preserve_velocity and not obj.is_kinematic:
@@ -2045,11 +2125,8 @@ class MultiRobotSimulationCore:
         kinematic = self._kinematic_objects
         store = self._store
         row_of = store.row_of
-        objects = self._sim_objects_dict
         pybullet_aabb = store.pybullet_aabb
         rows: List[int] = []
-        positions: List[List[float]] = []
-        orientations: List[List[float]] = []
         for object_id in ids:
             if object_id not in kinematic and object_id not in geometry_ids:
                 continue
@@ -2059,17 +2136,11 @@ class MultiRobotSimulationCore:
             if pybullet_aabb[row] or not store.local_box_known(row):
                 self._update_object_aabb(object_id)
                 continue
-            obj = objects.get(object_id)
-            if obj is None:
-                continue
-            pose = obj._cached_pose
             rows.append(row)
-            positions.append(pose.position)
-            orientations.append(pose.orientation)
         if rows:
             row_array = np.asarray(rows, dtype=np.int64)
-            pos = np.asarray(positions, dtype=float)
-            store.set_aabbs_from_poses(row_array, pos, np.asarray(orientations, dtype=float))
+            pos = store.pos[row_array]
+            store.set_aabbs_from_poses(row_array, pos, store.orn[row_array])
             self._record_origin_gaps(row_array, pos)
 
     def _body_aabb(self, obj: SimObject) -> Tuple[Sequence[float], Sequence[float]]:
@@ -2833,13 +2904,20 @@ class MultiRobotSimulationCore:
         self._note_monitor_entities_changed()
         links = self._collider_links(obj.body_id)
         self._aabb_links[obj.object_id] = links
-        self._store.add(
+        generation = self._store.generation
+        row = self._store.add(
             obj.object_id,
             mode=_MODE_CODE[obj.collision_mode],
             physics=False,  # set by _register_object_movement_type below
             pickable=bool(obj.pickable),
             pybullet_aabb=links != (),
+            pos=obj._cached_pose.position,
+            orn=obj._cached_pose.orientation,
         )
+        if self._store.generation != generation:
+            self._bind_pose_rows()  # the columns were reallocated: every view is stale
+        else:
+            obj._bind_pose_row(self._store.pos[row], self._store.orn[row])
 
         # Add to agents list if this is an Agent instance (for O(M) iteration)
         if isinstance(obj, Agent):
@@ -2938,7 +3016,13 @@ class MultiRobotSimulationCore:
         # Remove from collision system (AABB, spatial grid)
         self._remove_object_from_collision_system(obj_id)
         if obj_id in self._store.row_of:
-            self._store.remove(obj_id)
+            obj._unbind_pose_row()
+            relocated = self._store.remove(obj_id)
+            if relocated is not None:
+                moved_obj = self._sim_objects_dict.get(relocated)
+                if moved_obj is not None:
+                    row = self._store.row_of[relocated]
+                    moved_obj._bind_pose_row(self._store.pos[row], self._store.orn[row])
 
         # Remove from dynamic collision set
         self._dynamic_collision_objects.discard(obj_id)
@@ -5227,8 +5311,15 @@ class MultiRobotSimulationCore:
             # Kinematic objects update their AABBs and spatial grid in set_pose() for immediate consistency.
             for obj_id in self._physics_objects:
                 # Safeguard against stale _physics_objects entries
-                if obj_id not in self._sim_objects_dict:
+                obj = self._sim_objects_dict.get(obj_id)
+                if obj is None:
                     continue
+                # The body's pose as the physics step left it, into its row
+                # (and so into its pose cache), stamped as this step's.
+                position, orientation = p.getBasePositionAndOrientation(obj.body_id, physicsClientId=self._client)
+                obj._cached_pose.position[:] = position
+                obj._cached_pose.orientation[:] = orientation
+                obj._cached_pose_sim_time = self._elapsed_sim_time
                 self._update_object_aabb(obj_id, update_grid=False)
 
             # step_simulation covers p.stepSimulation() + physics-object AABB loop only.

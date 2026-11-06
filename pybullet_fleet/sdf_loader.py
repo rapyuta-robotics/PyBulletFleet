@@ -968,7 +968,8 @@ def load_sdf_world_file(
             new_pose = Pose.from_euler(rx, ry, rz, info.iroll, info.ipitch, info.iyaw)
             pos, orn = new_pose.as_position_orientation()
             p.resetBasePositionAndOrientation(obj.body_id, pos, orn, physicsClientId=pid)
-            obj._cached_pose = new_pose
+            obj._cached_pose.position[:] = pos
+            obj._cached_pose.orientation[:] = orn
             # Update AABB/spatial-grid so collision system sees
             # the relocated position (not the pre-offset origin).
             if sim_core is not None:

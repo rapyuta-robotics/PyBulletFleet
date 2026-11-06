@@ -1328,12 +1328,26 @@ class SimObject:
         if self._cached_pose is not None and current_sim_time >= 0 and self._cached_pose_sim_time == current_sim_time:
             return self._cached_pose
 
-        # Cache miss: Query PyBullet and update cache
+        # Cache miss: Query PyBullet and update the cache in place (it may be
+        # a view into the simulation's pose columns).
         position, orientation = p.getBasePositionAndOrientation(self.body_id, physicsClientId=self._pid)
-        self._cached_pose = Pose.from_pybullet(position, orientation)
+        self._cached_pose.position[:] = position
+        self._cached_pose.orientation[:] = orientation
         self._cached_pose_sim_time = current_sim_time
 
         return self._cached_pose
+
+    def _bind_pose_row(self, position: Any, orientation: Any) -> None:
+        """Make the pose cache read and write the simulation's pose columns (``position`` / ``orientation`` are row views)."""
+        position[:] = self._cached_pose.position
+        orientation[:] = self._cached_pose.orientation
+        self._cached_pose.position = position
+        self._cached_pose.orientation = orientation
+
+    def _unbind_pose_row(self) -> None:
+        """Give the pose cache its own storage again (the object left the simulation)."""
+        self._cached_pose.position = [float(v) for v in self._cached_pose.position]
+        self._cached_pose.orientation = [float(v) for v in self._cached_pose.orientation]
 
     def set_pose(self, pose: Pose, preserve_velocity: bool = True) -> bool:
         """
@@ -1472,6 +1486,7 @@ class SimObject:
         if self.sim_core is not None and self.sim_core._in_step:
             if moved:
                 self._pending_preserve_velocity = preserve_velocity
+                self.sim_core._note_preserve_velocity(self.object_id, preserve_velocity)
                 self.sim_core._pending_pose_ids.add(self.object_id)
                 self.sim_core._mark_object_moved(self.object_id)
                 # Attached-object propagation still recurses through _set_pose_internal,
