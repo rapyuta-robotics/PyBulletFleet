@@ -569,8 +569,32 @@ collision 1.07 (親子ペアの除外は `_is_ignored_collision` の per-pair Py
 
   publisher は 0.47-0.51 ms / publish。受け入れ条件 6 の「10x 以上」は every_step / latest とも満たした。
   「latest で 1.05 倍以内」は未達 (2.7 倍): コアが 5 倍速くなった一方、`collect_fleet_frame` が agent ごとに
-  pose / velocity / is_moving / battery を読む約 2 ms が残っている。P5c (下) で frame を store の列の
-  スライスにして解消する。
+  pose / velocity / is_moving / battery を読む約 2 ms が残っていた。P5c (下) で解消を試みた。
+
+### P5c. frame を store の列のスライスにする
+
+**実装済み (2026-11-07、ブランチ `perf/p5c-frame-columns`。`perf/p1-collision-store` と `perf/p5b-state-publisher`
+をマージした上に 1 コミット):** `collect_fleet_frame(sim_core)` は pose / 速度 / is_moving を store の列から
+配列で取り、battery プラグインを持つ agent だけを個別に読み、agent の行と名前は fleet が変わるまで
+キャッシュする (core の `_fleet_revision` を追加 / 削除 / 改名で進める)。`Agent._is_moving` は store の
+`is_moving` 列への 1 要素ビューのプロパティ。明示的な agent 列を渡した場合は従来どおり走査する。
+テスト: 列スライスと走査の同値 (step、goal、battery、改名、削除を通して)。frame 収集は 1000 台で約 2 ms →
+29 µs、publish (収集 + 共有メモリ書き込み) は 46 µs。フルスイート 3153 passed、ブリッジ統合テスト PASSED。
+
+Docker での再計測 (1000 台、全台移動 (50 km 先)、publish 10 Hz = 毎ステップ、60 s 窓 × 3 回の中央値):
+
+| 構成 | max RTF | step | コア単体との差 |
+|---|---|---|---|
+| コア単体 (ROS なし) | 71.8x | 1.39 ms | 基準 |
+| state plane every_step | 60.5x (P5c 前 26.6x) | 1.65 ms | +0.26 ms (1.19 倍) |
+| state plane latest | 60.3x (P5c 前 26.8x) | 1.66 ms | +0.27 ms (1.19 倍) |
+| in-process | 6.4x | 15.7 ms | +14.3 ms |
+
+**受け入れ条件 6:** 「10x 以上」は 60x で達成。「latest で 1.05 倍以内」は 1.19 倍で未達。残り 0.26 ms のうち
+frame と書き込みは 46 µs で、残りはブリッジノードの POST_STEP フック (ロック、stamp 変換、ハンドラの走査) と
+rclpy の実行スレッドとの GIL の取り合いであり、step が 1.4 ms になった今はそれが見える。これ以上は
+ブリッジ側の構造 (publish フックを step スレッドから外す = every_step の意味を変える、または
+C++/Rust のブリッジ) の話になるので、1.05 倍は目標から外すか、1.2 倍に改める判断を提案する。
 - **ブリッジを C++ にする判断:** 不要になった。rclpy + `FleetStateEncoder` で 1 publish 0.7 ms なので、
   `every_step` のままでも 1000 台で 1500 publish/s 程度までは配信側が律速にならない。
   sim 側は共有メモリのレイアウトにしか依存しないので、必要になれば C++ の reader を後から足せる。
