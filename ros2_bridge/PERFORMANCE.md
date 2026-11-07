@@ -144,12 +144,12 @@ counts, and probe-match counts are not timings.
 | `fleet` | 100 | none | 5 Hz | 0 | 0.089 s | 0.007 s | max RTF 111.41x |
 | `fleet` | 500 | none | 5 Hz | 0 | 0.264 s | 0.035 s | max RTF 22.32x |
 | `fleet` | 1000 | none | 5 Hz | 1.0 | 0.027 s | 0.173 s | target-rate command check |
-| `fleet` | 1000 | none | 5 Hz | 0 | 0.550 s | 0.083 s | max RTF 10.98x (2026-09-01) |
+| `fleet` | 1000 | none | 5 Hz | 0 | 0.526 s | 0.091 s | max RTF 13.45x (2026-11-07) |
 | `per_robot` | 1000 | `state_publishers,tf,command_topics` | 5 Hz | 0 | publish 0.217 s | 0/1000 in 60 s | max RTF 0.64x |
 | `per_robot` | 100 | `state_publishers,tf,command_topics` | 5 Hz | 0 | publish 0.056 s | 15.033 s | 100/100 moved |
 | `hybrid` | 1000 | `state_publishers,tf,command_topics` | 5 Hz | 0 | fleet ack 7.998 s; per-robot publish 0.220 s | not verified | max RTF 0.30x |
 | `hybrid` | 1000 | `command_topics` | 5 Hz | 1.0 | 0.527 s | 0.112 s | target-rate command check |
-| `hybrid` | 1000 | `state_publishers,tf,command_topics` | 1 Hz | 1.0 | 1.862 s | 0.412 s | target-rate command check (2026-09-01) |
+| `hybrid` | 1000 | `state_publishers,tf,command_topics` | 1 Hz | 1.0 | 1.728 s | 0.297 s | target-rate command check (2026-11-07) |
 | `hybrid` | 1000 | `state_publishers,tf,command_topics` | 5 Hz | 1.0 | 8.657 s | 0.323 s | target-rate command check |
 | `hybrid` | 1000 | `actions` | 5 Hz | 1.0 | not available | not measured | DDS/RCL abort observed |
 

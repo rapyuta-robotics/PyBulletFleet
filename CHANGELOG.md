@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Snapshot/replay entries in this section describe development and validation
-profiles. A declared kinematic profile supports fixed-arm and mobile-arm validation programs, but
-they do not provide general save/load for arbitrary simulations and
-are not recommended for production use yet.
-
 ### Breaking
 
 - `Pose` fields may be NumPy array views. What `get_pose()` returns for a
@@ -159,50 +154,6 @@ are not recommended for production use yet.
   down in its `DOCUMENTED_DIFFERENCES`, and on a written-down difference
   that no longer occurs. `python -m tests.collision_parity.record` records
   the goldens again (`--check` compares without writing).
-
-- `SimEvents.STEP` (`"step"`): an event at the point where `register_callback()`
-  callbacks run by default -- after the object update, before the new poses are
-  written to PyBullet and before the collision check -- with `dt` and
-  `sim_time` (the time of the new state). Its handlers run before the `STEP`
-  callbacks and plugin `on_step`; time profiling reports them as `events_step`
-  (issue #84).
-
-- `events.on(event, handler, priority=0, frequency=None)`: a handler of a step
-  event (`pre_step`, `step`, `post_step`) on `sim.events` can run at a fixed
-  rate, on the same fixed grid of simulated time as callbacks and plugins
-  (#80), with `dt` the simulated time since it last ran. `initialize_simulation()`
-  and `reset()` restart its schedule. A per-entity or bare `EventBus` has no
-  simulation clock and raises `ValueError` for `frequency`, as does any other
-  event (issue #84). `frequency=0` means every step, as it does for
-  `register_callback()`.
-
-- `ControllerParams.max_angular_decel`: the braking rate of a turn, so a
-  rotation can stop at a different rate than it starts, as `max_linear_decel`
-  already allows for translation. Same scalar or per-axis form as
-  `max_angular_accel`; unset mirrors it, so every existing configuration keeps
-  the same symmetric rotation profile, bit for bit. A zero, negative or
-  non-finite value (or a per-axis value whose yaw component is not above
-  zero) raises `ValueError` when it is set, not at the first turn. Every rotation honours it:
-  per-agent and batched, omnidirectional final rotation and differential-drive
-  turns, with `Agent.max_angular_decel` as the read-only view. The batched
-  controllers carry the braking scalar per row, and their closed form agrees
-  with the per-agent trajectory to floating-point noise. The kinematic replay profile records it; a `pbf.kinematic.v4`
-  artifact recorded before it existed still loads, with the field unset.
-
-- `PathRequest` (`pybullet_fleet.path_request`): the waypoints and how to follow
-  them (`final_orientation_align`, `direction`, `auto_approach`) as one
-  object. `Agent.request_path(request)` and the controllers'
-  `request_path(agent, request)` take it; `Agent.set_path`, `set_goal_pose`
-  and the controllers' `set_path` build one from their arguments and are
-  unchanged. A request keeps its identity on its way to the controller, and
-  `Agent.path_request_state(request)` tells what became of it
-  (`PathRequestState`: active, pending, finished or gone). A custom controller
-  written against `set_path` alone keeps working, and a subclass of a
-  kinematic or batch controller that overrides `set_path` is still called for
-  every request; its `super().set_path()` keeps the request's identity. The
-  braking path of `brake()` is the controller's own and bypasses such an
-  override.
-
 - Steady-state fleet benchmark: `benchmark/steady_bench.py` and
   `run_benchmark.py --type steady` measure a fixed window of steps in which
   every robot keeps moving, with the per-phase step time, the collision event
@@ -212,926 +163,118 @@ are not recommended for production use yet.
   the aisles of tens of thousands of static boxes) and `idle`.
   `make bench-steady` runs the reference set. `batch_perf.py`'s scene helpers
   are public (`make_sim`, `make_fleet`, ...) so the workers share them.
-- Per-axis collision clearance (#105): `collision_margin` (in
-  `SimulationParams`, YAML and `set_collision_margin()`) also takes an
-  `(x, y, z)` triple, one clearance per world axis, for example
-  `(0.05, 0.05, 0.0)` to report bodies within 5 cm side by side but not one
-  passing close under a shelf. The triple acts on AABBs: a pair is a
-  candidate only if its AABBs, each axis enlarged by that axis's clearance,
-  overlap. `CLOSEST_POINTS` and `HYBRID` then judge the candidate by its
-  straight-line gap, querying `getClosestPoints()` with the largest component.
-  So `(m, m, m)` is the same as `m`, and `(m, m, 0)` reports exactly what
-  `CollisionMode.NORMAL_2D` with `m` did, for every pair. A scalar margin
-  behaves and costs as before; `CONTACT_POINTS` ignores the clearance as
-  before. A margin change, through the setter or `params`, rechecks
-  stationary pairs as a scalar change does.
 
-- `MultiRobotSimulationCore.query_aabb(aabb_min, aabb_max)`: the objects whose
-  AABB overlaps a box, looked up through the collision spatial hash, so the
-  cost follows how crowded the box is rather than how many objects the
-  simulation holds. Objects with collision `DISABLED` are tested directly, as
-  the hash does not track them; inside a step, a pose written but not yet
-  flushed is answered with the AABB the object had when the step began.
-  `MultiRobotSimulationCore.pickable_candidates_near(position, radius)`: the
-  same lookup for a search by base origin, which also covers pickable objects
-  whose shape is set far off their origin.
-  `SimObject.find_nearest_pickable()` and an `Elevator`'s passenger scan now
-  use them: in a scene of 22,000 static tiles, `find_nearest_pickable()` went
-  from about 55 ms to 0.02 ms, with the same result.
-
-- `Agent.set_joint_position(joint, position)`: put a joint at a position at
-  once, without moving it there, as `set_pose()` does for the base. The
-  position becomes the joint's target and any profile speed is dropped, so the
-  joint stays there; objects attached to the links follow, and the body counts
-  as moved for the next collision check. With physics on, `max_force` (default
-  500, as in `set_joint_target`) holds it there. A position outside the URDF
-  limits is applied with a warning; a fixed joint is refused with one.
-
-- `Agent.set_joints_positions(positions)`: the same for several joints, taking
-  a list for every joint or a dict by name or index, as `set_joints_targets`
-  does. Attached objects follow once, after all of them are placed.
-
-- `MultiRobotSimulationCore.notify_geometry_changed(obj)`: tell the simulation
-  that a body's links moved without its base pose being set, after moving its
-  joints directly with `p.resetJointState()`. The body counts as moved for the
-  next collision check, and its broadphase AABB (which covers every link) and
-  spatial-hash cells follow the links: at once outside a step, and before the
-  collision check when called inside one (from a step callback, for example).
-  `Agent.set_joint_position()`, `set_joints_positions()` and kinematic joint
-  motion call it already.
-- `examples/arm/link_collision_demo.py`: collision of an articulated body's
-  links, not only its base -- a fixed arm sweeping through a box outside its
-  base, a mobile manipulator whose arm hits a pillar its base clears, and a
-  joint reset by hand followed by `notify_geometry_changed`. It checks that
-  each obstacle was hit by a link and never by a base, and runs headless
-  (`--no-gui`) as a test.
-
-- `Elevator.request_floor(floor, instant=True)`: the cabin is at the floor at
-  once with its passengers aboard, instead of riding there; the next update
-  observes the arrival and releases them as after any trip. Accepted also
-  while the cabin is moving, whatever the request policy: the cabin is put at
-  the new floor with the passengers of its trip, the pending requests are
-  dropped, and the result is `REDIRECTED`.
-  `ElevatorMotionAdapter.begin_motion` takes the matching `instant` flag,
-  passed only when a request asks for it.
-
-- `ElevatorRequestPolicy.REDIRECT`: a request received while the cabin is
-  moving turns it toward the new floor at once, with its passengers, and drops
-  any pending floor, so the latest request wins (`ElevatorRequestResult.REDIRECTED`).
-  For controllers that retarget a car in motion instead of waiting for it to
-  arrive first.
-
-- `ElevatorParams.boarding_height` (default 1.0, the previous fixed value):
-  how far above the platform's top an object may be and still be attached
-  when the cabin starts moving. Keep it below the floor spacing; with 1.0 and
-  floors 0.6 m apart, a robot waiting on the floor above the cabin was taken
-  along and arrived 0.6 m above the floor it was carried to. `Elevator.from_params`
-  warns when it reaches the smallest floor spacing.
-
-- `ElevatorParams.report_platform_contacts` (default `false`; YAML
-  `report_platform_contacts`, a boolean or `"true"` / `"false"`): report a
-  body standing on the elevator's platform as a collision with the elevator.
-  Off by default, so a robot waiting on the platform is not a collision (see
-  the articulated-AABB entry under Fixed for when the rule applies).
-
-- `ControllerParams.stop_on_collision`: an agent that sets it stops dead, as
-  `stop()` does, on the step a collision starts that involves it or an object
-  attached to it (a carried load stops its carrier), instead of driving or
-  braking on past the point of contact. A contact with its own attached
-  object does not count, and an agent struck while it stands is left alone.
-  Off by default; per agent, through a fleet's
-  controller config, or for every agent with `PBF_CONTROLLER_STOP_ON_COLLISION`.
-
-- `Agent.brake()`: come to rest at `max_linear_decel` along the current line of
-  motion, keeping the heading and dropping the rest of the path, for
-  omnidirectional and differential-drive agents (per-agent and batched) under
-  a path or a velocity command. A differential agent brakes straight along its
-  heading, backwards when it is backing up. `stop()` remains the immediate
-  stop. Controllers gain `continuation_velocity(agent)`, the velocity a new
-  path continues from.
-
-- Braking is a controller method: `Agent.brake()` delegates to the
-  controller's `brake(agent)`, and both it and `goal_replacement="brake"` take
-  the braking path from `braking_request(agent)`, which a custom controller
-  overrides to brake differently. A request that cannot continue the current
-  motion is not started: a warning naming the agent, and the default braking
-  point instead. The base `Controller.brake()` returns
-  `False` (cannot brake).
-
-- `ControllerParams.goal_replacement` (`GoalReplacement`): what a moving agent
-  does with a goal it cannot reach from its current motion within its limits.
-  `brake` (the default) brakes along the current motion at `max_linear_decel`
-  and starts the goal from rest; `immediate` starts it from rest at once;
-  `reject` refuses it (`set_path` returns `False`); `wait_complete` holds every
-  goal set while a path is in progress, reachable or not, and starts it once
-  that path is finished. A goal the agent can reach is taken at once,
-  continuing the motion, in every mode but `wait_complete`. Only the latest
-  held goal is kept; a newer request, `stop()`, `brake()` or a velocity
-  command drops it, with an INFO log line naming the agent, the goal and the
-  reason. The global default is `_defaults.CONTROLLER["goal_replacement"]`
-  (environment variable `PBF_CONTROLLER_GOAL_REPLACEMENT`); a manager's
-  `fleet_controller` and an agent's own `controller` settings override it.
-  Per-agent and batched, omnidirectional and differential controllers behave
-  alike. Differential agents now continue the motion into a goal that needs no
-  turn (issue #78). Checkpoints record the held goal and the braking state;
-  the kinematic profile's controller state is now version 3, and the omni
-  checkpoint proof's record version 3.
-
-### Changed
-
-- A mesh collision shape PyBullet cannot build (a Gazebo `.dae`, say) gives a
-  visual-only body as before, and the warning now says that later spawns with
-  the same shape on the same client reuse that result without another attempt
-  (#120). It stays cached on purpose: the same mesh fails the same way, and
-  retrying would log once per spawn.
-
-- Per-step hooks share one mechanism: `register_callback()` callbacks and
-  `SimPlugin.on_step()` are subscriptions on `sim.events`, in tiers after the
-  event's own handlers (handlers by priority, then callbacks in registration
-  order, then plugins in load order). Their order, schedule, arguments and
-  exception handling are unchanged: a callback's exception still propagates
-  out of `step_once()`, a plugin's or a handler's is logged. `events.off()` and
-  `events.clear()` affect only handlers registered with `events.on()`;
-  `has_handlers()` also counts callbacks and plugins. An emit now calls the
-  subscriptions present when it starts, in every tier: a handler, callback or
-  plugin added by one of the same event first runs on the next emit (a handler
-  added by a handler used to run in the same one), and one removed still runs
-  in the current emit. The
-  kinematic replay profile rejects a frequency-limited event handler, as it
-  does a frequency-limited callback. No change in step time without hooks
-  (issue #84).
-
-- Callbacks and plugins can run at any of the three step events.
-  `CallbackPhase.PRE_STEP` (`"pre_step"`) joins `STEP` and `POST_STEP`: such a
-  callback runs at the start of the step, after the `pre_step` handlers, before
-  the clock advances and before anything moves. A plugin's `on_step()` takes a
-  phase too (`SimPlugin.step_phase`): set by the class (`default_step_phase =
-  "post_step"`), by `register_plugin(..., phase=...)` or by the YAML
-  `phase` field, with `step` as before by default; it is fixed once the plugin
-  is registered (setting it then raises `RuntimeError`). Plugins run after the
-  callbacks of their event, with their `frequency`; an unknown phase raises
-  `ValueError`. The time profile adds `callbacks_pre_step`. `SimPlugin` adds
-  the attribute names `step_phase` and `default_step_phase`; a plugin of your
-  own that already uses either for something else needs to rename it.
-
-- A kinematic joint with an acceleration ramp (`set_joint_motion_profile(...,
-  max_accel=...)`) is evaluated each step from its trajectory's phase scalars,
-  read once per target change, instead of `TwoPointInterpolation.get_point()`.
-  The motion is the same, to float noise. Evaluating 1,400 ramped joints
-  (200 bodies x 7) went from 1.6 ms to 0.85 ms per step; the whole joint
-  update, which also writes every joint to PyBullet, from 6.6 ms to 5.9 ms.
-
-- `Agent.set_joint_target()`, `get_joint_state()` and `is_joint_at_target()`
-  take a joint by index or by name, as `set_joint_position()` and
-  `is_joint_moving()` do: `set_joint_target("lift", 1.0)` now works. The first
-  parameter is renamed from `joint_index` to `joint`; a call that passes it as
-  `joint_index=` still works, and `set_joint_target_by_name()`,
-  `get_joint_state_by_name()` and `is_joint_at_target_by_name()` remain as
-  aliases, both deprecated (see Deprecated). An unknown joint is handled as before: `set_joint_target()` ignores
-  it with a warning, `get_joint_state()` returns `(0.0, 0.0)` with a warning
-  for a name and lets PyBullet raise for an index, and `is_joint_at_target()`
-  returns `False`. A negative index given to `set_joint_target()` is now also
-  ignored with a warning; before, it recorded a target for a joint that does
-  not exist, or failed inside PyBullet with physics on.
-
-- A `MoveAction` ends by what becomes of its own `PathRequest`: `CANCELLED` as
-  soon as another request replaces it, drops it from the hold, brakes or stops
-  it -- not when the agent next comes to rest -- and `COMPLETED` only when its
-  own request was followed to its end (a replacement ending at the same place,
-  with another final orientation, used to count as completed). Such a request
-  from outside the action queue is an interrupt: the queue starts its next
-  action only once that path has ended, so the next `MoveAction` does not
-  overwrite it; `clear_actions()` first drops the rest of the queue instead.
-  Under `wait_complete` the outside path is held instead: the action
-  completes, and the held path runs before the next action.
-  A `PickAction` or `DropAction` whose own approach, move to the pick or drop
-  pose, or retreat ends that way ends `CANCELLED` too (`FAILED` for a failed
-  move), and does not pick or drop where the agent was left.
-
-- `ignore_attached_collision` now covers every object on one attachment tree,
-  not only a direct parent and child: two loads on one carrier and a load on a
-  load no longer count as colliding, the same rule `stop_on_collision` uses.
-
-- Setting a goal on a moving agent is cheaper: the check whether the agent
-  can continue into it and the trajectory it then follows share one solve
-  instead of solving the same trajectory twice, and the differential heading
-  computation avoids a generic cross product. Per goal, 5-45% less time
-  across per-agent and batched, omnidirectional and differential controllers
-  (`benchmark/experiments/goal_replacement_cost.py`).
-
-- The ROS 2 bridge Docker images build from the Open-RMF demos image pinned
-  by digest (`RMF_DEMOS_IMAGE` build argument) instead of the nightly
-  `jazzy-rmf-latest` tag, whose rebuilds changed the demo worlds' model URIs
-  and broke the Fuel model cache stage. The Fuel model download now always
-  creates the cache directory and fails with an explanation when the image has
-  no demo worlds or the worlds name no Fuel models (the latter can be allowed
-  with `ALLOW_NO_FUEL_MODELS=1`).
-
-- Spawning an agent no longer copies the controller's construction config a
-  second time for its spawn descriptor, and the parameter names of spawn
-  factories and controller constructors are introspected once per callable
-  instead of once per object: spawning 1000 agents takes 0.30 s instead of
-  0.36 s, as in v0.8.0. Each agent still keeps its own descriptor: a
-  controller that overrides `_construction_config()` should return a new dict
-  each call; its result is still deep-copied unless the class sets
-  `_construction_config_is_fresh = True`. That declaration is the class's
-  responsibility: the first spawn of each class only checks that two calls
-  return two dicts, and logs a warning and keeps copying if not. The
-  introspection cache holds its callables weakly and skips callables that
-  cannot be cached (an unhashable callable object, say).
-
-- The DataMonitor no longer costs more than the step in a large scene. Its
-  entity list is rebuilt only when an object is added, removed or renamed
-  (`SimObject.name` is now a property that tells the simulation), the list's
-  JSON is serialized once per change, and the file is written from its parts
-  without joining them into a new string. With the monitor window open,
-  `monitor_update_interval=None` now refreshes every 0.25 simulated seconds
-  instead of every step (the window reads the file every 0.5 s); without the
-  window it is still 1 s, and `0` is still every step. Each refresh builds
-  `last_monitor_frame` and writes the file.
-  While paused, a selection, follow or pause change, a pose edited from the
-  GUI or set by user code (`set_pose()` outside a step), and a single step
-  refresh at once; the final frame of a run is written, `close()` writes the
-  last state, and the new `flush_monitor()` does so on demand, also after a
-  pose set outside a step. Such a pose does not recompute collisions: contact
-  counts (`active_collisions`) stay as of the last step until the simulation
-  steps again. `reset()` empties the entity list. The JSON a reader sees is
-  unchanged.
-  Median step time with 5000 static boxes and 20 moving agents (headless,
-  `target_rtf=0`, timestep 0.1, a 312 KB monitor file): 25.9 ms before with
-  the window flag on (a refresh every step), 0.84 ms now with the window
-  flag on (default, every 0.25 s), and 0.63 ms with the monitor off. A
-  refresh every step (`monitor_update_interval=0`) still writes the whole
-  file each step: 0.95 ms per step, about 0.3 ms per write on that scene.
-
-- Collision broadphase: every collision body is registered in every
-  spatial-hash cell its AABB, enlarged by half the collision margin (not in z
-  for a NORMAL_2D body), touches, and a moved body's candidates are the bodies
-  sharing one of its cells -- no 9- or 27-cell neighbour search. Two bodies
-  within the margin always share a cell, so no pair within it is missed,
-  whatever the bodies' sizes, their collision modes (NORMAL_2D, NORMAL_3D,
-  STATIC) or the margin, 0 included (#89). The grid is rebuilt whenever the
-  effective margin changes, also when `params.collision_margin` or
-  `params.collision_detection_method` is assigned directly. `multi_cell_threshold`
-  is accepted, no longer used, and a value other than the default raises a
-  DeprecationWarning. Each moved body updates the grid once per step (physics
-  bodies were updated twice), a body switched to STATIC is re-registered, and
-  a DISABLED body that moves is no longer put in the grid. 1000 batch agents,
-  half moving, a collision check every step, automatic cell size, robots
-  0.35 x 0.57 m with bins and static scenery: NORMAL_2D 18.3 ms per step
-  (48.2 ms before, 29.3 ms in v0.8.0), NORMAL_3D 18.4 ms (56.8 ms, 32.2 ms),
-  NORMAL_2D with static collisions counted 25.0 ms (88.4 ms, 43.0 ms).
-
-- `ControllerParams` takes either enum field -- `default_direction` and
-  `goal_replacement` -- as the enum or its string value, on construction and
-  on any later assignment, and stores the enum; an unknown value raises
-  `ValueError` there.
-  `default_direction` given as a string to the constructor used to stay a
-  string (only `from_dict()` converted it). `ControllerParams.as_config()`
-  returns the fields as plain data, enums as their string values.
-
-- A goal or path set on a moving agent that it cannot continue into within
-  its limits now brakes first by default (`goal_replacement="brake"`): the
-  agent stops along its current motion at `max_linear_decel`, then starts the
-  goal from rest. The last release started such a goal from rest at once,
-  dropping the current speed in one step; set `goal_replacement="immediate"`
-  (per agent, per manager's `fleet_controller`, or globally through
-  `PBF_CONTROLLER_GOAL_REPLACEMENT`) for that behaviour.
-
-- `MoveAction` ends `COMPLETED` only when the agent comes to rest at the
-  path's last waypoint. Stopped elsewhere -- the path was braked
-  (`Agent.brake()`) or replaced by a newer one, held goals included -- it ends
-  `CANCELLED`, and a path the agent refuses for good (a fixed base, an empty
-  path) ends `FAILED`; both used to end `COMPLETED`. The check no longer reads
-  `Agent.path`, which a batch-owned agent always reports empty.
-
-- A moving differential-drive agent takes a goal whose line is within
-  `_replan.HEADING_TOL` (1e-3 rad) of its heading as straight on: it snaps its
-  heading onto the line and continues at its speed, as an omnidirectional
-  agent does within its cross-track tolerance. A larger turn still needs a
-  turn in place (braked for under `brake`). From rest the agent still turns
-  for any heading error above 1e-6 rad.
-
-- An agent's velocity is its state, set from the trajectory it follows. The
-  batched controllers (`BatchOmniController`, `BatchDifferentialController`)
-  now report each agent's profile velocity at the step's time, as the
-  per-agent controllers do, instead of the pose change averaged over the step,
-  which lagged while accelerating, led while braking and stayed non-zero on the
-  arrival step. `Agent.velocity`, `angular_velocity` and the odometry built
-  from them therefore change for batched agents: the twist is the
-  instantaneous velocity at the end of the step, so integrating it while the
-  agent accelerates or brakes no longer reproduces the pose change exactly
-  (the pose itself is unchanged). A goal replaced mid-motion
-  continues from that velocity state in every controller (the batched ones
-  re-derived it from their trajectory arrays), so a restored velocity is what a
-  new goal continues from. The yaw rate reported during a turn in place now
-  carries the turn's sense (negative clockwise) in the per-agent controllers
-  too; it was the unsigned angular speed.
-
-- `step_once()` advances `sim_time`, the elapsed time and `step_count` right
-  after the `pre_step` event, before the object update, instead of after the
-  `post_step` event. `sim_time` is now the time of the state you see everywhere
-  except a `pre_step` subscriber:
-  - Position controllers (`OmniController`, `DifferentialController` and the
-    batched omni and differential controllers) evaluate their trajectories at
-    the end of the step, as kinematic joints already did; before, a step's pose
-    was the trajectory one step earlier. A path set in a `pre_step` subscriber
-    moves in that same step (with `auto_approach=False`; the default
-    zero-length approach waypoint still takes a step), and a motion completes
-    one step sooner.
-  - `post_step` subscribers (and the `post_step` payload's `sim_time`) see the
-    step they complete: `step_count` and `sim_time` have already advanced. Code
-    that added one to `step_count` in a `post_step` handler must drop it.
-  - Outside a step `sim_time` is the completed time (it used to lag one step
-    behind `step_count`); actions' start and end times, behavior-tree ticks and
-    collision observations carry the time of the step that produced them.
-  - A step that raises before it completes returns the clock and counter to
-    the last completed boundary.
-  - `sim_time` is read-only: it reads the simulation's one clock, so it can no
-    longer drift from the elapsed time by assignment. Move the clock with
-    `restore_completed_step_boundary()` (resuming from a checkpoint); assigning
-    `sim_time` raises `AttributeError`.
-  - The snapshot-replay evidence documents keep the values recorded before this
-    change, with a note.
-
-- A goal or path set on a moving omnidirectional agent (per-agent
-  `OmniController` and `BatchOmniController`) now continues the motion: the
-  new trajectory starts from the agent's speed toward the new goal instead of
-  from rest, and `Agent.set_path` no longer puts a zero-length approach
-  waypoint (the current pose) in front of it while the agent moves. The speed
-  is signed along the new line, so a goal behind is reached by slowing,
-  reversing and driving back. A goal is taken when that trajectory exists
-  within the configured limits; otherwise `goal_replacement` decides (see
-  above), and under `reject` it is refused -- inside the braking
-  distance, where the agent is, or off the line of motion: the current motion
-  and path continue unchanged, no limit is ever exceeded, and
-  `Agent.set_path` / `set_goal_pose` return `False` (`True` when taken; the
-  `AgentManager.set_goal_pose*` wrappers pass it on). `Agent.path_rejection()`
-  gives the reason without acting, as a `PathRejection` whose `temporary`
-  flag tells a refusal that lasts only while the agent moves from a
-  permanent one (fixed base, empty path). At rest every goal is taken, as
-  before. Callers inside the library retry a temporarily refused goal on
-  their next update
-  (`MoveAction`, `PatrolController`, `RandomWalkController`, the behaviour
-  tree's `NavigateTo`, whose `NavigationAdapter.start_navigation()` may now
-  return `False`), and `FleetCommandDispatcher.navigate()` reports it in the
-  ack's `rejected` map -- also when the refusal comes only after the command
-  event was emitted (a handler of it changed the robot): the returned ack and
-  the recorded input then list only the goals actually applied. A replaced
-  goal is judged on the speed of the pose in effect when it is set
-  (`sim_time`), per-agent and batched alike, whichever phase sets it.
-  This needs
-  `two-point-interpolation>=1.3.2`: earlier versions could return a trajectory
-  that never reached its target for a body starting away from it, which a
-  reversal is. Navigation checkpoints record the trajectory's initial
-  speed (`forward.v0`); the kinematic profile's controller state is now
-  version 2. A refusal is logged at DEBUG. From a speed above `vmax` (lowered
-  during the motion) the new trajectory first slows down to it.
-
-- `RobotGoalCommand2D.z` defaults to `None`: the robot keeps its present
-  height (`to_pose(current_z)`, which `FleetCommandDispatcher.navigate()`
-  passes). It was `0.0`, which made a planar goal a 3D move for a robot whose
-  pose is not at `z = 0` -- one a moving omni agent refuses as off its line of
-  motion. An explicit `z` is kept; `ReplayInput.navigate()` and recorded
-  `navigate` inputs accept `z: null` the same way.
-
-- URDF SimObject and mesh Agent factories retain their effective spawn
-  descriptors for recording handlers, including URDF fixed-base and scale
-  settings. The development kinematic profile rejects batch-owned Agents,
-  changed Agent pickability and malformed floor settings before restore.
-
-- The development kinematic recording profile accepts a physics-off world
-  containing supported primitives without requiring an initial Agent.
-
-- Keep the supported kinematic recording guide as the how-to entry point;
-  move earlier re-execution and checkpoint validation guides to the snapshot
-  design records. Demo video capture remains a separate how-to.
-
-- Custom controller subclasses without their own `_registry_name` no longer
-  replace an inherited built-in registry entry such as `omni`.
-
-- Kinematic joint state moves into a `KinematicJoint` dataclass, one per
-  joint, replacing the five dictionaries keyed by joint index that held
-  position, last target, motion profile, speed and trajectory between them.
-  No behaviour change: the same fields, read and written in the same places.
-
-- `Agent.from_urdf()` and `SimObject.from_urdf()` load through one shared
-  helper, `load_urdf_body()`. `Agent.from_urdf()` gains `global_scaling` and
-  now raises `FileNotFoundError` for a URDF it cannot read, where it
-  previously let PyBullet's own `error` escape -- the two factories had
-  drifted on both points.
-
-- `build_tpi()` accepts a `decel` argument instead of pinning `dec_max` to
-  `accel`. `TwoPointInterpolation` has always supported an independent
-  deceleration; the wrapper was discarding it.
-
-- The batched controllers honour `max_linear_decel` too.
-  `trapezoid_distance()` takes the braking scalar as its own argument instead
-  of reusing the acceleration one, and `extract_phase_params()` returns it
-  alongside -- the phase durations in `tpi.dt` were already the asymmetric
-  ones. Batched and per-agent trajectories agree to floating-point noise on
-  the same profile. Rotation stays symmetric, angular limits having no
-  separate deceleration.
-
-- `Agent.set_path()` marks the agent moving only once the controller has
-  accepted the path, and the batched controllers set the flag inside the lock
-  that guards their array writes, so a controller that refuses a path does
-  not leave an idle agent reporting `is_moving`.
-
-- The validation-only omni checkpoint proof now uses the shared kinematic
-  navigation capture/restore methods, including asymmetric deceleration.
-  Its artifact version advances to 2. The redundant straight-only controller
-  methods have been removed, and per-joint checkpoint conversion now lives
-  with `KinematicJoint` while `Agent` applies the rebuilt joints to PyBullet.
-- An optional state-recorder error during a command, object spawn/removal, or
-  completed-step capture now stops recording with an explicitly incomplete
-  artifact while the simulation operation continues. GUI playback selects the
-  first available checkpoint at the configured cadence. Checkpoint restore
-  also verifies the recorded result and input streams before loading state.
-  Accepted inputs issued outside the final step are flushed when recording
-  closes, including runs with no completed steps. Closing a recorder detaches
-  it from the simulation, so subsequent steps continue without recording.
-
-- Group corridor policy evaluation programs under `examples/evaluation/` and
-  checkpoint/state-discovery programs under `examples/validation/`. Their
-  Python module paths and documented run commands now use those folders.
-
-- A negative or non-finite `frequency` for `register_callback()`,
-  `register_plugin()` or a plugin config now raises `ValueError`; a negative
-  one used to mean every step. `None` (and `0` for a callback) still means
-  every step.
-
-- `SimulationParams.monitor_update_interval` is read once, when the
-  simulation is created; changing `params` afterwards no longer changes the
-  DataMonitor refresh rate.
-
-- Time profiling reports `CallbackPhase.POST_STEP` callbacks as
-  `callbacks_post_step`, apart from `events_post_step`.
+## v0.9.0 (2026-11-08)
 
 ### Added
 
-- Add `register_callback(..., phase=CallbackPhase.POST_STEP)` (`CallbackPhase`
-  in `pybullet_fleet.types`; the string `"post_step"` works too): a callback that runs at the
-  end of the step, right after the `post_step` event, once poses are written
-  and the collision check is done, with the same `frequency` option as Phase-1
-  callbacks, scheduled on `sim_time`, the time of the state it sees.
-
-- Add `MultiRobotSimulationCore.set_collision_ignore_filter(fn)`: touching
-  pairs for which `fn(obj_a, obj_b)` returns `True` are excluded from
-  collision results -- active pairs, `collision_count`, collision colouring,
-  `COLLISION_STARTED` and the collision observation -- and skip the narrow
-  phase. Filtering in a `COLLISION_STARTED` handler instead left every other
-  figure counting the contact. A pair that becomes ignored while active
-  resolves on the next check, and one that stops being ignored is checked
-  again on the next one even if neither body moved, so the filter may depend
-  on run-time state.
-
-- Add `SimulationParams.ignore_attached_collision` (default `true`): contact
-  between an object and the object it is attached to is no longer reported
-  as a collision. Set it to `false` for the previous behaviour.
-
-- Add `SimulationParams.monitor_log_interval`: the monitor's figures --
-  real-time factor, collision totals, step count -- are logged as an INFO
-  `[MONITOR]` line every that many wall-clock seconds, whether or not
-  `monitor` or `gui` is on. They were otherwise computed only for the
-  DataMonitor and logged at DEBUG, so a run kept no record of its real-time
-  factor or collisions. Defaults to 1 s; `0` turns it off.
-
-- Add `SimulationParams.monitor_update_interval`: simulated seconds between
-  DataMonitor refreshes, which were fixed at every step with a GUI and every
-  second without one. The default (`None`) is every step while the monitor
-  window is open (`enable_monitor_gui`, or `gui` when that is unset), so a
-  monitor window on a headless run stays live too, and every second
-  otherwise; `0` is every step. It is independent of `monitor_log_interval`.
-
-- The monitor's real-time factor is measured against the newest sample older
-  than its 10 s window as well, so updates sparser than the window no longer
-  report `rtf=0.00`.
-
-- Add `SimObject.from_urdf()` and a `urdf_path` field on
-  `SimObjectSpawnParams`, so a URDF-defined body with no behaviour can be
-  loaded as a plain `SimObject` instead of an `Agent`. `from_sdf()` already
-  covered SDF; URDF had no non-agent loader, and `urdf_path` existed only on
-  `AgentSpawnParams`. Static scenery created this way stays out of the
-  per-step update loop (`_needs_update` is `False`): measured on a scene of
-  2376 fixed-base, jointless, controller-less bodies, 15.98 ms per step as
-  Agents against 0.78 ms as SimObjects.
-
-- Add `ControllerParams.max_linear_decel` (scalar or per-axis, same semantics
-  as `max_linear_accel`) so vehicles that brake harder — or softer — than they
-  accelerate can be modelled. Leaving it unset mirrors `max_linear_accel`, so
-  existing configurations keep their symmetric trapezoid unchanged.
-  `Agent.max_linear_decel`, `ControllerParams.linear_decel_along_direction()`
-  and `ControllerParams.scalar_max_linear_decel()` round out the accessors.
-- Add `MultiRobotSimulationCore.close()` and context-manager support.
-  `run_simulation()` has always released the client on its way out, but a
-  program driving `step_once()` itself, or a test that only builds a scene,
-  never reached that code and nothing else disconnected. Because PyBullet's
-  module-level calls resolve against a default client, a leaked client made
-  the *next* simulation in the process report bodies and joints "not found"
-  rather than failing where the leak happened. `close()` is safe to call more
-  than once and on a simulation that was never run.
-- Add `Agent.set_joint_motion_profile()`, and `max_speed` / `max_accel` /
-  `max_decel` on `ElevatorParams`. A kinematic joint ran at the URDF's
-  `<limit velocity="...">` and reached it instantly, so its speed was a
-  property of the model file -- two installations differing only in how fast
-  a cabin travels needed two URDFs, and
-  `changeDynamics(maxJointVelocity=...)` does not help because
-  `getJointInfo()` keeps reporting the original. Giving an acceleration makes
-  the travel a trapezoid solved by `TwoPointInterpolation`, the same solver
-  the linear controllers use: 0.6 m at 0.4 m/s takes 1.5 s flat and 1.9 s
-  with 1.0 m/s^2 ramps. Both are opt-in; with neither, and with a speed but
-  no acceleration, the joint keeps the constant-speed behaviour it always
-  had. A target a ramped joint cannot stop at -- one inside its braking
-  distance, one it is moving away from, or one set to where it already is --
-  brakes at the configured rate and re-plans rather than snapping to the
-  target. A profile can be changed while the joint moves: it keeps the speed
-  it is carrying and re-plans from it under the new limits.
-  `Agent.is_joint_moving()` reports whether a ramped joint is still in
-  motion, which `Elevator` arrival now waits for instead of taking the
-  action's tolerance as arrival. Both raise for a joint the body does not
-  have: `KeyError` for an unknown name, `IndexError` for an index out of
-  range (unlike the target and state APIs, which warn): a profile on a
-  missing joint would be silently ignored, and `False` from
-  `is_joint_moving()` would read as "stopped".
-- Add a PBF-owned, versioned kinematic recording profile for supported URDF
-  Agents, all kinematic joints, constructed primitives and attachments. A trusted
-  registry and `load_supported_simulation()` reconstruct a complete artifact
-  in a fresh process; the first ordinary `run_simulation()` then continues
-  from its completed-step checkpoint. A fixed-arm validation program records
-  and restores the existing demo's callback behavior through a declared
-  application data restorer; the ordinary demo remains unchanged. Unsupported
-  live state or missing restore code fails closed; recording errors mark
-  artifacts incomplete while simulation continues. The same profile renders
-  recorded kinematic entity frames in the GUI without executing simulation
-  steps; examples may supply an initial camera configuration. The manipulation
-  validation scenario now uses the one-call loader and ordinary
-  `run_simulation()` continuation with a registered external-stage restorer.
-  The supported profile now records joint motion limits, signed speed and
-  in-progress ramp phase for fresh-process continuation of ramped joints.
-  Its development artifact schema is `pbf.kinematic.v4`; older artifacts
-  lack parts of the current execution or object-construction state and must be
-  recorded again.
-  Active differential pose navigation and asymmetric omni/differential forward
-  deceleration are now restorable through shared TPI checkpoint primitives.
-  Physics-off standard `SimObject` box, sphere and cylinder shapes can be
-  reconstructed independently for display and collision, including local
-  shape offsets. Meshes, URDF objects and custom subclasses remain unsupported.
-
-- Add name-based simulation entity lookup on `MultiRobotSimulationCore`:
-  ordered multi-result searches for objects and agents, plus unique-result
-  helpers that raise `LookupError` when a name is missing or ambiguous.
-
-- Add opt-in, per-completed-step execution recording for the supported
-  physics-off omni manipulation scenario, including its generated approach
-  waypoint and final orientation turn, with fresh-process checkpoint
-  restore/resume and result playback through the same example CLI. Capture
-  every joint position/configured target on the supported robot, kinematic
-  attachment relation, box lifecycle and
-  scenario progress in a versioned profile; unsupported active state marks
-  recording incomplete rather than being silently omitted.
-  The common recorder accepts declared profiles and named, versioned data
-  callbacks. The example's Omni/box profile lives under `examples/validation/`.
-
-- Add a profile-limited, fresh-process checkpoint/restore proof for one
-  physics-off omni robot in straight navigation, with explicit
-  `run_simulation(resume=True)` continuation and a three-process example.
-  All three proof modes support optional GUI viewing and auto-named result
-  paths when `--output` is omitted.
-- Add an optional-GUI mobile-manipulator state-discovery example that exercises
-  runtime object spawn/delete, base and joint motion, link attachment and
-  detachment, and completed-step observations without adding checkpoint APIs.
-- Add a one-sided corridor traffic experiment that compares ordinary kinematic
-  passage through an entrance-side merge with an external collision-triggered
-  stop/restart rule, optional
-  single-policy GUI observation, auto-named result directories, and reports
-  of all-robot passage time and blocking evidence.
-  A stopped conflict-group winner resumes immediately so the external response
-  does not stop every moving member of that group.
-- Expose the latest collision-check observation, including active pair IDs,
-  detection branch, signed closest-point distance and sample time, without a
-  second all-pairs query.
-- Add a synthetic 20-robot corridor evaluation example with independent entry
-  policies, optional single-policy GUI observation, task/collision evidence,
-  and simulated-time fleet metrics.
-- Add a macOS launcher for viewing Linux GUI examples in a browser via Colima
-  and noVNC.
-- Opt-in, versioned kinematic navigation replay: record effective Fleet API navigate/stop inputs, reconstruct a fresh supported initial world, and compare acknowledgements, events and full observations. Supports omni/batch_omni, stable artifact entity IDs, integrity validation and explicit changed-configuration comparisons; does not provide checkpoint/resume or ROS/DDS replay.
-- `run_simulation()` now warns when real time between consecutive loop
-  iterations exceeds 2 seconds, regardless of `target_rtf`. The existing
-  wall-vs-monotonic clock-jump diagnostic only logged in the `target_rtf > 0`
-  branch, so `target_rtf <= 0` (run-as-fast-as-possible) had no loop-timing
-  instrumentation at all — a host overload or a stalled GUI event left
-  nothing to go on after the fact.
+- Add `PathRequest`: a path and how to follow it (final orientation, direction,
+  approach) as one object. `Controller.request_path()` takes it, and
+  `PathRequestState` tells whether it is pending, active, finished or gone.
+- Add `ControllerParams.goal_replacement` (`GoalReplacement`) for a goal set on
+  a moving agent that it cannot reach from its current motion: `brake` first
+  (default), `reject` it, `wait_complete` (finish the current path first) or
+  `immediate`. Add `Agent.brake()`, and `ControllerParams.max_linear_decel`,
+  `max_angular_decel` and `stop_on_collision`.
+- Add step hooks: the `STEP` event, `events.on(..., frequency=...)`,
+  `CallbackPhase` (`PRE_STEP`, `STEP`, `POST_STEP`) for `register_callback()`,
+  and `SimPlugin.step_phase` for plugins.
+- Add collision controls: per-axis `collision_margin`,
+  `set_collision_ignore_filter()`, `ignore_attached_collision` (default on),
+  `query_aabb()`, `notify_geometry_changed()` and access to the latest
+  collision-check result.
+- Add joint control by name or index for all joint methods,
+  `Agent.set_joint_position()` / `set_joints_positions()` to place joints at
+  once, and `set_joint_motion_profile()` for kinematic joint speed and
+  acceleration limits.
+- Add elevator options: `request_floor(..., instant=True)`, the `REDIRECT`
+  request policy, `boarding_height`, `report_platform_contacts`, and speed and
+  acceleration limits.
+- Add `SimObject.from_urdf()`, name-based entity lookup,
+  `MultiRobotSimulationCore.close()` and context-manager support, and the
+  monitor settings `monitor_update_interval` and `monitor_log_interval`.
+- Add kinematic state recording and fresh-process restore for a declared
+  profile: supported URDF agents, kinematic joints (including ramped motion),
+  primitive objects and attachments. `load_supported_simulation()` rebuilds a
+  recorded world in a new process and `run_simulation()` continues from the
+  last completed step; recordings can also be played back in the GUI without
+  stepping. Unsupported state fails closed, and a recording error marks the
+  artifact incomplete without stopping the simulation. The artifact schema is
+  `pbf.kinematic.v4`.
+- Add kinematic navigation replay: record the Fleet API navigate and stop
+  inputs, rebuild the initial world, replay them and compare acknowledgements,
+  events and observations (`ReplaySession`; omni and `batch_omni`).
+- Recording, restore and replay are development and validation profiles. They
+  are not a general save and load for any simulation, and are not recommended
+  for production use yet.
+- Add examples: link collision for fixed and mobile arms, corridor traffic
+  evaluation (20 robots, entry policies, collision-triggered stop and restart),
+  mobile-manipulator state discovery, checkpoint and restore validation, and a
+  macOS launcher that shows Linux GUI examples in a browser.
+- `run_simulation()` warns when more than 2 s of real time passes between loop
+  iterations, at any `target_rtf`.
 
 ### Changed
 
-- Align the one-sided traffic example's `run_policy()` and report `policy` name
-  with the bidirectional evaluation example. In its version 2 report, name route
-  phases `entrance`, `exit` and `destination` instead of using numeric indices.
-- Extend the one-sided traffic example's external collision response through
-  endpoint arrival, and report all-robot endpoint time separately from corridor
-  passage time.
-- Shorten both corridor examples to a 1.5 m passage; start the bidirectional
-  evaluation GUI closer to the action, auto-name its output directory when
-  no path is supplied, and allow both examples to show the live DataMonitor
-  with `--gui --monitor`.
-- Move the traffic-experiment GUI camera closer and allow arrow-key panning in
-  PBF's interactive camera controller.
-- Keep replay input application and result capture in `ReplaySession`, without replay-specific mutation guards in ordinary simulation and Fleet APIs. Direct core calls are outside the recorded-input contract.
-- `SimObject.create_shared_shapes()` called without `physics_client_id` emits a
-  `DeprecationWarning`. It still falls back to PyBullet's default client (0),
-  which is the wrong client when more than one simulation runs in the process;
-  pass `physics_client_id=sim_core.client`. The fallback will be removed in a
-  future release. `load_urdf_body()` (unreleased) and the internal
-  `_create_body_from_shapes()` now require `physics_client_id`.
+- A goal or path set on a moving agent now continues the current motion when it
+  can and brakes first when it cannot (`goal_replacement="brake"`), instead of
+  restarting from rest.
+- `MoveAction` ends `COMPLETED` only when the agent comes to rest at the last
+  waypoint, and `CANCELLED` as soon as another request replaces its path.
+- `step_once()` advances `sim_time` before the object update, so `sim_time` is
+  the time of the new state. Frequency-limited callbacks, plugins, collision
+  checks and monitor updates run on a fixed grid of simulated time.
+- Callbacks, plugins and event handlers run through one mechanism on
+  `sim.events`, with the same order, arguments and error handling as before.
+- The collision broadphase covers every link of an articulated body, and
+  `ignore_attached_collision` covers every object on one attachment tree.
+- PyBulletFleet no longer configures the root logger on import, and a headless
+  simulation no longer opens a monitor window (`enable_monitor_gui` follows
+  `gui` by default).
+- `RobotGoalCommand2D.z` defaults to `None`: the robot keeps its height.
+- The ROS 2 bridge Docker images build from a pinned Open-RMF demos image.
 
 ### Deprecated
 
-- The `joint_index=` keyword of `Agent.set_joint_target()`,
-  `get_joint_state()` and `is_joint_at_target()`, and the single-joint aliases
-  `set_joint_target_by_name()`, `get_joint_state_by_name()` and
-  `is_joint_at_target_by_name()`, are deprecated and will be removed in
-  0.10.0. Each gives a `FutureWarning` pointing at the call. Pass the joint as
-  the first argument or as `joint=`, by index or by name. The multi-joint
-  `*_by_name` methods, which take a dict or list of names, are not affected.
-
-- Overriding `Controller.set_path()` in a subclass is deprecated; override
-  `request_path()` instead, which receives the `PathRequest` itself. Defining
-  such a class gives a `FutureWarning` naming it (once, at class definition).
-  Until 0.10.0 the override is still called for every request, as described
-  under Changed; from then on it is no longer called for requests sent with
-  `Agent.request_path()` or by actions, and the compatibility path
-  (`send_request()`'s override dispatch, identity hand-over and `UNKNOWN` for
-  untracked requests) is removed. `BatchDifferentialController.set_path`,
-  which only keeps `direction` as the third positional argument, does not warn.
-
-- `CollisionMode.NORMAL_2D` is deprecated and will be removed in a future
-  release (#104). It differs from `NORMAL_3D` only in giving a pair with a
-  `NORMAL_2D` body no collision clearance on the z axis, which matters only
-  with `CLOSEST_POINTS` or `HYBRID` and a non-zero `collision_margin`. Setting
-  it still works but emits a `FutureWarning`, from spawn parameters
-  (including `from_dict()` and config `collision_mode: normal_2d`), object
-  constructors and `set_collision_mode()`. A `FutureWarning`, not a
-  `DeprecationWarning`, so that it is shown by default wherever the call is,
-  not only in the script being run. The warning points at the calling line
-  outside the package, so Python's default filter shows it once per line
-  however many objects that line spawns. Spawning from spawn parameters with
-  `from_params()` or the grid spawners does not warn a second time for the
-  spawned object, but it warns when the parameters were changed to
-  `NORMAL_2D` after they were built, and `NORMAL_2D` objects spawned meanwhile by an overridden
-  `from_mesh()` / `from_urdf()`, a controller or a plugin warn as usual (#129).
-  Use `NORMAL_3D`; the only difference is that near misses
-  within the clearance above or below are reported. To keep no z clearance,
-  also set `collision_margin=(m, m, 0)` (#105): it reports what `NORMAL_2D`
-  did, for every pair rather than only pairs with a `NORMAL_2D` body; the
-  warning says so. The replay v1 profile
-  keeps its `NORMAL_2D` robots, without a warning, so recorded runs replay
-  unchanged, and restoring a state recording rebuilds its `NORMAL_2D` bodies
-  without a warning. User-facing examples, configs and guides now use `NORMAL_3D`;
-  the collision-mode demo and benchmark keep `NORMAL_2D` and note the
-  deprecation, and the design plans under `docs/design/` are left as written.
+- Overriding `Controller.set_path()` in a subclass: override `request_path()`.
+  Removal in 0.10.0 (#142).
+- The `joint_index=` keyword and the single-joint `*_by_name` aliases: pass the
+  joint name or index to the main methods. Removal in 0.10.0 (#146).
+- `CollisionMode.NORMAL_2D` (#104).
+- `SimObject.create_shared_shapes()` without `physics_client_id`: it falls back
+  to PyBullet's default client, which is wrong when more than one simulation
+  runs in a process. Pass `physics_client_id=sim_core.client`.
 
 ### Fixed
 
-- A ramped kinematic joint restored from a checkpoint now follows the same
-  path as the run it was taken from in every state, not only while it follows
-  a trajectory (issue #71). A joint braking with no trajectory -- its target
-  inside its stopping distance, or behind it -- shed speed over
-  `now - step_start`, two joint-clock readings whose difference rounds
-  differently depending on how far the clock has run. Restored into an agent
-  whose clock had run further, it came to rest a step apart from the original
-  and took a different path back. The braking step now uses the step's `dt`.
-  A joint following a trajectory had the same defect at a much smaller scale:
-  it was evaluated at a clock reading minus the trajectory's start, rebuilt on
-  restore as clock plus `t0_offset`, so a restored joint matched the original
-  only to about 1e-16 (more on a long-running clock) and could in principle
-  end its motion a step apart. Each joint now counts the time it has followed
-  its trajectory by adding `dt`, the trajectory starts at `t0 = 0`, and the
-  agent keeps no joint clock; `t0_offset` is that count negated, so a restored
-  joint is bit-identical to the original every step and ends on the same one.
-  Existing checkpoints restore as before.
-  The checkpoint format is otherwise unchanged: since the kinematic profile's agent
-  state version 2, each joint entry already carries its motion limits
-  (`max_velocity`, `max_accel`, `max_decel`) alongside its signed `speed`,
-  `braking` flag and trajectory, and a restore builds each joint with its
-  limits before its execution state, so a freshly constructed agent with no
-  profile of its own resumes the same ramp. An agent entry at version 1, whose
-  joints had position and target only, is refused with a message naming the
-  version found and the one supported.
+- Batched controllers: braking (`max_linear_decel`), per-axis angular limits,
+  `default_direction`, and goals replaced above the speed limit.
+- Joint and link names are looked up on the right body and physics client;
+  `Agent.from_mesh()` uses the simulation's client.
+- Closest-point collision checks include pairs within `collision_margin` whose
+  AABBs do not overlap; `NORMAL_2D` pairs resolve once they no longer overlap
+  in z.
+- `AgentSpawnParams.pickable` reaches the agent; an `AgentManager` can hold a
+  plain `SimObject`; `set_controller()` adopts the controller's parameters.
+- `import pybullet_fleet` works without the Tk library, and the monitor no
+  longer fails on a host with no display. On macOS the monitor runs in its own
+  process.
+- `REPLACE_NEXT` elevators drop the pending floor when the new request is the
+  floor the cabin is already heading to.
 
-- Batched controllers (`batch_omni`, `batch_differential`): a goal replaced
-  while the agent moves faster than `max_linear_vel` -- the limit lowered
-  during the motion -- now brakes down to the limit at the configured
-  deceleration, as the per-agent controllers do. The batched closed form used
-  to accelerate further in that first phase, so the agent ran ahead of its
-  trajectory until it cruised. The closed form (`trapezoid_distance()`,
-  `trapezoid_speed()`, and the scalar `trapezoid_point()` that ramped joints
-  use) takes each phase's formula from one set of helpers, and is checked
-  against `TwoPointInterpolation.get_point()` for start speeds toward and away
-  from the target, above `vmax`, asymmetric ramps and either direction (end
-  speeds too for the scalar form). Batched rotations evaluate their braking
-  phase with the trajectory's deceleration rather than its first-phase
-  acceleration, so a rotation with its own braking limit
-  (`max_angular_decel`) follows the same trajectory as per agent.
+### Performance
 
-- A joint name given to `set_joint_target()`, `get_joint_state()`,
-  `is_joint_at_target()`, `set_joint_position()` or the `*_by_name` aliases is
-  looked up on the agent's own physics client. With a second simulation
-  running, it was looked up on PyBullet's default client: a valid name was
-  reported missing, or resolved to a joint of another body.
-
-- `get_joints_state_by_name()`, `set_joints_targets_by_name()`,
-  `are_joints_at_targets_by_name()` and `IKParams.ik_joint_names` also look
-  joint names up on the agent's own physics client. With a second simulation
-  running, targets were dropped, states came back empty, at-target checks
-  returned `False` for a joint at its target, and IK locked the named joints.
-  `tools.resolve_joint_index()` takes an optional `physics_client_id`
-  (default `0`, as before).
-
-- Link names given as an end-effector link, as `attach_object()`'s
-  `parent_link_index` or as `PickAction.attach_link` are looked up on the
-  object's own physics client. With a second simulation running, a valid link
-  name was reported missing (falling back to the base link) or resolved to a
-  link of another body. `tools.resolve_link_index()` takes an optional
-  `physics_client_id` (default `0`, as before).
-
-- `BatchOmniController` and `BatchDifferentialController` turn at the yaw
-  (`z`) component of a per-axis angular limit (`max_angular_vel`,
-  `max_angular_accel`, `max_angular_decel` given as `[x, y, z]`), as the
-  per-agent controllers do. Before this change they read the `x` component.
-  A batched agent whose `x` and `z` limits differ now turns at a different
-  rate than before, the same as its per-agent counterpart, and a limit such as
-  `[0, 0, 2]` no longer raises `ValueError` in the batched path only.
-
-- The collision broadphase AABB of an articulated body covers all of its
-  links, not only the base link (issue #68). `p.getAABB(body)` returns the base
-  link's box, so a child link touching another object (an arm's wrist, a
-  wheel below a mobile base) never reached the narrow phase, and `query_aabb()`
-  could not find a body by its upper links. The cached box is now the union of
-  the boxes of the links that have a collision shape (a link without one, such
-  as the elevator's `shaft` base, is a point at its frame for PyBullet and is
-  left out), and it follows the joints: `Agent.set_joint_position()`,
-  `set_joints_positions()`, kinematic joint interpolation and a joint
-  checkpoint restore refresh it (at once outside a step, before the collision
-  check inside one) and mark the body moved; physics bodies are re-read after
-  every `stepSimulation()` as before. For joints moved directly with
-  `p.resetJointState()`, call `notify_geometry_changed(obj)` (see Added).
-  A body without child links still costs one `getAABB()` call per update:
-  refreshing the AABB and grid cells of 1,000 single-link agents took 2.48 ms
-  before and 2.55 ms after. An articulated body costs one call per link: one
-  AABB and grid refresh went from 2.6 to 4.6 µs for the bundled `mobile_robot`
-  and `arm_robot` (4 joints each) and from 2.6 to 6.0 µs for a 7-joint
-  `kuka_iiwa`. Scenes of articulated robots also get larger boxes, so more
-  broadphase candidates, and now find the contacts of their child links: with
-  1,000 `mobile_robot` agents in a 40 m square, about 10% more pairs were in
-  collision, the AABB refresh took 11.1 ms instead of 7.8 ms per step and the
-  collision check 69.6 ms instead of 62.4 ms.
-  An elevator's box now includes its platform, so a robot resting on the
-  platform (waiting before departure, or after arrival) would be in
-  collision with the elevator; the elevator leaves such pairs out, as before.
-  `ElevatorParams.report_platform_contacts` (see Added) reports them.
-  The rule applies only when the platform is the elevator's one collider:
-  an elevator URDF with other collider links (walls, a ceiling, doors)
-  reports bodies on the platform and logs a warning at spawn.
-  A body touching the platform from below is reported either way, and
-  passengers attached for a ride follow `ignore_attached_collision`.
-
-- `auto_detect_profile(body_id)` puts every movable joint back at the
-  position and velocity it had before probing the arm reach, also when
-  probing raises partway. It set them all to zero, which changed the pose of
-  a live body and left an agent's joint state and cached AABB out of date.
-
-- An active `CLOSEST_POINTS` (or kinematic `HYBRID`) pair with a `NORMAL_2D`
-  body now resolves once the bodies no longer overlap in z, as a pair in that
-  position is not reported in the first place. It stayed active while their
-  straight-line gap was within `collision_margin`. The same holds for an
-  axis with a smaller clearance in a per-axis `collision_margin` (#105). A
-  scalar margin with `NORMAL_3D` bodies is unaffected.
-
-- `SimulationParams` rejects a negative or non-finite scalar
-  `collision_margin` with `ValueError`, as `set_collision_margin()` and a
-  per-axis triple already did. It was accepted, and the broad phase then
-  clamped it to 0 while `getClosestPoints` got the negative distance. A bad
-  margin assigned to `params.collision_margin` directly raises the same
-  `ValueError` when the next collision check starts, before it changes the
-  active pairs.
-
-- `import pybullet_fleet` works where the `tkinter` package is present but the
-  Tk library is not (for example a `python:*-slim` container image without
-  `tk`): importing `tkinter` there raises `ImportError`, which was not caught,
-  so the package failed to import even with the monitor off. Without Tk, a
-  headless simulation no longer logs anything about it; asking for the monitor
-  window logs why it is unavailable and falls back to writing the monitor file,
-  at the refresh rate of a run without the window. The standalone
-  `python -m pybullet_fleet.data_monitor` exits with that warning instead of
-  waiting for a window that never opens.
-
-- The monitor window on a host with Tk but no display (no `DISPLAY`, as on a
-  CI runner or an SSH session): `DataMonitor.start()` printed a `TclError`
-  traceback from the monitor thread and kept `enable_gui` and `running` set,
-  so the simulation refreshed the monitor file at the window rate. It now logs
-  why the window could not open and falls back to writing the monitor file, at
-  the refresh rate of a run without the window. `start()` waits (up to 5 s)
-  for the monitor thread to try to open the window, so `enable_gui` tells
-  whether one opened when it returns. The standalone
-  `python -m pybullet_fleet.data_monitor` exits with that warning.
-  `DataMonitor.stop()` called while the window is open no longer hangs: it
-  closed the window with Tk calls from the calling thread, which wait for the
-  Tk thread and never returned once its main loop had ended. It now asks the
-  Tk thread to close the window and waits up to 3 s for it to end, logging a
-  warning if it does not.
-
-- `Agent.from_mesh()` creates its shapes and body on the simulation's physics
-  client, as `SimObject.from_mesh()` does; it used PyBullet's default client,
-  so with a second client connected (two simulations in one process, or a
-  client left open) the agent's body landed on the wrong one. The mesh-shape
-  cache behind `create_shared_shapes()` is now kept per physics client, so it
-  no longer hands a shape created on one client to another. A client's entries
-  are dropped when its simulation connects, resets and closes, because PyBullet
-  reuses a client id after a disconnect and `resetSimulation()` removes the
-  shapes; a later simulation on the same id used to get bodies with no geometry.
-
-- `REPLACE_NEXT` elevators: a request for the floor the moving cabin is
-  already heading to now drops the pending floor (`REPLACED`) instead of being
-  rejected and leaving it queued. A controller that changed its target and then
-  changed it back had the cabin leave for the abandoned floor right after
-  arriving, under a robot that was boarding.
-
-- `BatchDifferentialController` uses the agent's
-  `controller_params.default_direction` for a path set without a direction, as
-  the per-agent `DifferentialController` does; it always drove `FORWARD`. A
-  goal replacement on a batched differential agent is judged with the new
-  path's direction, not the previous path's: a goal set without a direction
-  while backing up under `auto` was taken and turned around at once instead of
-  being refused (`reject`) or braked to (`brake`).
-
-- A null `shadow_map_world_size` or `shadow_map_resolution` in the lighting
-  config now takes the default for the GUI lighting sliders, as a null
-  `light_position` already did; it used to fail an internal assertion.
-  Internal consistency checks raise `RuntimeError` or `ValueError` with a
-  message instead of using `assert`, so they hold under `python -O`.
-
-- Frequency-limited callbacks and plugins, `collision_check_frequency` and the
-  DataMonitor refresh no longer skip beats or drift. They compared the
-  accumulated (float) simulation time with the interval since their last run,
-  so a 10 Hz callback on a 0.1 s timestep ran at gaps of 0.1 s and 0.2 s, a
-  1 Hz plugin missed every other second, and an interval that is not a whole
-  number of timesteps drifted. They now run on a fixed grid, `k / frequency`
-  from the start of the run, at most once per step, with a tolerance for float
-  error, and they read the time as the step count times the timestep rather
-  than the accumulated simulation time, whose error grew past that tolerance
-  within minutes at a 1 ms timestep. A handler registered mid-run first runs
-  at the next due time. A DataMonitor with a GUI now refreshes on every step,
-  as documented.
-
-- `Agent.set_controller()` now adopts the controller's own
-  `ControllerParams` as the agent's `controller_params`, matching what
-  `Agent.__init__` does when the controller is passed at construction.
-  Previously the two diverged silently: the controller moved the agent by its
-  own limits while `controller_params` -- which `Agent.max_linear_vel` and its
-  siblings delegate to, and which a batch controller builds its trajectory
-  from -- still held the defaults. A fleet that set its limits this way ran
-  correctly under the per-agent controllers and at the default 2.0 m/s and
-  5.0 m/s under a batch controller.
-- An `AgentManager` holding a plain `SimObject` no longer raises
-  `AttributeError`. `spawn_from_config()` dispatches on each entry's `type`,
-  so a config may mix `agent` and `sim_object` and a mixed manager is a
-  supported arrangement, but every method that commands movement, reads
-  motion state or queues actions reached for attributes only an `Agent` has
-  -- `repr()` among them, by way of `get_moving_count()`. They now read a new
-  `AgentManager.agents` property, which filters. `set_goal_pose()` indexes
-  that property rather than `objects`, so a non-agent no longer shifts the
-  index of every agent after it.
-- `AgentSpawnParams.pickable` now reaches the agent. Neither
-  `Agent.from_mesh` nor `Agent.from_urdf` took the argument, so
-  `forward_spawn_params()` dropped it and `Agent.__init__` overwrote the flag
-  with `False` unconditionally -- the field was inert. `attach_object()`
-  refuses a non-pickable body, so an agent meant to be carried failed to
-  attach, far from where it was configured. The default is unchanged:
-  `AgentSpawnParams` declares `pickable = False` explicitly, narrowing
-  `SimObjectSpawnParams`' `True`, and `from_dict()` applies that default
-  rather than inheriting the parent's resolved `True`. The inherited field
-  order is unchanged.
-- PyBulletFleet no longer configures the root logger. `logging.basicConfig()`
-  on import changed the format of the host application's own output, and
-  constructing a simulation called `logging.getLogger().setLevel(...)` from
-  `log_level` -- which defaults to `warn`, so merely building a simulation
-  turned off every INFO line in the process. Both now apply to the
-  `pybullet_fleet` logger, which carries its own handler.
-
-- A headless simulation no longer opens a monitor window. `enable_monitor_gui`
-  now defaults to `None`, meaning "follow `gui`"; an explicit `True` or
-  `False` is still honoured, so a monitor window without the PyBullet viewer
-  remains available. Building several simulations in one process -- a test
-  suite, a parameter sweep -- used to put a Tk window on screen per
-  simulation.
-
-- Include positive-gap pairs within `collision_margin` in closest-point
-  collision checks, including pairs whose AABBs do not overlap.
-- Isolate the macOS Tkinter monitor in its own process to avoid native GUI
-  conflicts with PyBullet, while preserving monitor controls while paused.
-  Keep the existing threaded startup and shutdown behavior on Windows and Linux.
+- Against v0.8.0 on the same machine and Python, the core benchmark step time
+  is 24-42% shorter from 100 to 2000 agents (1000 agents: 9.7 ms to 5.6 ms,
+  real-time factor 10.3x to 17.8x), and spawning is 20-30% faster. Memory per
+  agent is about 20% higher.
+- Giving every mobile agent a path takes about twice as long (1000 agents:
+  about 25 ms to about 40 ms), mostly from tracking each request and the
+  garbage collection it causes; the step time of the control path is not
+  slower (#150).
+- The DataMonitor no longer costs more than the step in a large scene.
+- The ROS 2 bridge reaches 13.45x real time with 1000 robots on the fleet
+  interface (10.98x before).
 
 ## v0.8.0 (2026-09-01)
 
