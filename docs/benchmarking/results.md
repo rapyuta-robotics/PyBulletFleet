@@ -185,8 +185,36 @@ What the scenes show:
 - Head-on traffic (610 contacts in 15 simulated seconds) adds little to the
   collision phase here; the narrow phase is cheap next to the broad phase.
 
-Raw results: `benchmark/results/steady_sparse_dense_carrying_idle_1000agents.json`
-and `benchmark/results/steady_warehouse_200agents.json`.
+### After the column store, the lazy mirror and the update loop
+
+The same scenes at the head of the fleet-scaling branch (the collision
+broad phase on arrays, poses as columns, the lazy PyBullet mirror, the
+update loop over the objects with an update, batched plugins), measured on
+2026-11-07 alternating with `main` at f7a70b7 in one quiet session. The
+10,000-robot rows are one repetition each; the others are the median of 3.
+
+| Scene | Agents | Static bodies | `main` step p50 | `main` RTF | Branch step p50 | Branch RTF | Branch phase1 | pose flush | AABB / grid | collision |
+|-------|--------|---------------|-----------------|------------|-----------------|------------|---------------|------------|-------------|-----------|
+| sparse | 1000 | 0 | 9.24 ms | 10.8x | 1.17 ms | 85x | 0.50 ms | 0.03 ms | 0.13 ms | 0.46 ms |
+| dense | 1000 | 0 | 8.82 ms | 11.3x | 1.25 ms | 80x | 0.50 ms | 0.03 ms | 0.13 ms | 0.55 ms |
+| carrying | 1000 | 0 | 27.3 ms | 3.7x | 2.18 ms | 46x | 0.76 ms | 0.06 ms | 0.31 ms | 1.01 ms |
+| warehouse | 200 | 32,924 | 3.27 ms | 30.6x | 0.52 ms | 194x | 0.17 ms | 0.01 ms | 0.05 ms | 0.25 ms |
+| idle | 1000 | 0 | 0.51 ms | 198x | 0.18 ms | 554x | 0.15 ms | 0 | 0 | 0.02 ms |
+| sparse | 10000 | 0 | 170 ms | 0.6x | 14.5 ms | 6.9x | 9.1 ms | 0.56 ms | 1.15 ms | 3.5 ms |
+| dense | 10000 | 0 | 170 ms | 0.6x | 17.8 ms | 5.6x | 9.3 ms | 0.67 ms | 1.11 ms | 5.6 ms |
+| carrying | 10000 | 0 | 403 ms | 0.2x | 28.7 ms | 3.5x | 12.0 ms | 1.67 ms | 3.46 ms | 10.5 ms |
+
+What remains at 1000 robots is the batch kernel itself (about 0.3 ms), the
+broad phase's array passes and the Python bookkeeping around them; the
+narrow phase (`getClosestPoints`) is under 0.1 ms in every scene. At 10,000
+robots phase1 is mostly the per-step set updates of the pending and moved
+ids and the `update()` call per agent, which returns at once for a
+batch-driven agent without an action.
+
+Raw results: `benchmark/results/steady_sparse_dense_carrying_idle_1000agents.json`,
+`benchmark/results/steady_warehouse_200agents.json` and
+`benchmark/results/steady_sparse_dense_carrying_10000agents.json` (the branch
+numbers above).
 
 ---
 
