@@ -95,6 +95,20 @@ are not recommended for production use yet.
   down in its `DOCUMENTED_DIFFERENCES`, and on a written-down difference
   that no longer occurs. `python -m tests.collision_parity.record` records
   the goldens again (`--check` compares without writing).
+- `PathRequest` (`pybullet_fleet.path_request`): the waypoints and how to follow
+  them (`final_orientation_align`, `direction`, `auto_approach`) as one
+  object. `Agent.request_path(request)` and the controllers'
+  `request_path(agent, request)` take it; `Agent.set_path`, `set_goal_pose`
+  and the controllers' `set_path` build one from their arguments and are
+  unchanged. A request keeps its identity on its way to the controller, and
+  `Agent.path_request_state(request)` tells what became of it
+  (`PathRequestState`: active, pending, finished or gone). A custom controller
+  written against `set_path` alone keeps working, and a subclass of a
+  kinematic or batch controller that overrides `set_path` is still called for
+  every request; its `super().set_path()` keeps the request's identity. The
+  braking path of `brake()` is the controller's own and bypasses such an
+  override.
+
 - Per-axis collision clearance (#105): `collision_margin` (in
   `SimulationParams`, YAML and `set_collision_margin()`) also takes an
   `(x, y, z)` triple, one clearance per world axis, for example
@@ -221,6 +235,20 @@ are not recommended for production use yet.
   checkpoint proof's record version 3.
 
 ### Changed
+
+- A `MoveAction` ends by what becomes of its own `PathRequest`: `CANCELLED` as
+  soon as another request replaces it, drops it from the hold, brakes or stops
+  it -- not when the agent next comes to rest -- and `COMPLETED` only when its
+  own request was followed to its end (a replacement ending at the same place,
+  with another final orientation, used to count as completed). Such a request
+  from outside the action queue is an interrupt: the queue starts its next
+  action only once that path has ended, so the next `MoveAction` does not
+  overwrite it; `clear_actions()` first drops the rest of the queue instead.
+  Under `wait_complete` the outside path is held instead: the action
+  completes, and the held path runs before the next action.
+  A `PickAction` or `DropAction` whose own approach, move to the pick or drop
+  pose, or retreat ends that way ends `CANCELLED` too (`FAILED` for a failed
+  move), and does not pick or drop where the agent was left.
 
 - `ignore_attached_collision` now covers every object on one attachment tree,
   not only a direct parent and child: two loads on one carrier and a load on a
@@ -657,6 +685,16 @@ are not recommended for production use yet.
   `_create_body_from_shapes()` now require `physics_client_id`.
 
 ### Deprecated
+
+- Overriding `Controller.set_path()` in a subclass is deprecated; override
+  `request_path()` instead, which receives the `PathRequest` itself. Defining
+  such a class gives a `FutureWarning` naming it (once, at class definition).
+  Until 0.10.0 the override is still called for every request, as described
+  under Changed; from then on it is no longer called for requests sent with
+  `Agent.request_path()` or by actions, and the compatibility path
+  (`send_request()`'s override dispatch, identity hand-over and `UNKNOWN` for
+  untracked requests) is removed. `BatchDifferentialController.set_path`,
+  which only keeps `direction` as the third positional argument, does not warn.
 
 - `CollisionMode.NORMAL_2D` is deprecated and will be removed in a future
   release (#104). It differs from `NORMAL_3D` only in giving a pair with a

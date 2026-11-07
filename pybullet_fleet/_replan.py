@@ -23,8 +23,7 @@ the check and the motion cannot disagree.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, List, NamedTuple, Optional, Protocol, Sequence, Tuple
+from typing import TYPE_CHECKING, List, NamedTuple, Optional, Protocol, Sequence, Tuple
 
 
 import numpy as np
@@ -32,45 +31,12 @@ import numpy as np
 from pybullet_fleet._tpi import try_build_tpi
 from pybullet_fleet.geometry import rotate_vector
 
+from pybullet_fleet.path_request import PathRequest  # noqa: F401  (re-exported for internal callers)
 from pybullet_fleet.types import MovementDirection
 
 if TYPE_CHECKING:
     from pybullet_fleet.controller_params import ControllerParams
     from pybullet_fleet.geometry import Pose
-
-
-@dataclass(frozen=True)
-class PathRequest:
-    """A path a controller has accepted but not started yet.
-
-    Held while the agent brakes (``GoalReplacement.BRAKE``) or finishes its
-    current path (``GoalReplacement.WAIT_COMPLETE``), and started from rest
-    once it has stopped. A newer request replaces it.
-    """
-
-    path: List[Any]
-    final_orientation_align: bool = True
-    direction: Optional[MovementDirection] = None
-
-    def to_record(self) -> dict:
-        """Plain-data form for checkpoints."""
-        return {
-            "path": [{"position": list(p.position), "orientation": list(p.orientation)} for p in self.path],
-            "final_orientation_align": self.final_orientation_align,
-            "direction": self.direction.value if self.direction is not None else None,
-        }
-
-    @classmethod
-    def from_record(cls, record: dict) -> "PathRequest":
-        """Inverse of :meth:`to_record`."""
-        from pybullet_fleet.geometry import Pose
-
-        direction = record["direction"]
-        return cls(
-            path=[Pose(position=list(p["position"]), orientation=list(p["orientation"])) for p in record["path"]],
-            final_orientation_align=bool(record["final_orientation_align"]),
-            direction=MovementDirection(direction) if direction is not None else None,
-        )
 
 
 class PathRejection(NamedTuple):
@@ -107,7 +73,7 @@ def braking_request(
     if target is None:
         return None
     goal = Pose(position=[float(c) for c in target], orientation=list(orientation))
-    return PathRequest(path=[goal], final_orientation_align=False, direction=MovementDirection.AUTO)
+    return PathRequest(path=[goal], final_orientation_align=False, direction=MovementDirection.AUTO, auto_approach=False)
 
 
 class RefusesPaths(Protocol):

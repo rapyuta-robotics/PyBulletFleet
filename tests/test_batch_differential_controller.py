@@ -115,6 +115,21 @@ class TestBatchDiffBasics:
         assert pos[0] == pytest.approx(0.0, abs=1e-2)
         assert pos[1] == pytest.approx(2.0, abs=1e-2)
 
+    def test_set_path_takes_direction_as_third_positional_argument(self, sim):
+        """set_path(agent, path, direction, final_orientation_align) as before
+        it went through PathRequest: a positional BACKWARD drives backward."""
+        mgr = _make_diff_manager(sim)
+        bc = mgr.batch_controller
+        a = _spawn_diff(sim, x=0.0, y=0.0, yaw=0.0)
+        mgr.add_object(a)
+        assert bc.set_path(a, [Pose.from_xyz(-1.0, 0.0, 0.1)], MovementDirection.BACKWARD) is True
+        max_turn = 0.0
+        for _ in range(300):
+            sim.step_once()
+            max_turn = max(max_turn, abs(a.get_pose().yaw))
+        assert a.get_pose().position[0] == pytest.approx(-1.0, abs=1e-2)
+        assert max_turn < 1e-3  # backed up without turning around
+
     def test_multi_waypoint_path(self, sim):
         mgr = _make_diff_manager(sim)
         bc = mgr.batch_controller

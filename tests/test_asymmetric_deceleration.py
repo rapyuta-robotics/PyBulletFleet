@@ -429,7 +429,8 @@ class TestIsMovingIsSetUnderTheBatchLock:
         """The race, made deterministic.
 
         ``synchronized_batch_advance()`` takes the same lock, so a step can
-        only interleave once ``synchronized_set_path()`` has released it. This
+        only interleave once ``synchronized_request_path()`` (what
+        ``Agent.set_path`` calls) has released it. This
         wraps that method to run exactly one step at that moment, with a
         zero-distance path the step completes immediately.
 
@@ -441,13 +442,14 @@ class TestIsMovingIsSetUnderTheBatchLock:
 
         manager, agent = self._managed(sim_core)
         controller = manager.batch_controller
-        original = controller.synchronized_set_path
+        original = controller.synchronized_request_path
 
-        def step_at_lock_release(a, path, **kwargs):
-            original(a, path, **kwargs)
+        def step_at_lock_release(a, request, **kwargs):
+            accepted = original(a, request, **kwargs)
             sim_core.step_once()
+            return accepted
 
-        controller.synchronized_set_path = step_at_lock_release
+        controller.synchronized_request_path = step_at_lock_release
 
         here = agent.get_pose().position
         agent.set_path([Pose.from_xyz(here[0], here[1], here[2])], auto_approach=False)

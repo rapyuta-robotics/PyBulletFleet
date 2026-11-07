@@ -166,6 +166,14 @@ pybullet\_fleet.logging\_utils module
    :noindex:
    :show-inheritance:
 
+pybullet\_fleet.path\_request module
+-------------------------------------
+
+.. automodule:: pybullet_fleet.path_request
+   :members:
+   :noindex:
+   :show-inheritance:
+
 pybullet\_fleet.plugin\_utils module
 ------------------------------------
 

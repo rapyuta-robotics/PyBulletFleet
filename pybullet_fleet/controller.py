@@ -35,7 +35,9 @@ Registry
 """
 
 import copy
+import dataclasses
 import math
+import warnings
 import weakref
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Type, TypeVar
@@ -61,7 +63,8 @@ from two_point_interpolation import TwoPointInterpolation
 from pybullet_fleet._tpi import build_tpi, build_tpi_from_speed, extract_phase_params
 from pybullet_fleet._replacement import GoalReplacementPolicy, _checked_braking_request
 import pybullet_fleet._replan as _replan
-from pybullet_fleet._replan import HEADING_TOL, PathRequest
+from pybullet_fleet._replan import HEADING_TOL
+from pybullet_fleet.path_request import PathRequest, PathRequestState, request_state
 from pybullet_fleet._tpi_state import capture_tpi_state, restore_tpi_state
 from pybullet_fleet._motion_planning import heading_toward
 from pybullet_fleet.config_utils import _parameter_names
@@ -137,6 +140,82 @@ def list_controllers() -> Dict[str, Type["Controller"]]:
 _ControllerT = TypeVar("_ControllerT", bound="Controller")
 
 
+#: Given once per class that overrides :meth:`Controller.set_path`; formatted
+#: with the class's module and qualified name.
+SET_PATH_OVERRIDE_DEPRECATION = (
+    "{}.{} overrides set_path(), which is deprecated: override request_path() instead. "
+    "From 0.10.0 an overridden set_path() is no longer called for requests sent with "
+    "Agent.request_path() or by actions."
+)
+
+
+def _class_statement_level() -> int:
+    """``stacklevel`` for a warning from ``__init_subclass__`` that points at the class statement.
+
+    Class creation goes through the metaclass (``ABCMeta``, from abc.py) first.
+    """
+    import abc
+    import sys
+
+    frame, level = sys._getframe(2), 2  # stacklevel 1 is __init_subclass__ itself
+    while frame is not None and frame.f_code.co_filename == abc.__file__:
+        frame, level = frame.f_back, level + 1
+    return level
+
+
+def overrides_set_path(controller: "Controller") -> bool:
+    """Whether ``controller``'s class overrides :meth:`Controller.set_path`.
+
+    An override marked ``_only_reorders_arguments`` (a built-in controller
+    keeping its historical positional order, see
+    :class:`~pybullet_fleet.controllers.batch_differential.BatchDifferentialController`)
+    does nothing but pass its arguments on, so it does not count: requests go
+    straight to :meth:`Controller.request_path`. A subclass that overrides it
+    again counts as usual.
+    """
+    impl = type(controller).set_path
+    return impl is not Controller.set_path and not getattr(impl, "_only_reorders_arguments", False)
+
+
+def _set_path_from(controller: "Controller", agent: "Agent", request: PathRequest, preempt: bool) -> bool:
+    """Call ``controller.set_path`` with ``request``'s fields: how a request reaches an override."""
+    return controller.set_path(
+        agent,
+        list(request.path),
+        final_orientation_align=request.final_orientation_align,
+        direction=request.direction,
+        preempt=preempt,
+    )
+
+
+def send_request(
+    controller: "Controller", agent: "Agent", request: PathRequest, preempt: bool = False, internal: bool = False
+) -> bool:
+    """Give ``request`` to ``controller`` the way :meth:`Agent.request_path
+    <pybullet_fleet.agent.Agent.request_path>` does.
+
+    A controller whose class overrides :meth:`Controller.set_path` -- to edit
+    the path, say -- gets the request through that override, with the
+    request's fields as arguments. The override's call to ``super().set_path()``
+    passes on a request that keeps the identity of the one sent, so
+    :meth:`Agent.path_request_state
+    <pybullet_fleet.agent.Agent.path_request_state>` still follows it. Any
+    other controller gets it through ``request_path``.
+
+    ``internal`` marks a request the controller made itself -- a braking
+    path -- rather than one a user sent. It goes straight to
+    ``request_path``: an override that edits the user's paths must not edit
+    the controller's own, or braking would leave the line of motion.
+    """
+    if internal or not overrides_set_path(controller):
+        return controller.request_path(agent, request, preempt=preempt)
+    controller._incoming_request = request
+    try:
+        return _set_path_from(controller, agent, request, preempt)
+    finally:
+        controller._incoming_request = None
+
+
 class Controller(ABC):
     """Agent movement control interface (Strategy pattern).
 
@@ -148,9 +227,20 @@ class Controller(ABC):
     via ``_registry_name`` class attribute (e.g. ``_registry_name = "omni"``).
     """
 
+    #: The request :func:`send_request` is passing through an overridden
+    #: :meth:`set_path`; :meth:`set_path` gives it to the request it builds.
+    _incoming_request: Optional[PathRequest] = None
+
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         _registry.auto_register_subclass(cls)
+        override = cls.__dict__.get("set_path")
+        if override is not None and not getattr(override, "_only_reorders_arguments", False):
+            warnings.warn(
+                SET_PATH_OVERRIDE_DEPRECATION.format(cls.__module__, cls.__qualname__),
+                FutureWarning,
+                stacklevel=_class_statement_level(),
+            )
 
     @abstractmethod
     def compute(self, agent: "Agent", dt: float) -> bool:
@@ -184,6 +274,65 @@ class Controller(ABC):
             <pybullet_fleet.agent.Agent.stop>` is then the way to stop.
         """
         return False
+
+    def request_path(self, agent: "Agent", request: PathRequest, preempt: bool = False) -> bool:
+        """Follow ``request``; ``False`` if refused. The core of :meth:`set_path`.
+
+        The kinematic controllers implement it. A controller written against
+        :meth:`set_path` alone keeps working: its ``set_path`` is called with
+        the request's fields. :meth:`Agent.request_path
+        <pybullet_fleet.agent.Agent.request_path>` goes through an overridden
+        ``set_path`` too, on any controller (see :func:`send_request`).
+        """
+        if overrides_set_path(self):
+            return _set_path_from(self, agent, request, preempt)
+        raise NotImplementedError(f"{type(self).__name__} implements neither request_path() nor set_path()")
+
+    def set_path(
+        self,
+        agent: "Agent",
+        path: List[Pose],
+        final_orientation_align: bool = True,
+        direction: Optional[MovementDirection] = None,
+        preempt: bool = False,
+    ) -> bool:
+        """Follow ``path``: :meth:`request_path` with a :class:`PathRequest` of these fields.
+
+        Args:
+            agent: Agent to navigate.
+            path: Non-empty list of waypoint Poses.
+            final_orientation_align: Rotate to match the last waypoint's
+                orientation after reaching its position.
+            direction: ``None`` (use ``default_direction``), ``FORWARD``,
+                ``AUTO``, or ``BACKWARD`` (differential only).
+            preempt: Do not hold the path for the current one under
+                ``wait_complete`` (:meth:`Agent.brake
+                <pybullet_fleet.agent.Agent.brake>` uses it).
+        """
+        if type(self).request_path is Controller.request_path:
+            # Only reached from an override's super().set_path(): the base
+            # request_path() would call that override again, without end.
+            raise NotImplementedError(
+                f"{type(self).__name__}.set_path() calls super().set_path(), which needs "
+                f"{type(self).__name__} to implement request_path(); without it, follow the path in set_path() itself"
+            )
+        request = PathRequest(
+            path=path, final_orientation_align=final_orientation_align, direction=direction, auto_approach=False
+        )
+        incoming, self._incoming_request = self._incoming_request, None
+        if incoming is not None:
+            # Sent by send_request() through an overridden set_path: the
+            # request passed on is still the one the caller sent, whatever the
+            # override did to its fields.
+            request = dataclasses.replace(request, _token=incoming._token)
+        return self.request_path(agent, request, preempt=preempt)
+
+    def request_state(self, agent: "Agent", request: PathRequest) -> PathRequestState:
+        """What became of ``request`` (see :class:`PathRequestState`).
+
+        ``UNKNOWN`` by default: a controller that does not track requests.
+        """
+        return PathRequestState.UNKNOWN
 
     def _construction_config(self) -> Optional[dict]:
         """Registered type and shared settings, separate from execution state.
@@ -280,17 +429,18 @@ class Controller(ABC):
 
 
 def _set_braking_path(agent: "Agent", request: Optional[PathRequest]) -> bool:
-    """Set a braking path through ``agent.set_path``; ``False`` for ``None`` or a refusal."""
+    """Request a braking path through ``agent.request_path``; ``False`` for ``None`` or a refusal.
+
+    The request itself is followed, so its identity is tracked: a running
+    ``MoveAction`` sees that it was replaced. It is the controller's own
+    request, so it bypasses a ``set_path`` override (see :func:`send_request`).
+    """
     if request is None:
         return False
-    accepted = agent.set_path(
-        request.path,
-        auto_approach=False,
-        final_orientation_align=request.final_orientation_align,
-        direction=request.direction,
-        # Braking does not wait for the current path, whatever the mode.
-        _preempt=True,
-    )
+    if request.auto_approach:
+        request = dataclasses.replace(request, auto_approach=False)  # the braking point is the first waypoint
+    # Braking does not wait for the current path, whatever the mode.
+    accepted = agent.request_path(request, _preempt=True, _internal=True)
     if accepted is False:
         logger.warning(
             f"Braking path for {agent.name or agent.object_id} refused: "
@@ -367,6 +517,10 @@ class KinematicController(GoalReplacementPolicy, Controller):
         self._pending_owner: str = ""
         # True while the active path is the braking path set for _pending.
         self._braking: bool = False
+        # The request being followed, and the last one followed to its end
+        # (see request_state()).
+        self._active_request: Optional[PathRequest] = None
+        self._finished_request: Optional[PathRequest] = None
 
     @property
     def default_direction(self) -> MovementDirection:
@@ -425,6 +579,7 @@ class KinematicController(GoalReplacementPolicy, Controller):
         self._cancel_pose_internal()
         self._reset_path_state()
         self._clear_replacement("the agent was stopped")
+        self._active_request = None
 
     def reset(self) -> None:
         """Reset all internal state."""
@@ -435,6 +590,8 @@ class KinematicController(GoalReplacementPolicy, Controller):
         self._cancel_pose_internal()
         self._reset_path_state()
         self._clear_replacement("the controller was reset")
+        self._active_request = None
+        self._finished_request = None
 
     # -- Velocity interface --------------------------------------------
 
@@ -456,6 +613,7 @@ class KinematicController(GoalReplacementPolicy, Controller):
         if self._mode == ControllerMode.POSE:
             self._cancel_pose_internal()
         self._clear_replacement("a velocity command replaced it")
+        self._active_request = None
         self._mode = ControllerMode.VELOCITY
         self._linear_velocity[:] = [vx, vy, vz]
         self._angular_velocity[:] = [wx, wy, wz]
@@ -487,6 +645,7 @@ class KinematicController(GoalReplacementPolicy, Controller):
         self._cancel_pose_internal()
         self._mode = ControllerMode.IDLE
         self._clear_replacement("the path was cancelled")
+        self._active_request = None
 
     def _cancel_pose_internal(self) -> None:
         """Reset shared pose-mode TPI state (rotation + forward + phase).
@@ -553,15 +712,8 @@ class KinematicController(GoalReplacementPolicy, Controller):
         """The accepted path waiting for the agent to stop, or ``None``."""
         return self._pending
 
-    def set_path(
-        self,
-        agent: "Agent",
-        path: List[Pose],
-        final_orientation_align: bool = True,
-        direction: Optional[MovementDirection] = None,
-        preempt: bool = False,
-    ) -> bool:
-        """Set a waypoint path for the agent to follow.
+    def request_path(self, agent: "Agent", request: PathRequest, preempt: bool = False) -> bool:
+        """Follow ``request``'s waypoints (:meth:`set_path` builds one from its arguments).
 
         What happens depends on ``goal_replacement`` (see
         :class:`~pybullet_fleet.types.GoalReplacement`). ``wait_complete``
@@ -580,11 +732,9 @@ class KinematicController(GoalReplacementPolicy, Controller):
 
         Args:
             agent: Agent to navigate.
-            path: Non-empty list of waypoint Poses.
-            final_orientation_align: Rotate to match last waypoint orientation
-                after reaching its position.
-            direction: ``None`` (use ``default_direction``), ``FORWARD``, ``AUTO``,
-                or ``BACKWARD`` (differential only).
+            request: The waypoints (non-empty), whether to align to the last
+                one's orientation, and the direction (``None``:
+                ``default_direction``; differential only).
             preempt: Do not hold the path for the current one under
                 ``wait_complete`` (:meth:`Agent.brake
                 <pybullet_fleet.agent.Agent.brake>` uses it); the other rules
@@ -594,7 +744,6 @@ class KinematicController(GoalReplacementPolicy, Controller):
             ``False`` when the path is refused (``reject`` only); ``True`` once
             it is set or held to start later.
         """
-        request = PathRequest(path=list(path), final_orientation_align=final_orientation_align, direction=direction)
         return self._replace_path(agent, request, preempt)
 
     # -- GoalReplacementPolicy hooks -------------------------------------
@@ -655,6 +804,16 @@ class KinematicController(GoalReplacementPolicy, Controller):
         """
         return _set_braking_path(agent, _checked_braking_request(self, agent))
 
+    def request_state(self, agent: "Agent", request: PathRequest) -> PathRequestState:
+        """What became of ``request``: being followed, held, followed to its
+        end, or gone (replaced, dropped, stopped, braked or cancelled)."""
+        return request_state(request, self._active_request, self._pending, self._finished_request)
+
+    def _finish_request(self) -> None:
+        """The active request was followed to its end."""
+        self._finished_request = self._active_request
+        self._active_request = None
+
     def _path_in_progress(self, agent: "Agent") -> bool:
         """Whether a path (not a velocity command) is being followed."""
         return self._mode == ControllerMode.POSE and agent.is_moving
@@ -687,6 +846,7 @@ class KinematicController(GoalReplacementPolicy, Controller):
 
     def _start_path(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
         """Make ``request`` the active path, continuing the current motion if asked."""
+        self._active_request = request
         path = request.path
         effective_direction = request.direction if request.direction is not None else self.params.default_direction
         self._path = list(path)
@@ -953,6 +1113,7 @@ class KinematicController(GoalReplacementPolicy, Controller):
             self._mode = ControllerMode.IDLE
             agent._reset_pybullet_velocity()
             logger.info("Final orientation alignment complete")
+            self._finish_request()
             self._start_pending(agent)
 
     def _start_final_orientation(self, agent: "Agent") -> None:
@@ -991,6 +1152,7 @@ class KinematicController(GoalReplacementPolicy, Controller):
         self._mode = ControllerMode.IDLE
         agent._reset_pybullet_velocity()
         logger.info("Path complete")
+        self._finish_request()
         self._start_pending(agent)
 
     def _reset_path_state(self) -> None:
@@ -1088,6 +1250,12 @@ class KinematicController(GoalReplacementPolicy, Controller):
         self._is_final_orientation_aligning = state["final_alignment_in_progress"]
         self._mode = ControllerMode.POSE
         self._pose_phase = PosePhase(state["phase"])
+        # The path being followed is a request of its own: a new identity, as a
+        # checkpoint keeps none (a request sent before it is GONE), but ACTIVE
+        # while followed and FINISHED at its end, like any other.
+        self._active_request = PathRequest(
+            path=self._path, final_orientation_align=self._align_final_orientation, auto_approach=False
+        )
 
         if self._pose_phase is PosePhase.FORWARD:
             forward = state["forward"]
@@ -1363,6 +1531,7 @@ class DifferentialController(KinematicController):
         super().restore_navigation_state(state, orientation, owner)
         self._movement_direction = MovementDirection(state["movement_direction"])
         self._original_direction = MovementDirection(state["requested_direction"])
+        self._active_request = dataclasses.replace(self._active_request, direction=self._original_direction)
         if self._movement_direction is MovementDirection.AUTO:
             raise ValueError("Differential checkpoint direction must be resolved")
         origin = np.asarray(state["forward_origin"], dtype=float) if state["forward_origin"] is not None else None

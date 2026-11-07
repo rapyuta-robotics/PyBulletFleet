@@ -237,10 +237,76 @@ when there is nothing to brake (at rest, fixed base). `agent.stop()` is the
 immediate stop: the velocity is zeroed at once.
 
 To change direction mid-motion, send the new goal: under the default `brake`
-mode the agent brakes and then heads for it. `brake()` leaves the action queue
-alone; a `MoveAction` still executing ends `CANCELLED` once the agent is at
-rest, short of its path's end, and the queue moves on to the next action, so
-call `clear_actions()` first to drop the queued actions too.
+mode the agent brakes and then heads for it. A running `MoveAction` whose path
+is braked or replaced this way ends `CANCELLED` (see below).
+
+### Path requests and the action queue
+
+`agent.set_path(...)` and `agent.set_goal_pose(...)` build a `PathRequest`
+(the waypoints, `final_orientation_align`, `direction`, `auto_approach`) and
+pass it to `agent.request_path(request)`; a controller's `set_path` does the
+same with its `request_path`. Build one yourself to keep it and ask what
+became of it:
+
+```python
+from pybullet_fleet import PathRequest, PathRequestState
+
+request = PathRequest(path=[goal], final_orientation_align=False)
+agent.request_path(request)
+...
+if agent.path_request_state(request) is PathRequestState.FINISHED:
+    ...  # followed to its end; GONE once replaced, dropped, braked or stopped
+```
+
+A `MoveAction` sends its own request and ends by what becomes of it:
+`COMPLETED` once the agent followed it to its end, `CANCELLED` as soon as it
+is no longer the agent's. A path requested from outside the queue while a
+`MoveAction` runs -- `set_path`, `set_goal_pose`, `request_path`, `brake()` or
+`stop()` -- therefore cancels that action at once (logged at INFO with the
+agent and the action) and is an interrupt: it runs to its end, and only then
+does the queue start its next action, so the next `MoveAction` does not
+overwrite it. A per-agent controller's `cancel_pose()` or `set_velocity()`
+also cancels the action, but leaves no path to wait for, so the queue goes
+on with its next action. To drop the rest of the queue instead, call
+`agent.clear_actions()` before sending the path. Under `wait_complete` the
+outside path does not replace the action's: it is held, the action completes,
+and the held path still runs to its end before the next action starts.
+
+A few things to know about request identity:
+
+- A request is its own identity, not its fields: two `PathRequest`s with the
+  same waypoints are different requests. A copy made with
+  `dataclasses.replace(request, ...)` is the *same* request (that is how the
+  approach waypoint keeps it), so to send a new one, build a new
+  `PathRequest(...)` rather than a `replace()` of an old one.
+- `PathRequest` is frozen but not hashable (its `Pose`s are mutable); key a
+  dict by `id(request)` if you need one.
+- A held or running request is not kept by identity across a kinematic
+  checkpoint: after a restore the held path is a new request, and
+  `path_request_state` of a request sent before the checkpoint is `GONE`.
+  (The checkpoint profile refuses an agent with queued actions, so no
+  `MoveAction` spans one.)
+- Overriding `set_path` is deprecated: override `request_path(agent,
+  request, preempt=False)` instead, which receives the `PathRequest` itself
+  and needs no identity bookkeeping. Defining a class that overrides
+  `set_path` gives a `FutureWarning`; from 0.10.0 such an override is no
+  longer called for requests sent with `Agent.request_path()` or by actions.
+  Until then, a controller subclass that overrides `set_path` -- to edit the
+  path, say -- is still called for every request, with the request's fields; its
+  `super().set_path(...)` passes the request on with its identity, so its
+  state is still followed. If the override sends a request of its own
+  instead, the state of the one sent is `UNKNOWN`, and a `MoveAction` then
+  ends when the agent rests: `COMPLETED` if it rests at the end of the
+  action's own path, `CANCELLED` otherwise. An override that sends an edited
+  path of its own (a shifted end, say) therefore ends the action
+  `CANCELLED` even when the agent reached the edited end; pass the request on
+  with `super().set_path(...)` to keep `COMPLETED`. `super().set_path(...)`
+  hands the request to the controller's `request_path()`, which every
+  built-in controller implements; a direct `Controller` subclass that calls
+  it must implement `request_path()` as well, or the call raises
+  `NotImplementedError`.
+- Paths a controller makes itself -- the braking path of `brake()` and of
+  `goal_replacement="brake"` -- do not go through a `set_path` override.
 
 #### Custom braking
 

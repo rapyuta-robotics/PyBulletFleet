@@ -21,6 +21,7 @@ import pybullet as p
 
 from ._replan import refused_until_stopped
 from .geometry import Pose, Path
+from .path_request import PathRequest, PathRequestState
 from .types import ActionStatus, MovementDirection
 from . import tools
 from .logging_utils import get_named_lazy_logger
@@ -145,6 +146,26 @@ class Action(ABC):
         """Check if action has completed (successfully or with failure)."""
         return self.status in [ActionStatus.COMPLETED, ActionStatus.FAILED, ActionStatus.CANCELLED]
 
+    def _end_unless_completed(self, step: "Action", what: str, agent) -> bool:
+        """After a nested ``step`` has ended: end this action the way ``step``
+        did unless it completed. Returns whether this action ended.
+
+        A nested move whose path was replaced, braked or stopped from outside
+        the queue ends ``CANCELLED`` (see :class:`MoveAction`); going on to the
+        next phase would pick or drop where the agent was left instead.
+        """
+        if step.status is ActionStatus.COMPLETED:
+            return False
+        self.status = ActionStatus.CANCELLED if step.status is ActionStatus.CANCELLED else ActionStatus.FAILED
+        self.end_time = agent.sim_core.sim_time if agent.sim_core else 0.0
+        reason = f"{what} ended {step.status.name}"
+        if self.status is ActionStatus.FAILED:
+            self._log_failure(reason, agent)
+        else:
+            self.error_message = reason
+            self._log.info(f"CANCELLED - {reason}")
+        return True
+
     def _update_log_prefix(self, agent=None):
         """Update log prefix using agent's identification.
 
@@ -225,16 +246,6 @@ class Action(ABC):
             self._log.info("END")
 
 
-def _pending_path(agent):
-    """The path ``agent``'s controller holds to start later, or ``None``."""
-    from pybullet_fleet.controller import KinematicController
-
-    if agent._batch_controller is not None:
-        return agent._batch_controller.pending_path(agent)
-    base = agent._controllers[0] if agent._controllers else None
-    return base.pending_path() if isinstance(base, KinematicController) else None
-
-
 @dataclass
 class MoveAction(Action):
     """
@@ -242,13 +253,21 @@ class MoveAction(Action):
 
     Wraps the existing Agent path following functionality into the Action interface.
 
-    The action ends when the agent comes to rest with no path of its own held
-    for later: ``COMPLETED`` when it stands at the path's last waypoint,
-    ``CANCELLED`` when it stopped elsewhere -- the path was braked
-    (:meth:`Agent.brake <pybullet_fleet.agent.Agent.brake>`) or replaced by a
-    newer one. A path the agent refuses for good (a fixed base, an empty path)
-    ``FAILED``; one it refuses only while it is moving is tried again on the
-    next update.
+    The action sends one :class:`~pybullet_fleet.path_request.PathRequest`
+    (:attr:`request`) and follows what becomes of it
+    (:meth:`Agent.path_request_state
+    <pybullet_fleet.agent.Agent.path_request_state>`): ``COMPLETED`` once the
+    agent has followed it to its end, ``CANCELLED`` as soon as it is no longer
+    the agent's -- replaced by another request, dropped while held, braked
+    (:meth:`Agent.brake <pybullet_fleet.agent.Agent.brake>`), stopped or
+    cancelled -- without waiting for the newer motion to end. (Under
+    ``wait_complete`` a request from outside is held rather than replacing
+    this one: the action completes, and the held path runs before the next
+    action.) A path the agent
+    refuses for good (a fixed base, an empty path) ``FAILED``; one it refuses
+    only while it is moving is tried again on the next update. With a
+    controller that does not track requests, the action ends when the agent
+    rests: ``COMPLETED`` at the path's last waypoint, ``CANCELLED`` elsewhere.
 
     Args:
         path: Path object with waypoints to follow
@@ -280,6 +299,19 @@ class MoveAction(Action):
         # Normalize string to enum if needed
         if isinstance(self.direction, str):
             self.direction = MovementDirection(self.direction)
+        self._request: Optional[PathRequest] = None
+
+    @property
+    def request(self) -> PathRequest:
+        """The request this action sends: its fields, built once per run."""
+        if self._request is None:
+            self._request = PathRequest(
+                path=list(self.path),
+                final_orientation_align=self.final_orientation_align,
+                direction=self.direction,
+                auto_approach=self.auto_approach,
+            )
+        return self._request
 
     def execute(self, agent, dt: float) -> bool:
         """Execute move action."""
@@ -292,12 +324,7 @@ class MoveAction(Action):
 
             # Use agent's existing path following system
             # Path visualization is handled by agent based on agent.path_visualize setting
-            accepted = agent.set_path(
-                self.path,
-                auto_approach=self.auto_approach,
-                final_orientation_align=self.final_orientation_align,
-                direction=self.direction,  # Pass direction parameter (enum or string)
-            )
+            accepted = agent.request_path(self.request)
             if accepted is False:
                 if refused_until_stopped(agent, self.path):
                     # The agent is still moving and cannot take this path from
@@ -313,22 +340,40 @@ class MoveAction(Action):
                 self._log_failure(rejection.reason if rejection is not None else "path refused", agent)
                 return True
 
-        # The move ends when the agent is at rest with no path held for later
-        # (goal_replacement brake / wait_complete); it succeeded only if the
-        # agent stands at this path's end -- not if the path was braked or
-        # replaced. agent.path is not consulted: a batch-owned agent's base
-        # controller is idle, so it is always empty there.
-        if not agent.is_moving and _pending_path(agent) is None:
-            self.end_time = agent.sim_core.sim_time if agent.sim_core else 0.0
-            if self._reached_end(agent):
-                self.status = ActionStatus.COMPLETED
-                self._log_end()
-            else:
-                self.status = ActionStatus.CANCELLED
-                self._log.info("CANCELLED - the agent stopped short of the path's end (braked or replaced)")
-            return True
-
-        return False
+        state = agent.path_request_state(self.request)
+        if state in (PathRequestState.ACTIVE, PathRequestState.PENDING):
+            return False
+        if state is PathRequestState.UNKNOWN:
+            # A controller that does not track requests, or a set_path
+            # override that sent a request of its own: judge by where the
+            # agent rests. Against this action's own path end -- an override
+            # that edited the end therefore ends it CANCELLED.
+            if agent.is_moving:
+                return False
+            state = PathRequestState.FINISHED if self._reached_end(agent) else PathRequestState.GONE
+        self.end_time = agent.sim_core.sim_time if agent.sim_core else 0.0
+        if state is PathRequestState.FINISHED:
+            self.status = ActionStatus.COMPLETED
+            self._log_end()
+            if agent._navigation_busy():
+                # A path requested from outside the queue while this one ran,
+                # held under wait_complete until it ended, now runs or waits
+                # to: it runs to its end before the next action, which would
+                # otherwise replace it.
+                agent._interrupt_actions(
+                    self, "completed while a path requested from outside the action queue is held or followed"
+                )
+        else:
+            self.status = ActionStatus.CANCELLED
+            self._log.info(
+                f"CANCELLED - {agent.name or agent.object_id}'s path was replaced, dropped, braked, stopped or cancelled"
+            )
+            # The replacement came from outside the queue: it runs to its end
+            # before the next action starts (see Agent._update_actions).
+            agent._interrupt_actions(
+                self, "ended early: its path was replaced, dropped, braked, stopped or cancelled from outside the queue"
+            )
+        return True
 
     #: Distance (m) from the last waypoint that counts as having reached it.
     END_TOLERANCE = 1e-4
@@ -345,8 +390,9 @@ class MoveAction(Action):
         return float(np.linalg.norm(position - goal)) <= self.END_TOLERANCE
 
     def reset(self):
-        """Reset action state."""
+        """Reset action state; a rerun sends a new request."""
         super().reset()
+        self._request = None
 
 
 @dataclass
@@ -729,6 +775,8 @@ class PickAction(Action):
         # Phase 2: Approach target (move forward to approach_pose)
         if self._phase == PickPhase.APPROACHING:
             if self._approach_action.execute(agent, dt):
+                if self._end_unless_completed(self._approach_action, "the move to the approach pose", agent):
+                    return True
                 self._phase = PickPhase.MOVING_TO_PICK
                 self._log_phase_transition(PickPhase.MOVING_TO_PICK, agent)
                 self._log.info("Reached approach pose, moving to pick position...")
@@ -766,6 +814,8 @@ class PickAction(Action):
                         self._log.info(f"Moving forward {distance:.3f}m to pick pose...")
 
                 if self._forward_action is not None and self._forward_action.execute(agent, dt):
+                    if self._end_unless_completed(self._forward_action, "the move to the pick pose", agent):
+                        return True
                     self._phase = PickPhase.PICKING
                     self._log_phase_transition(PickPhase.PICKING, agent)
                     self._log.info("Reached pick position, picking...")
@@ -847,6 +897,8 @@ class PickAction(Action):
         # Phase 5: Retreat to approach pose (move backward)
         if self._phase == PickPhase.RETREATING:
             if self._retreat_action.execute(agent, dt):
+                if self._end_unless_completed(self._retreat_action, "the retreat", agent):
+                    return True
                 self.status = ActionStatus.COMPLETED
                 self.end_time = agent.sim_core.sim_time if agent.sim_core else 0.0
                 self._log_end()
@@ -1064,6 +1116,8 @@ class DropAction(Action):
         # Phase 2: Approach drop position (move forward to approach_pose)
         if self._phase == DropPhase.APPROACHING:
             if self._approach_action.execute(agent, dt):
+                if self._end_unless_completed(self._approach_action, "the move to the approach pose", agent):
+                    return True
                 self._phase = DropPhase.MOVING_TO_DROP
                 self._log_phase_transition(DropPhase.MOVING_TO_DROP, agent)
                 self._log.info("Reached approach pose, moving to drop position...")
@@ -1100,6 +1154,8 @@ class DropAction(Action):
                         self._log.info(f"Moving forward {distance:.3f}m to drop pose...")
 
                 if self._forward_action is not None and self._forward_action.execute(agent, dt):
+                    if self._end_unless_completed(self._forward_action, "the move to the drop pose", agent):
+                        return True
                     self._phase = DropPhase.DROPPING
                     self._log_phase_transition(DropPhase.DROPPING, agent)
                     self._log.info("Reached drop position, dropping...")
@@ -1198,6 +1254,8 @@ class DropAction(Action):
         # Phase 5: Retreat to approach pose (move backward)
         if self._phase == DropPhase.RETREATING:
             if self._retreat_action.execute(agent, dt):
+                if self._end_unless_completed(self._retreat_action, "the retreat", agent):
+                    return True
                 self.status = ActionStatus.COMPLETED
                 self.end_time = agent.sim_core.sim_time if agent.sim_core else 0.0
                 self._log_end()

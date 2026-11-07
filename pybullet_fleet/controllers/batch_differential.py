@@ -226,38 +226,29 @@ class BatchDifferentialController(BatchKinematicController):
         path: List[Pose],
         direction: Optional[MovementDirection] = None,
         final_orientation_align: bool = True,
-        **kwargs,
+        preempt: bool = False,
     ) -> bool:
-        """Set a waypoint path.
+        """:meth:`Controller.set_path <pybullet_fleet.controller.Controller.set_path>`
+        with ``direction`` kept as the third positional argument, as this
+        controller has always taken it.
 
         Args:
             agent: A registered agent.
             path: Non-empty list of goal poses.
-            direction: ``FORWARD`` (default), ``BACKWARD``, or ``AUTO``
-                (re-evaluated per waypoint based on heading delta).
-                ``None`` uses the agent's ``controller_params.default_direction``
-                (``FORWARD`` unless configured), as the per-agent controller does.
-            final_orientation_align: If ``True`` (default), rotate to match
-                ``path[-1].orientation`` after reaching the last waypoint.
-
-        Returns:
-            ``False`` when the path is refused (``goal_replacement="reject"``
-            only); ``True`` once it is set or held to start later. See
-            :meth:`KinematicController.set_path <pybullet_fleet.controller.KinematicController.set_path>`.
+            direction: ``FORWARD``, ``BACKWARD`` or ``AUTO``; ``None`` uses the
+                agent's ``controller_params.default_direction``.
+            final_orientation_align: Rotate to match ``path[-1].orientation``
+                after reaching the last waypoint.
+            preempt: Do not hold the path for the current one under
+                ``wait_complete``.
         """
-        if self._sim_core is None:
-            raise RuntimeError("BatchDifferentialController must be attached to a sim_core before set_path.")
-        if not path:
-            raise ValueError("path must be a non-empty list of Poses.")
-        if self._agent_index.get(id(agent)) is None:
-            raise KeyError(f"Agent {agent} is not registered with this batch controller.")
-        if isinstance(direction, str):
-            direction = MovementDirection(direction)
-        return self._replace_path(
-            agent,
-            PathRequest(path=list(path), final_orientation_align=final_orientation_align, direction=direction),
-            preempt=bool(kwargs.get("preempt", False)),
+        return super().set_path(
+            agent, path, final_orientation_align=final_orientation_align, direction=direction, preempt=preempt
         )
+
+    # Only the argument order differs from Controller.set_path: requests need not
+    # pass through it (see controller.overrides_set_path).
+    set_path._only_reorders_arguments = True  # type: ignore[attr-defined]
 
     def _begin_row_path(
         self, idx: int, agent: "Agent", request: PathRequest, now: float, initial_velocity: Optional[np.ndarray]

@@ -26,6 +26,9 @@ from pybullet_fleet.types import (  # noqa: F401
 # Geometry primitives
 from pybullet_fleet.geometry import Path, Pose
 
+# Path requests
+from pybullet_fleet.path_request import PathRequest, PathRequestState  # noqa: F401
+
 # Fleet command types
 from pybullet_fleet.commands import (
     DEFAULT_ATTACH_SEARCH_RADIUS,
@@ -184,6 +187,8 @@ __all__ = [
     "GoalReplacement",
     "MotionMode",
     "MovementDirection",
+    "PathRequest",
+    "PathRequestState",
     "PosePhase",
     # Geometry
     "Pose",

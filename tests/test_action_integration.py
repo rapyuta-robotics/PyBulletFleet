@@ -1704,3 +1704,58 @@ class TestPrismaticPoseActionIntegration:
         actual_pos = np.array(link_state[0])
         distance = np.linalg.norm(actual_pos - np.array(target))
         assert distance < 0.1, f"EE too far from target: {distance:.3f}m, " f"actual={actual_pos}, target={target}"
+
+
+class TestNestedMoveEndsTheAction:
+    """A Pick/Drop whose nested move does not complete -- its path replaced, braked
+    or stopped from outside the queue -- ends that way, and does not pick or drop."""
+
+    def _start(self, agent, action, sim, steps=5):
+        agent.add_action(action)
+        dt = sim._dt
+        for _ in range(steps):
+            sim.tick()
+            agent.update(dt)
+        assert action.status is ActionStatus.IN_PROGRESS
+
+    def _run(self, agent, sim, steps=200):
+        dt = sim._dt
+        for _ in range(steps):
+            sim.tick()
+            agent.update(dt)
+
+    def test_a_stopped_approach_cancels_the_pick(self, sim):
+        agent = create_agent(sim)
+        box = create_pickable_box(sim, pos=(4, 0, 0))
+        action = PickAction(target_object_id=box.body_id, use_approach=True, approach_offset=0.5)
+        self._start(agent, action, sim)
+        agent.stop()
+        self._run(agent, sim)
+        assert action.status is ActionStatus.CANCELLED
+        assert "approach pose ended CANCELLED" in (action.error_message or "")
+        assert not box.is_attached()
+
+    def test_a_replaced_move_to_the_pick_pose_cancels_the_pick(self, sim):
+        agent = create_agent(sim)
+        box = create_pickable_box(sim, pos=(4, 0, 0))
+        action = PickAction(target_object_id=box.body_id, use_approach=False)
+        self._start(agent, action, sim)
+        agent.set_path([Pose.from_xyz(0.0, 2.0, 0.0)])  # from outside the queue
+        self._run(agent, sim, steps=2000)
+        assert action.status is ActionStatus.CANCELLED
+        assert "pick pose ended CANCELLED" in (action.error_message or "")
+        assert not box.is_attached()
+
+    def test_a_stopped_approach_cancels_the_drop(self, sim):
+        agent = create_agent(sim, pose=Pose.from_xyz(1.9, 0, 0))
+        box = create_pickable_box(sim)
+        pick = PickAction(target_object_id=box.body_id, use_approach=False)
+        agent.add_action(pick)
+        run_until_idle(agent, sim)
+        assert box.is_attached()
+        action = DropAction(drop_pose=Pose(position=[5, 0, 0]), use_approach=True, approach_offset=0.5)
+        self._start(agent, action, sim)
+        agent.stop()
+        self._run(agent, sim)
+        assert action.status is ActionStatus.CANCELLED
+        assert box.is_attached(), "nothing is dropped where the agent was stopped"
