@@ -56,6 +56,7 @@ flowchart TD
 
 - 🎯 **Benchmarking:** `run_benchmark.py`, `mobile_benchmark.py`, `arm_benchmark.py` — measure overall performance (RTF, step time, memory)
 - ⚡ **Controller comparison:** `run_benchmark.py --type mobile_control_path --controller ... --command-interface ...`, `batch_perf.py` — controller and command-interface timing with phase breakdown
+- 🚚 **Steady state:** `run_benchmark.py --type steady --scenario sparse|dense|carrying|warehouse|idle`, `steady_bench.py` — per-phase step time of a window in which the whole fleet keeps moving (`make bench-steady` runs the reference set)
 - 🔍 **Profiling:** `profiling/` — identify *what is slow* (see `profiling/README.md`)
 - 🧪 **Experiments:** `experiments/` — compare *which is faster* (see `experiments/README.md`)
 
