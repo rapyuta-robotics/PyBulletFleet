@@ -691,6 +691,14 @@ C++/Rust のブリッジ) の話になるので、1.05 倍は目標から外す�
   CHANGELOG の Breaking 項目。main になかった挙動変更が 1 つ: 削除されたオブジェクトは attachment tree から
   抜ける (子は detach、親のリストからも消える)。テスト 14 件追加、フルスイート 4128 passed、parity golden は不変。
   性能への影響: kinematic シミュレーションの経路は変えていない (physics ありは plan の対象外)。
+- **v0.9.0 リリース後 (2026-11-08):** upstream は `f7a70b7` から docs とバージョンのみ変更 (コードは同じ) だが、
+  CHANGELOG の Unreleased を v0.9.0 に畳んだため #149 が CONFLICTING になった → v0.9.0 を merge し (`3f82776`)、
+  本ブランチの項目 (Breaking、Changed、parity traces、steady benchmark) を新しい Unreleased の下に移した。
+  README の表の core sweep (`make bench-release`、`simple_cube`、半数に goal、10 s × 3 反復) を v0.9.0 と同一
+  セッションで交互に計測 (`598674d`、`benchmark_sweep_10.0s_fleet_scaling.json`): 1000 台 6.58 ms (15x) → 1.71 ms
+  (59x)、2000 台 15.91 ms → 3.33 ms、100 台 0.56 → 0.43 ms。spawn は 6-16% 遅い (列ストアへの行登録。follow-up
+  の spawn cost に含める)、メモリは同じ。v0.9.0 側の計測はリリースの表を再現した。README / index の表と
+  `benchmark_sweep_10.0s.json` はリリース時の更新に委ね、本 PR では触らない。
 - **PC の後:** `accepted` モードで最大速度の 1000 台の `/fleet/navigate` の ack が 10 ms を超えていれば、コマンドリングを
   follow-up から本計画に入れる (2026-11-05: `applied` 既定で計測済み。`accepted` の計測はスケールチェッカーに
   `ack_mode` を渡す口を足してから)。
