@@ -14,6 +14,15 @@ are not recommended for production use yet.
 
 ### Changed
 
+- A `MoveAction` on a batch-driven agent no longer polls its request every
+  step: once the batch controller follows (or holds) the request, the agent
+  sleeps, and the controller wakes it when the request's fate changes (the
+  row ends, a path from outside replaces or drops it, the agent is stopped
+  or leaves the controller). An agent whose joints have all settled, and
+  one whose action queue has an interruption to end, are treated the same
+  way as before. 1000 batch robots driven through `MoveAction` (the
+  behaviour-tree and ROS navigate path) step in about the same time as
+  through `set_path` (1.3 ms against 2.7 ms before).
 - With `ignore_attached_collision` (the default) the broad phase no longer
   offers a pair of two bodies of one attachment tree (a carrier and its
   load, two loads on one carrier): every row carries the id of its tree's

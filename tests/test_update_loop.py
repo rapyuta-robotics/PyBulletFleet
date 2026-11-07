@@ -112,3 +112,98 @@ def test_set_poses_rejects_an_unknown_id_before_writing(sim):
             [a.object_id, 12345], np.array([[5.0, 0.0, 0.0], [0.0, 0.0, 0.0]]), np.tile([0.0, 0.0, 0.0, 1.0], (2, 1))
         )
     assert a.get_pose().x == 0.0
+
+
+# --- a move under a batch controller sleeps until its request is settled ----
+
+
+def _batch_robot(sim, x=0.0):
+    from pybullet_fleet.agent_manager import AgentManager
+
+    manager = AgentManager(sim_core=sim, fleet_controller={"type": "batch_differential"})
+    a = robot(sim, x)
+    manager.add_object(a)
+    return a
+
+
+def test_a_batch_move_action_sleeps_while_followed_and_completes_when_the_row_ends(sim, monkeypatch):
+    from pybullet_fleet.action import MoveAction
+    from pybullet_fleet.geometry import Path
+    from pybullet_fleet.types import ActionStatus
+
+    a = _batch_robot(sim)
+    action = MoveAction(path=Path.from_positions([[1.0, 0.0, 0.0]]))
+    a.add_action(action)
+    executes = []
+    original = MoveAction.execute
+
+    def counting(self, agent, dt):
+        executes.append(sim.step_count)
+        return original(self, agent, dt)
+
+    monkeypatch.setattr(MoveAction, "execute", counting)
+    sim.step_once()  # starts the action, sends the request, sleeps
+    assert action.status == ActionStatus.IN_PROGRESS and a._action_asleep
+    for _ in range(10):
+        sim.step_once()
+    assert executes == [1]  # not polled while the row is followed
+    for _ in range(200):
+        sim.step_once()
+        if action.status == ActionStatus.COMPLETED:
+            break
+    assert action.status == ActionStatus.COMPLETED
+    assert a.get_pose().x == pytest.approx(1.0, abs=1e-3)
+    assert not a._action_asleep
+    assert len(executes) == 2  # woken once, by the row's end
+
+
+def test_a_sleeping_move_action_is_woken_by_a_path_from_outside(sim):
+    from pybullet_fleet.action import MoveAction
+    from pybullet_fleet.geometry import Path
+    from pybullet_fleet.types import ActionStatus
+
+    a = _batch_robot(sim)
+    action = MoveAction(path=Path.from_positions([[5.0, 0.0, 0.0]]))
+    a.add_action(action)
+    for _ in range(3):
+        sim.step_once()
+    assert a._action_asleep
+    a.set_goal_pose(Pose.from_xyz(-2.0, 0.0, 0.0))  # replaces the action's path
+    assert not a._action_asleep
+    sim.step_once()
+    assert action.status == ActionStatus.CANCELLED
+
+
+def test_a_stopped_agent_ends_its_sleeping_action(sim):
+    from pybullet_fleet.action import MoveAction
+    from pybullet_fleet.geometry import Path
+    from pybullet_fleet.types import ActionStatus
+
+    a = _batch_robot(sim)
+    action = MoveAction(path=Path.from_positions([[5.0, 0.0, 0.0]]))
+    a.add_action(action)
+    for _ in range(3):
+        sim.step_once()
+    a.stop()
+    sim.step_once()
+    assert action.status == ActionStatus.CANCELLED
+
+
+def test_settled_joints_let_an_arm_take_the_fast_path_until_a_new_target(sim):
+    from pybullet_fleet.agent_manager import AgentManager
+
+    manager = AgentManager(sim_core=sim, fleet_controller={"type": "batch_differential"})
+    arm = Agent.from_params(
+        AgentSpawnParams(urdf_path="robots/arm_robot.urdf", initial_pose=Pose.from_xyz(0.0, 0.0, 0.0), use_fixed_base=True),
+        sim_core=sim,
+    )
+    manager.add_object(arm)
+    arm.set_joint_target_by_name("shoulder_to_elbow", 0.3)
+    assert not arm._joints_settled
+    for _ in range(60):
+        sim.step_once()
+    assert arm._joints_settled
+    assert arm.update(0.1) is False  # the fast path: nothing to do
+    arm.set_joint_target_by_name("shoulder_to_elbow", 0.0)
+    assert not arm._joints_settled
+    assert arm.update(0.1) is True  # moving again

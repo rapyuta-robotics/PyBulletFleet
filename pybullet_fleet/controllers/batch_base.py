@@ -177,6 +177,7 @@ class BatchKinematicController(GoalReplacementPolicy, Controller):
             raise KeyError(f"Agent {agent} is not registered with this batch controller.")
         idx = self._agent_index.pop(key)
         agent._batch_controller = None
+        agent._action_asleep = False
         self._drop_pending(agent, "the agent left the batch controller")
         self._active_request.pop(key, None)
         self._finished_request.pop(key, None)
@@ -326,6 +327,7 @@ class BatchKinematicController(GoalReplacementPolicy, Controller):
     def _activate(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
         """Make ``request`` the agent's active request and start its row."""
         self._active_request[id(agent)] = request
+        agent._action_asleep = False  # the request's fate changed: a sleeping MoveAction looks again
         self._start_row_path(agent, request, continue_motion)
 
     def _replacement_obstacle(self, agent: "Agent", path, direction: Optional[MovementDirection] = None) -> Optional[str]:
@@ -419,6 +421,7 @@ class BatchKinematicController(GoalReplacementPolicy, Controller):
         if previous is not None:
             _log_dropped(str(agent.name or agent.object_id), previous, "a newer path replaced it")
         self._pending[id(agent)] = request
+        agent._action_asleep = False
 
     def _drop_pending(self, agent: "Agent", reason: str) -> None:
         """Drop the agent's pending path (logging it with ``reason``) and braking flag."""
@@ -427,6 +430,7 @@ class BatchKinematicController(GoalReplacementPolicy, Controller):
         previous = self._pending.pop(key, None)
         if previous is not None:
             _log_dropped(str(agent.name or agent.object_id), previous, reason)
+            agent._action_asleep = False
 
     def _start_row_path(self, agent: "Agent", request: PathRequest, continue_motion: bool) -> None:
         """Make ``request`` the agent's active path.
@@ -467,6 +471,7 @@ class BatchKinematicController(GoalReplacementPolicy, Controller):
         """
         agent = self._agents[idx]
         key = id(agent)
+        agent._action_asleep = False  # the row ended: a sleeping MoveAction sees FINISHED or GONE
         finished = self._active_request.pop(key, None)
         if finished is not None:
             self._finished_request[key] = finished
@@ -481,6 +486,7 @@ class BatchKinematicController(GoalReplacementPolicy, Controller):
         """Cancel one path without racing a concurrent simulation step."""
         with self._state_lock:
             key = id(agent)
+            agent._action_asleep = False
             self._drop_pending(agent, "the agent was stopped")
             self._active_request.pop(key, None)
             idx = self._agent_index.get(key)

@@ -493,6 +493,12 @@ class Agent(SimObject):
         # Set when a request from outside the queue replaced the running
         # action's path: the queue waits until that motion ends.
         self._actions_interrupted: bool = False
+        # A MoveAction under a batch controller sleeps once its request is
+        # being followed: the controller wakes the agent when the request's
+        # fate changes, so update() need not poll it every step.
+        self._action_asleep: bool = False
+        # No active joint moved on the last joint update: nothing to do until a target changes.
+        self._joints_settled: bool = False
         # The requests a set_path override did not pass on (it sent one of its
         # own): their fate cannot be followed (path_request_state says
         # UNKNOWN). Weak: a request nobody holds any more drops out.
@@ -1667,6 +1673,7 @@ class Agent(SimObject):
             agent.add_action(WaitAction(duration=5.0))
         """
         self._action_queue.append(action)
+        self._action_asleep = False
         self._log.info(f"Added {action.__class__.__name__} to queue (queue size: {len(self._action_queue)})")
 
     def add_action_sequence(self, actions: List[Action]):
@@ -1693,6 +1700,7 @@ class Agent(SimObject):
         Clear all actions from the queue and cancel current action.
         """
         self._action_queue.clear()
+        self._action_asleep = False
         if self._current_action is not None:
             self._current_action.cancel()
             self._current_action = None
@@ -2004,6 +2012,7 @@ class Agent(SimObject):
             p.resetJointState(self.body_id, state.index, new_pos, physicsClientId=self._pid)
             state.position = new_pos
             any_moved = True
+        self._joints_settled = not any_moved
         return any_moved
 
     def is_joint_moving(self, joint: Union[int, str]) -> bool:
@@ -2042,6 +2051,7 @@ class Agent(SimObject):
     def _refresh_active_joints(self) -> None:
         """Re-index the joints the step loop visits, after a target changed."""
         self._active_joints = [state for state in self._joints.values() if state.target is not None]
+        self._joints_settled = False
 
     def _ramped_joint_position(
         self,
@@ -2167,14 +2177,15 @@ class Agent(SimObject):
             False otherwise
         """
         # A batch-driven agent with nothing of its own to run this step: no
-        # action, no joint on its way, nothing riding on a link (base
-        # attachments ride along in the batch write), no plugin, no entity
-        # events. Its motion is the batch controller's.
+        # action to run (none, or a move the controller will wake it for),
+        # no interruption to end, no joint on its way, nothing riding on a
+        # link (base attachments ride along in the batch write), no plugin,
+        # no entity events. Its motion is the batch controller's.
         if (
             self._batch_controller is not None
-            and self._current_action is None
-            and not self._action_queue
-            and not self._active_joints
+            and (self._action_asleep or (self._current_action is None and not self._action_queue))
+            and not self._actions_interrupted
+            and (self._joints_settled or not self._active_joints)
             and not self._link_attached_count
             and not self._plugins
             and self._events is None
@@ -2527,6 +2538,7 @@ class Agent(SimObject):
         state = self._joint(joint_index)
         newly_targeted = state.target is None
         state.target = target_position
+        self._joints_settled = False  # a target to move to again
         if newly_targeted:
             self._refresh_active_joints()
 
@@ -2644,6 +2656,7 @@ class Agent(SimObject):
         state.target = position
         state.position = position
         state.clear_motion()
+        self._joints_settled = False
         if newly_targeted:
             self._refresh_active_joints()
         p.resetJointState(self.body_id, index, position, physicsClientId=self._pid)

@@ -342,6 +342,10 @@ class MoveAction(Action):
 
         state = agent.path_request_state(self.request)
         if state in (PathRequestState.ACTIVE, PathRequestState.PENDING):
+            if agent._batch_controller is not None:
+                # The batch controller tracks the request and wakes the
+                # agent when its fate changes: nothing to poll until then.
+                agent._action_asleep = True
             return False
         if state is PathRequestState.UNKNOWN:
             # A controller that does not track requests, or a set_path
