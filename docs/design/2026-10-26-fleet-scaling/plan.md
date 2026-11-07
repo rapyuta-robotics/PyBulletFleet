@@ -18,7 +18,7 @@ PyBullet は遅延同期のミラーにする。コストの大きいフェー�
 **前提となる upstream PR:** #94 (broad phase) と #98 (`query_aabb`) は 2026-11-04 に、
 #111 (NORMAL_2D の非推奨化) と #114 (軸ごとの collision clearance) は 2026-11-05 に、
 #115 (多リンクボディの AABB を全リンクの和にする) は 2026-11-06 にマージ済み (main `2e2a86a`)。
-#87 (PathRequest) を P3 の前にマージする。
+#87 (PathRequest) は 2026-11-07 にマージ済み (`77b12e4`)。
 P1 は #94 + #114 の意味論を、P3 は #87 の request 状態を、それぞれ前提にする
 (spec の「関連する upstream PR」)。
 
@@ -374,9 +374,15 @@ sparse の残り 1.19 ms は phase1 0.50 (batch advance 約 0.3、`set_poses` 0.
 (narrow phase の Python ループ、active ペアの再判定、`_moved_this_step` の set 操作)、AABB flush 0.14。
 carrying の残り 2.8 ms は phase1 1.3 (子 1000 体ぶんの行の計算と pending / moved の set 更新) と
 collision 1.07 (親子ペアの除外は `_is_ignored_collision` の per-pair Python)。
-**残り (#87 待ち):** 到着イベント (`MoveAction` の毎ステップ `execute()` ポーリングをやめる)、
-`MoveAction` 経由で全台を動かす構成でも同じ値になること、関節補間の `joint_target_pending`、
-`AgentPlugin.on_batch_update` と `BatteryPlugin` の配列化、`FleetStateProvider` の一括読み出し。
+**実装済み (2026-11-07、#87 マージ後、`17c9869`): 到着イベント。** batch 管理下の `MoveAction` は request が
+ACTIVE / PENDING になった時点で agent を眠らせ (`_action_asleep`)、batch controller が request の結末が
+変わる箇所 (`_row_finished`、activate、hold、pending の破棄、stop、unregister) で起こす。`update()` の早期 return は
+眠っている action を素通しし、#87 の interruption (`_actions_interrupted`) が残る agent と、関節が動き終えていない
+agent (`_joints_settled`、目標を設定すると解除) は従来どおり更新する。`MoveAction` 経由で 1000 台を動かす構成
+(BT / ROS navigate の経路): 2.7 → 1.3 ms/step (`set_path` 経由は 1.19 ms)。テスト 4 件追加、フルスイート 3185 passed。
+**残り:** `AgentPlugin.on_batch_update` と `BatteryPlugin` の配列化 (battery を持つ agent は早期 return を通らない)、
+`FleetStateProvider` (in-process 配信) の一括読み出し、10000 台の phase1 (`set_poses` の pending / moved の
+set 更新と 10k 回の `update()` 呼び出し)。
 
 現状の phase1 (5.4-6.0 ms) の内訳 (`6551125`、1000 台 diff、batch): batch カーネル本体 0.27 ms、
 `_apply_phase1` 3.85 ms (うち `set_poses` 3.2 ms、per-agent の速度コピーループ
