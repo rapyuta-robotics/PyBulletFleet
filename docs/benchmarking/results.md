@@ -225,6 +225,27 @@ Raw results: `benchmark/results/steady_sparse_dense_carrying_idle_1000agents.jso
 `benchmark/results/steady_sparse_dense_carrying_10000agents.json` (the branch
 numbers above).
 
+The core sweep of the [Simulation Throughput](#simulation-throughput) table
+(`make bench-release`'s first line: `simple_cube` robots, goals for half of
+the agents, 10 s, 3 repetitions) on the same branch, measured on 2026-11-08
+alternating with v0.9.0 in one session. The v0.9.0 run reproduces the
+release table within its noise.
+
+| Agents | v0.9.0 step | v0.9.0 RTF | Branch step | Branch RTF | v0.9.0 spawn | Branch spawn |
+|--------|-------------|------------|-------------|------------|--------------|--------------|
+| 100    | 0.56 ms     | 177x       | 0.43 ms     | 231x       | 51 ms        | 54 ms        |
+| 250    | 1.31 ms     | 76x        | 0.64 ms     | 156x       | 124 ms       | 138 ms       |
+| 500    | 3.27 ms     | 31x        | 1.01 ms     | 99x        | 263 ms       | 279 ms       |
+| 1000   | 6.58 ms     | 15x        | 1.71 ms     | 59x        | 499 ms       | 575 ms       |
+| 2000   | 15.91 ms    | 6x         | 3.33 ms     | 30x        | 1043 ms      | 1209 ms      |
+
+The step is 3 to 5 times shorter from 250 agents up. Spawning is 6-16%
+slower (every object registers its rows in the column store), and memory
+per agent is the same within 1 MB. Raw results:
+`benchmark/results/benchmark_sweep_10.0s_fleet_scaling.json`; the
+`benchmark_sweep_10.0s.json` the tables above read from stays at v0.9.0
+until the next release refresh.
+
 ---
 
 ## Step Time Component Breakdown
