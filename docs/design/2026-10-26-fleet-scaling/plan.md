@@ -380,9 +380,23 @@ ACTIVE / PENDING になった時点で agent を眠らせ (`_action_asleep`)、b
 眠っている action を素通しし、#87 の interruption (`_actions_interrupted`) が残る agent と、関節が動き終えていない
 agent (`_joints_settled`、目標を設定すると解除) は従来どおり更新する。`MoveAction` 経由で 1000 台を動かす構成
 (BT / ROS navigate の経路): 2.7 → 1.3 ms/step (`set_path` 経由は 1.19 ms)。テスト 4 件追加、フルスイート 3185 passed。
-**残り:** `AgentPlugin.on_batch_update` と `BatteryPlugin` の配列化 (battery を持つ agent は早期 return を通らない)、
-`FleetStateProvider` (in-process 配信) の一括読み出し、10000 台の phase1 (`set_poses` の pending / moved の
-set 更新と 10k 回の `update()` 呼び出し)。
+**実装済み (2026-11-07、`ac2f4eb`): プラグインのバッチ化。** `AgentPlugin.create_batch(sim_core)` が `PluginBatch` を
+返すクラスは、core がその全インスタンスをバッチに入れ、step ごとに `update(dt)` を 1 回呼ぶ (各 `on_update()` は
+呼ばない)。`BatteryPlugin` はレート・SOC・充電フラグをバッチの列に持ち、プロパティで自分の行を読み書きし、
+全バッテリーを 1 回の配列演算で更新する (移動中かは store の `is_moving` 列。`Agent._is_moving` はその
+1 要素ビュー)。`on_update` を上書きしたサブクラスとシミュレーション外の agent は per-agent のまま。プラグインが
+全部バッチの agent は早期 return を通る。バッテリー付き 1000 台 (MoveAction 経由) 5.6-6.7 → 2.1-2.2 ms/step
+(他セッションの負荷あり。同条件のバッテリーなしは静かな状態で 1.3 ms)。テスト 4 件追加、フルスイート 3193 passed。
+同じコミットで、関節名 / リンク名の解決 (`resolve_joint_index` / `resolve_link_index`) に物理クライアントを渡す
+修正を入れた (既定クライアントを見ていたので、別クライアントが残るプロセスでは名前が別ボディに解決し、
+`set_joint_target_by_name` が目標を設定しないことがあった。スイート内でだけ出る失敗の原因)。
+**残り:** `FleetStateProvider` (in-process 配信) の一括読み出し (state plane 経由が推奨経路なので優先度低)。
+10000 台の phase1: `_pending_pose_ids` / `_moved_this_step` の set 更新 (10k で合わせて約 1-2 ms) を store の
+bool 列にする案があるが、この 2 つの set はテストから 125 箇所 (うち直接代入 37 箇所) 参照されているので、
+set 互換のラッパー (行で add できる) を property で被せる形になる。10000 台の目標は満たしているので保留。
+10k 回の `update()` 呼び出し (早期 return でも 1.9 ms) は「更新が必要な集合」の出し入れ (起こす箇所は
+`_action_asleep` の解除点と同じ) で消せるが、同じ理由で保留。曲線移動と回転の角速度引き継ぎは性能でなく
+機能の話として #143 に出した。
 
 現状の phase1 (5.4-6.0 ms) の内訳 (`6551125`、1000 台 diff、batch): batch カーネル本体 0.27 ms、
 `_apply_phase1` 3.85 ms (うち `set_poses` 3.2 ms、per-agent の速度コピーループ
