@@ -1619,7 +1619,7 @@ class SimObject:
             agent.attach_object(box, parent_link_index="end_effector")
         """
         # Resolve link name to index
-        parent_link_index = resolve_link_index(self.body_id, parent_link_index)
+        parent_link_index = resolve_link_index(self.body_id, parent_link_index, self._pid)
 
         if keep_world_pose and relative_pose is not None:
             raise ValueError("relative_pose and keep_world_pose=True cannot both be specified")

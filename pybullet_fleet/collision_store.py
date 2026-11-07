@@ -106,9 +106,10 @@ class CollisionStore:
         self.orn[:, 3] = 1.0
         #: Whether the next flush of the row's pose keeps the body's velocity.
         self.preserve_velocity = np.ones(capacity, bool)
-        #: An agent's reported velocity (world frame) and yaw rate.
+        #: An agent's reported velocity (world frame) and yaw rate, and whether it is moving.
         self.lin_vel = np.zeros((capacity, 3))
         self.ang_vel = np.zeros(capacity)
+        self.is_moving = np.zeros(capacity, bool)
         #: The object moves through set_pose (not a physics body, not STATIC).
         self.kinematic = np.zeros(capacity, bool)
         #: A buffered pose write must go through the object itself: it has
@@ -171,6 +172,7 @@ class CollisionStore:
         "preserve_velocity",
         "lin_vel",
         "ang_vel",
+        "is_moving",
         "kinematic",
         "per_object_pose",
         "mirror_dirty",
@@ -219,6 +221,7 @@ class CollisionStore:
         self.preserve_velocity[row] = True
         self.lin_vel[row] = 0.0
         self.ang_vel[row] = 0.0
+        self.is_moving[row] = False
         self.kinematic[row] = False
         self.per_object_pose[row] = False
         self.mirror_dirty[row] = False

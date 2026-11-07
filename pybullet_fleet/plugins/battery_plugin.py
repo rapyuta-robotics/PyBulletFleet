@@ -44,14 +44,86 @@ Example (custom subclass)::
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, List, Optional
 
-from pybullet_fleet.agent_plugin import AgentPlugin
+import numpy as np
+
+from pybullet_fleet.agent_plugin import AgentPlugin, PluginBatch
 
 if TYPE_CHECKING:
     from pybullet_fleet.agent import Agent
 
 logger = logging.getLogger(__name__)
+
+# Columns of a battery's state, in a plugin's own array and in the batch's.
+_DISCHARGE, _CHARGE, _IDLE, _SOC, _CHARGING = range(5)
+
+
+class _BatteryBatch(PluginBatch):
+    """Every :class:`BatteryPlugin` of one simulation, updated as arrays.
+
+    ``values`` holds one row per battery (the plugin's state columns); a
+    plugin reads and writes its row through its properties. Whether each
+    agent moves comes from the simulation's ``is_moving`` column, through
+    the agents' rows, which are cached until the fleet changes.
+    """
+
+    def __init__(self, sim_core: Any) -> None:
+        self.sim_core = sim_core
+        self.plugins: List["BatteryPlugin"] = []
+        self.values = np.zeros((16, 5))
+        self._agent_rows: Optional[np.ndarray] = None
+        self._rows_key: Any = None
+
+    def add(self, plugin: "BatteryPlugin") -> None:
+        n = len(self.plugins)
+        if n == len(self.values):
+            grown = np.zeros((2 * n, 5))
+            grown[:n] = self.values
+            self.values = grown
+        self.values[n] = plugin._own
+        plugin._batch = self
+        plugin._row = n
+        self.plugins.append(plugin)
+        self._rows_key = None
+
+    def remove(self, plugin: "BatteryPlugin") -> None:
+        row = plugin._row
+        if plugin._batch is not self or row < 0:
+            return
+        plugin._own[:] = self.values[row]
+        plugin._batch = None
+        plugin._row = -1
+        last = len(self.plugins) - 1
+        if row != last:
+            moved = self.plugins[last]
+            self.values[row] = self.values[last]
+            moved._row = row
+            self.plugins[row] = moved
+        self.plugins.pop()
+        self._rows_key = None
+
+    def _moving(self) -> np.ndarray:
+        store = self.sim_core._store
+        key = (self.sim_core._fleet_revision, len(self.plugins))
+        if self._rows_key != key or self._agent_rows is None:
+            self._agent_rows = store.rows([plugin.agent.object_id for plugin in self.plugins])
+            self._rows_key = key
+        return store.is_moving[self._agent_rows]
+
+    def update(self, dt: float) -> None:
+        n = len(self.plugins)
+        if n == 0:
+            return
+        values = self.values[:n]
+        charging = values[:, _CHARGING] > 0.5
+        moving = self._moving()
+        delta = np.where(
+            charging,
+            values[:, _CHARGE] * dt,
+            np.where(moving, -values[:, _DISCHARGE] * dt, -values[:, _IDLE] * dt),
+        )
+        values[:, _SOC] = np.clip(values[:, _SOC] + delta, 0.0, 1.0)
 
 
 class BatteryPlugin(AgentPlugin):
@@ -85,11 +157,75 @@ class BatteryPlugin(AgentPlugin):
         idle_rate: float = 0.0,
     ) -> None:
         super().__init__(agent)
-        self.discharge_rate: float = discharge_rate
-        self.charge_rate: float = charge_rate
-        self.idle_rate: float = idle_rate
-        self.soc: float = initial_soc
-        self.is_charging: bool = False
+        # The state lives here until the plugin joins a simulation's battery
+        # batch, which keeps it in columns and updates every battery at once.
+        self._batch: Optional["_BatteryBatch"] = None
+        self._row: int = -1
+        self._own = np.array([discharge_rate, charge_rate, idle_rate, initial_soc, 0.0], dtype=float)
+
+    def _value(self, column: int) -> float:
+        batch = self._batch
+        return float(batch.values[self._row, column]) if batch is not None else float(self._own[column])
+
+    def _set_value(self, column: int, value: float) -> None:
+        batch = self._batch
+        if batch is not None:
+            batch.values[self._row, column] = value
+        else:
+            self._own[column] = value
+
+    @property
+    def discharge_rate(self) -> float:
+        """SOC drain per second while moving."""
+        return self._value(_DISCHARGE)
+
+    @discharge_rate.setter
+    def discharge_rate(self, value: float) -> None:
+        self._set_value(_DISCHARGE, value)
+
+    @property
+    def charge_rate(self) -> float:
+        """SOC gain per second while charging."""
+        return self._value(_CHARGE)
+
+    @charge_rate.setter
+    def charge_rate(self, value: float) -> None:
+        self._set_value(_CHARGE, value)
+
+    @property
+    def idle_rate(self) -> float:
+        """SOC drain per second while idle."""
+        return self._value(_IDLE)
+
+    @idle_rate.setter
+    def idle_rate(self, value: float) -> None:
+        self._set_value(_IDLE, value)
+
+    @property
+    def soc(self) -> float:
+        """Current state of charge [0.0, 1.0]."""
+        return self._value(_SOC)
+
+    @soc.setter
+    def soc(self, value: float) -> None:
+        self._set_value(_SOC, value)
+
+    @property
+    def is_charging(self) -> bool:
+        """Whether the agent is charging."""
+        return bool(self._value(_CHARGING))
+
+    @is_charging.setter
+    def is_charging(self, value: bool) -> None:
+        self._set_value(_CHARGING, 1.0 if value else 0.0)
+
+    @classmethod
+    def create_batch(cls, sim_core: Any) -> Optional["_BatteryBatch"]:
+        """One batch per simulation, for the plain :class:`BatteryPlugin` (a subclass with its own
+        ``on_update`` keeps its per-agent update)."""
+        if cls.on_update is not BatteryPlugin.on_update or not hasattr(sim_core, "_store"):
+            return None
+        return _BatteryBatch(sim_core)
 
     def set_charging(self, charging: bool) -> None:
         """Start or stop charging.

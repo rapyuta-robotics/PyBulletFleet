@@ -247,3 +247,117 @@ class TestBatteryFromDict:
         config = {"name": "test_bot", "urdf_path": MOBILE_URDF}
         params = AgentSpawnParams.from_dict(config)
         assert not params.plugins
+
+
+# --- the simulation's battery batch -------------------------------------------
+
+
+def _fleet_with_batteries(n, **battery):
+    import pybullet as p
+
+    from pybullet_fleet import Agent, AgentSpawnParams, MultiRobotSimulationCore, Pose, SimulationParams
+    from pybullet_fleet.agent_manager import AgentManager
+
+    sim = MultiRobotSimulationCore(
+        SimulationParams(gui=False, physics=False, monitor=False, timestep=0.1, log_level="warning")
+    )
+    manager = AgentManager(sim_core=sim, fleet_controller={"type": "batch_differential"})
+    agents = []
+    for k in range(n):
+        agent = Agent.from_params(
+            AgentSpawnParams(
+                urdf_path="robots/simple_cube.urdf",
+                initial_pose=Pose.from_xyz(float(2 * k), 0.0, 0.0),
+                plugins=[{"type": "battery", "config": dict(initial_soc=0.5 + 0.01 * (k % 10), **battery)}],
+            ),
+            sim_core=sim,
+        )
+        manager.add_object(agent)
+        agents.append(agent)
+    return sim, agents, lambda: p.disconnect(sim._client)
+
+
+def test_batteries_in_a_simulation_are_one_batch_and_their_agents_take_the_fast_path():
+    sim, agents, close = _fleet_with_batteries(5)
+    try:
+        batch = sim._plugin_batches[BatteryPlugin]
+        assert batch is not None and len(batch.plugins) == 5
+        for agent in agents:
+            assert agent._per_agent_plugins == [] and agent.battery_plugin._batch is batch
+            assert agent.update(0.1) is False  # nothing of its own to run: the batch updates the battery
+    finally:
+        close()
+
+
+def test_the_batch_gives_the_same_soc_as_the_per_agent_update():
+    sim, agents, close = _fleet_with_batteries(40, discharge_rate=0.02, charge_rate=0.05, idle_rate=0.004)
+    try:
+        from pybullet_fleet import Pose
+
+        for k, agent in enumerate(agents):
+            if k % 3 == 0:
+                agent.set_goal_pose(Pose.from_xyz(agent.get_pose().x + 50.0, 0.0, 0.0))  # moving
+            elif k % 3 == 1:
+                agent.set_charging(True)
+        expected = [agent.battery_soc for agent in agents]
+        for _ in range(20):
+            sim.step_once()
+            for k, agent in enumerate(agents):  # the per-agent rule, applied by hand with the same inputs
+                plugin = agent.battery_plugin
+                if plugin.is_charging:
+                    expected[k] = min(1.0, expected[k] + plugin.charge_rate * 0.1)
+                elif agent.is_moving:
+                    expected[k] = max(0.0, expected[k] - plugin.discharge_rate * 0.1)
+                else:
+                    expected[k] = max(0.0, expected[k] - plugin.idle_rate * 0.1)
+        assert [agent.battery_soc for agent in agents] == pytest.approx(expected, abs=1e-12)
+        assert any(agents[k].is_moving for k in range(0, 40, 3))
+    finally:
+        close()
+
+
+def test_a_plugin_write_reaches_the_batch_and_a_removed_plugin_keeps_its_state():
+    sim, agents, close = _fleet_with_batteries(4)
+    try:
+        batch = sim._plugin_batches[BatteryPlugin]
+        first = agents[0].battery_plugin
+        first.soc = 0.25
+        first.set_charging(True)
+        assert batch.values[first._row, 3] == 0.25 and batch.values[first._row, 4] == 1.0
+        agents[0].remove_plugin(BatteryPlugin)  # the last row moves into row 0
+        assert first._batch is None and first.soc == 0.25 and first.is_charging
+        assert len(batch.plugins) == 3
+        for plugin in batch.plugins:
+            assert batch.plugins[plugin._row] is plugin
+        sim.remove_object(agents[1])  # its plugin leaves the batch and keeps its state
+        plugin = agents[1].battery_plugin
+        assert plugin._batch is None and plugin.soc == pytest.approx(0.51)
+        assert len(batch.plugins) == 2
+        sim.step_once()  # the remaining two still update
+    finally:
+        close()
+
+
+def test_a_subclass_with_its_own_update_stays_per_agent():
+    class TemperatureBattery(BatteryPlugin):
+        def on_update(self, dt):
+            self.soc = max(0.0, self.soc - 0.1 * dt)
+
+    import pybullet as p
+
+    from pybullet_fleet import Agent, AgentSpawnParams, MultiRobotSimulationCore, Pose, SimulationParams
+
+    sim = MultiRobotSimulationCore(
+        SimulationParams(gui=False, physics=False, monitor=False, timestep=0.1, log_level="warning")
+    )
+    try:
+        agent = Agent.from_params(
+            AgentSpawnParams(urdf_path="robots/simple_cube.urdf", initial_pose=Pose.from_xyz(0, 0, 0)), sim_core=sim
+        )
+        agent.add_plugin(TemperatureBattery(agent, initial_soc=1.0))
+        assert sim._plugin_batches[TemperatureBattery] is None
+        assert agent._per_agent_plugins == [agent.battery_plugin]
+        sim.step_once()
+        assert agent.battery_soc == pytest.approx(0.99)
+    finally:
+        p.disconnect(sim._client)

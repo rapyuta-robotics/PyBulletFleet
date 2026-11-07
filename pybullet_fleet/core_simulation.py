@@ -719,6 +719,12 @@ class MultiRobotSimulationCore:
         # The objects with a per-step update() (agents, devices): the step
         # visits these, not every body in the scene.
         self._updatable: List[SimObject] = []
+        #: Bumped when an object is added, removed or renamed: readers that
+        #: cache the fleet's rows and names (the state plane) compare it.
+        self._fleet_revision: int = 0
+        # One batch per agent-plugin class that offers one (None when it
+        # does not): it updates all of that class's plugins in one call.
+        self._plugin_batches: Dict[type, Any] = {}
 
         # --- Plugins ---
         self._plugins: List["SimPlugin"] = []
@@ -1871,6 +1877,22 @@ class MultiRobotSimulationCore:
         """
         self._moved_this_step.add(object_id)
         logger.debug(f"Object {object_id} marked as moved")
+
+    def _add_plugin_to_batch(self, plugin: Any) -> bool:
+        """Add ``plugin`` to its class's batch; False when the class updates plugin by plugin."""
+        cls = type(plugin)
+        if cls not in self._plugin_batches:
+            self._plugin_batches[cls] = cls.create_batch(self)
+        batch = self._plugin_batches[cls]
+        if batch is None:
+            return False
+        batch.add(plugin)
+        return True
+
+    def _remove_plugin_from_batch(self, plugin: Any) -> None:
+        batch = self._plugin_batches.get(type(plugin))
+        if batch is not None:
+            batch.remove(plugin)
 
     def _bind_pose_rows(self) -> None:
         """Point every object's pose cache at its row of the pose columns (after a reallocation)."""
@@ -3147,6 +3169,8 @@ class MultiRobotSimulationCore:
             obj._bind_rows(self._store, row)
         if obj._needs_update:
             self._updatable.append(obj)
+        if isinstance(obj, Agent):
+            obj._bind_plugins_to_batches()
 
         # Add to agents list if this is an Agent instance (for O(M) iteration)
         if isinstance(obj, Agent):
@@ -3263,6 +3287,8 @@ class MultiRobotSimulationCore:
                 self._updatable.remove(obj)
             except ValueError:
                 pass
+        if isinstance(obj, Agent):
+            obj._release_plugins_from_batches()
 
         # Remove from dynamic collision set
         self._dynamic_collision_objects.discard(obj_id)
@@ -4438,6 +4464,7 @@ class MultiRobotSimulationCore:
     def _note_monitor_entities_changed(self) -> None:
         """An object was added, removed or renamed: rebuild the monitor's entity list."""
         self._monitor_frames.objects_changed()
+        self._fleet_revision += 1
 
     def update_monitor(self) -> None:
         """Update simulation monitor with current statistics.
@@ -4664,6 +4691,7 @@ class MultiRobotSimulationCore:
         self._base_children.clear()
         self._base_parent_of.clear()
         self._updatable.clear()
+        self._plugin_batches.clear()
         self._aabb_links.clear()
         self._pending_geometry_ids.clear()
         self._origin_gaps.clear()
@@ -5507,6 +5535,10 @@ class MultiRobotSimulationCore:
             for obj in self._updatable:
                 if obj.update(self._params.timestep) and obj.object_id in kinematic:
                     moved_ids.add(obj.object_id)
+            # Agent plugins with a batch: every plugin of the class in one call.
+            for batch in self._plugin_batches.values():
+                if batch is not None:
+                    batch.update(self._params.timestep)
 
             if measure_timing:
                 t1 = time.perf_counter()

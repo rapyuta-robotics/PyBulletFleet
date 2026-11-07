@@ -14,6 +14,17 @@ are not recommended for production use yet.
 
 ### Changed
 
+- Agent plugins can be updated as a batch. `AgentPlugin.create_batch(sim_core)`
+  may return a `PluginBatch`; the simulation then adds every plugin of that
+  class to it as the agents join and calls the batch's `update(dt)` once
+  per step in place of each plugin's `on_update()`. `BatteryPlugin` does:
+  its state (rates, state of charge, charging flag) lives in the batch's
+  columns, its properties read and write its row, and the batch drains or
+  charges every battery in one array operation, reading whether each agent
+  moves from the simulation's column. A `BatteryPlugin` subclass with its
+  own `on_update()` stays plugin by plugin, as does a plugin on an agent
+  outside a simulation. An agent whose plugins are all in batches takes the
+  batch-driven fast path in `update()`.
 - A `MoveAction` on a batch-driven agent no longer polls its request every
   step: once the batch controller follows (or holds) the request, the agent
   sleeps, and the controller wakes it when the request's fate changes (the
@@ -733,6 +744,11 @@ are not recommended for production use yet.
 
 ### Fixed
 
+- `resolve_joint_index()` and `resolve_link_index()` (and every agent and
+  attachment call that resolves a joint or link by name) read the body on
+  the simulation's physics client. They used PyBullet's default client, so
+  with another client connected in the process a name could resolve against
+  the wrong body: `set_joint_target_by_name()` then set no target.
 - The collision broadphase AABB of an articulated body covers all of its
   links, not only the base link (issue #68). `p.getAABB(body)` returns the base
   link's box, so a child link touching another object (an arm's wrist, a

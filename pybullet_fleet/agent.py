@@ -474,6 +474,8 @@ class Agent(SimObject):
             self._current_velocity = np.zeros(3)
         if not isinstance(getattr(self, "_ang_vel_ref", None), np.ndarray):
             self._ang_vel_ref = np.zeros(1)  # rad/s (for differential drive)
+        if not isinstance(getattr(self, "_is_moving_ref", None), np.ndarray):
+            self._is_moving_ref = np.zeros(1, bool)
         self._is_moving = False  # Private: use property for read-only access
 
         # Set by BatchKinematicController.register_agent(); cleared on unregister.
@@ -536,6 +538,8 @@ class Agent(SimObject):
 
         # Per-agent plugin system (e.g. BatteryPlugin)
         self._plugins: List[AgentPlugin] = []
+        # The plugins update() runs itself: those not in a simulation batch.
+        self._per_agent_plugins: List[AgentPlugin] = []
 
         # Path visualization settings
         self.path_visualize: bool = False  # Enable/disable path visualization
@@ -733,6 +737,31 @@ class Agent(SimObject):
         if plugin.agent is not self:
             raise ValueError(f"Plugin {plugin!r} is bound to a different agent")
         self._plugins.append(plugin)
+        if not self._bind_plugin_to_batch(plugin):
+            self._per_agent_plugins.append(plugin)
+
+    def _bind_plugin_to_batch(self, plugin: AgentPlugin) -> bool:
+        """Hand ``plugin`` to the simulation's batch for its class, if there is one."""
+        hook = getattr(self.sim_core, "_add_plugin_to_batch", None)
+        return bool(hook is not None and hook(plugin))
+
+    def _bind_plugins_to_batches(self) -> None:
+        """Hand the plugins attached before the agent joined a simulation to its batches."""
+        per_agent = getattr(self, "_per_agent_plugins", None)
+        if not per_agent:  # none yet, or still under construction (add_object runs inside __init__)
+            return
+        for plugin in list(per_agent):
+            if self._bind_plugin_to_batch(plugin):
+                self._per_agent_plugins.remove(plugin)
+
+    def _release_plugins_from_batches(self) -> None:
+        """Take the plugins back from the simulation's batches (the agent left it)."""
+        release = getattr(self.sim_core, "_remove_plugin_from_batch", None)
+        for plugin in getattr(self, "_plugins", ()):
+            if plugin not in self._per_agent_plugins:
+                if release is not None:
+                    release(plugin)
+                self._per_agent_plugins.append(plugin)
 
     def remove_plugin(self, plugin_or_cls) -> None:
         """Remove a plugin by instance or class.
@@ -748,9 +777,19 @@ class Agent(SimObject):
             for i, plugin in enumerate(self._plugins):
                 if isinstance(plugin, plugin_or_cls):
                     self._plugins.pop(i)
+                    self._forget_plugin(plugin)
                     return
         else:
             self._plugins.remove(plugin_or_cls)
+            self._forget_plugin(plugin_or_cls)
+
+    def _forget_plugin(self, plugin: AgentPlugin) -> None:
+        if plugin in self._per_agent_plugins:
+            self._per_agent_plugins.remove(plugin)
+            return
+        release = getattr(self.sim_core, "_remove_plugin_from_batch", None)
+        if release is not None:
+            release(plugin)
 
     def get_plugin(self, cls: Type[_PluginT]) -> Optional[_PluginT]:
         """Return the first plugin matching *cls*, or ``None``."""
@@ -760,8 +799,8 @@ class Agent(SimObject):
         return None
 
     def _update_plugins(self, dt: float) -> None:
-        """Run all per-agent plugins.  Called from :meth:`update`."""
-        for plugin in self._plugins:
+        """Run the plugins no simulation batch updates.  Called from :meth:`update`."""
+        for plugin in self._per_agent_plugins:
             plugin.on_update(dt)
 
     # -- Motion properties --------------------------------------------------
@@ -777,6 +816,14 @@ class Agent(SimObject):
             Current MotionMode (OMNIDIRECTIONAL or DIFFERENTIAL)
         """
         return self._motion_mode
+
+    @property
+    def _is_moving(self) -> bool:
+        return bool(self._is_moving_ref[0])
+
+    @_is_moving.setter
+    def _is_moving(self, value: bool) -> None:
+        self._is_moving_ref[0] = value
 
     @property
     def _current_angular_velocity(self) -> float:
@@ -795,11 +842,15 @@ class Agent(SimObject):
         ang_vel = store.ang_vel[row : row + 1]
         ang_vel[0] = getattr(self, "_ang_vel_ref", (0.0,))[0]
         self._ang_vel_ref = ang_vel
+        moving = store.is_moving[row : row + 1]
+        moving[0] = getattr(self, "_is_moving_ref", (False,))[0]
+        self._is_moving_ref = moving
 
     def _unbind_rows(self) -> None:
         super()._unbind_rows()
         self._current_velocity = np.array(self._current_velocity, dtype=float)
         self._ang_vel_ref = np.array(self._ang_vel_ref, dtype=float)
+        self._is_moving_ref = np.array(self._is_moving_ref, dtype=bool)
 
     @property
     def velocity(self) -> np.ndarray:
@@ -1978,6 +2029,7 @@ class Agent(SimObject):
             True if any joint position changed this step, False otherwise.
         """
         if not self._active_joints:
+            self._joints_settled = True  # nothing to move: settled until a target is set
             return False
 
         step_start, now = self._joint_clock, self._joint_clock + dt
@@ -2187,7 +2239,7 @@ class Agent(SimObject):
             and not self._actions_interrupted
             and (self._joints_settled or not self._active_joints)
             and not self._link_attached_count
-            and not self._plugins
+            and not self._per_agent_plugins
             and self._events is None
         ):
             return False
@@ -2434,7 +2486,7 @@ class Agent(SimObject):
         Get (position, velocity) for a single joint by name.
         Returns (position, velocity) or (0.0, 0.0) if not found.
         """
-        idx = resolve_joint_index(self.body_id, joint_name)
+        idx = resolve_joint_index(self.body_id, joint_name, self._pid)
         if idx == -1:
             self._log.warning(f"Joint name '{joint_name}' not found.")
             return (0.0, 0.0)
@@ -2502,7 +2554,7 @@ class Agent(SimObject):
         """
         result = {}
         for name in joint_names:
-            idx = resolve_joint_index(self.body_id, name)
+            idx = resolve_joint_index(self.body_id, name, self._pid)
             if idx == -1:
                 self._log.warning(f"Joint name '{name}' not found.")
                 continue
@@ -2629,7 +2681,7 @@ class Agent(SimObject):
     def _joint_index_for_placement(self, joint: Union[int, str]) -> Optional[int]:
         """The index of a movable joint named by index or name, or None (logged) for any other."""
         if isinstance(joint, str):
-            index = resolve_joint_index(self.body_id, joint)
+            index = resolve_joint_index(self.body_id, joint, self._pid)
             if index == -1:
                 self._log.warning(f"Joint name '{joint}' not found.")
                 return None
@@ -2689,7 +2741,7 @@ class Agent(SimObject):
         """
         Set target position for a joint by joint name.
         """
-        joint_index = resolve_joint_index(self.body_id, joint_name)
+        joint_index = resolve_joint_index(self.body_id, joint_name, self._pid)
         if joint_index == -1:
             self._log.warning(f"Joint name '{joint_name}' not found.")
             return
@@ -2723,7 +2775,7 @@ class Agent(SimObject):
         Set multiple joint targets by dict {joint_name: target_position} (partial update allowed).
         """
         for joint_name, target in joint_targets.items():
-            joint_index = resolve_joint_index(self.body_id, joint_name)
+            joint_index = resolve_joint_index(self.body_id, joint_name, self._pid)
             if joint_index == -1:
                 self._log.warning(f"Joint name '{joint_name}' not found.")
                 continue
@@ -2786,7 +2838,7 @@ class Agent(SimObject):
                 or ``None`` (→ ``self.joint_tolerance``).  Resolved via
                 ``_resolve_joint_tolerance()`` using the joint's index.
         """
-        joint_index = resolve_joint_index(self.body_id, joint_name)
+        joint_index = resolve_joint_index(self.body_id, joint_name, self._pid)
         if joint_index == -1:
             return False
         return self.is_joint_at_target(joint_index, target, tolerance)
@@ -2859,7 +2911,7 @@ class Agent(SimObject):
             True if all joints are within tolerance, False otherwise.
         """
         for joint_name, target in joint_targets.items():
-            joint_index = resolve_joint_index(self.body_id, joint_name)
+            joint_index = resolve_joint_index(self.body_id, joint_name, self._pid)
             if joint_index == -1:
                 return False
             if not self.is_joint_at_target(joint_index, target, tolerance):
@@ -2930,7 +2982,7 @@ class Agent(SimObject):
             Link index (int). Returns -1 if robot has no joints.
         """
         if end_effector_link is not None:
-            return resolve_link_index(self.body_id, end_effector_link)
+            return resolve_link_index(self.body_id, end_effector_link, self._pid)
         if not self.joint_info:
             self._log.warning("_get_end_effector_link_index: robot has no joints")
             return -1
@@ -3003,7 +3055,7 @@ class Agent(SimObject):
             # Resolve names to a set of joint indices for O(1) lookup.
             ik_free_indices: Optional[set] = set()
             for name in ik_names:
-                idx = resolve_joint_index(self.body_id, name)
+                idx = resolve_joint_index(self.body_id, name, self._pid)
                 if idx >= 0:
                     ik_free_indices.add(idx)
                 else:

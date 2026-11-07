@@ -729,7 +729,7 @@ class PickAction(Action):
             self._phase = PickPhase.INIT
 
             # Resolve link name to index using tools function
-            self._attach_link_index = tools.resolve_link_index(agent.body_id, self.attach_link)
+            self._attach_link_index = tools.resolve_link_index(agent.body_id, self.attach_link, agent._pid)
 
             self._log_start(agent)
 

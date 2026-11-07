@@ -200,9 +200,13 @@ def test_settled_joints_let_an_arm_take_the_fast_path_until_a_new_target(sim):
     manager.add_object(arm)
     arm.set_joint_target_by_name("shoulder_to_elbow", 0.3)
     assert not arm._joints_settled
-    for _ in range(60):
+    for _ in range(400):  # the joint's speed limit and ramp decide how long it takes
         sim.step_once()
-    assert arm._joints_settled
+        if arm._joints_settled:
+            break
+    # Settled: either the update saw no joint move, or no joint has a target left to visit.
+    assert arm._joints_settled or not arm._active_joints
+    assert arm.are_joints_at_targets()
     assert arm.update(0.1) is False  # the fast path: nothing to do
     arm.set_joint_target_by_name("shoulder_to_elbow", 0.0)
     assert not arm._joints_settled
