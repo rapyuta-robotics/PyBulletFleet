@@ -181,3 +181,94 @@ def test_set_poses_rows_are_lazy_too(sim):
     assert raw_x(sim, objects[1]._body_id) == 1.0
     assert sim.cached_aabb(ids[1])[0][0] == pytest.approx(20.9)
     assert raw_x(sim, objects[1].body_id) == 21.0
+
+
+# --- physics: PyBullet integrates against the kinematic bodies, so it holds every pose ---
+
+
+def physics_sim(**overrides):
+    params = dict(physics=True, timestep=1.0 / 60.0)
+    params.update(overrides)
+    return make_sim(**params)
+
+
+def raised_platform_run(mirror):
+    """A dynamic box resting on a kinematic platform raised 1 cm per step: the box's final z."""
+    sim = physics_sim(mirror=mirror)
+    try:
+        platform_shape = ShapeParams(shape_type="box", half_extents=[0.5, 0.5, 0.5])
+        platform = SimObject.from_mesh(
+            visual_shape=platform_shape,
+            collision_shape=platform_shape,
+            pose=Pose.from_xyz(0.0, 0.0, 0.5),
+            mass=0.0,
+            sim_core=sim,
+        )
+        load = box(sim, 0.0, z=1.1, mass=1.0)
+        height = [0.5]
+
+        def raise_platform(_sim, _dt):
+            height[0] += 0.01
+            platform.set_pose(Pose.from_xyz(0.0, 0.0, height[0]))
+
+        sim.register_callback(raise_platform)
+        for _ in range(100):
+            sim.step_once()
+        return load.get_pose().z
+    finally:
+        p.disconnect(sim._client)
+
+
+def test_with_physics_pybullet_holds_every_kinematic_pose_before_the_physics_step():
+    lazy = raised_platform_run("lazy")
+    always = raised_platform_run("always")
+    assert lazy == pytest.approx(always, abs=1e-9)
+    assert lazy > 1.9  # the box rode up on the platform (a stale platform pose lets it fall through, to about 1.2)
+
+
+def contact_run(mirror):
+    """A kinematic box pushed against a resting dynamic box for three steps: active pairs per step."""
+    sim = physics_sim(mirror=mirror, collision_detection_method=CollisionDetectionMethod.CONTACT_POINTS)
+    try:
+        resting = box(sim, 0.0, mass=1.0)
+        pusher = box(sim, 5.0)
+        for _ in range(30):
+            sim.step_once()  # the dynamic box settles on the floor
+        counts = []
+        for x in (0.19, 0.19, 0.19, 5.0, 5.0):
+            sim.register_callback(lambda _sim, _dt, x=x: pusher.set_pose(Pose.from_xyz(x, 0.0, 0.1)))
+            sim.step_once()
+            counts.append(len(sim.get_active_collision_pairs()))
+        return counts
+    finally:
+        p.disconnect(sim._client)
+
+
+def test_with_physics_contact_points_start_and_end_on_the_step_of_the_pose():
+    lazy = contact_run("lazy")
+    assert lazy == contact_run("always")
+    assert lazy[0] == 1 and lazy[-1] == 0  # the contact starts with the push and ends with the release
+
+
+# --- a needs_mirror request made mid-run, and released ---
+
+
+def test_a_mirror_request_syncs_the_pending_poses_and_a_released_one_stops_the_mirroring(sim):
+    obj = box(sim, 0.0)
+    body = obj._body_id
+    move_in_step(sim, obj, 5.0)
+    assert raw_x(sim, body) == 0.0  # pending after a lazy step
+    seen = []
+
+    def reader(_sim, _dt):
+        seen.append(raw_x(sim, body))
+
+    reader.needs_mirror = True
+    sim.register_callback(reader)  # syncs what earlier steps left pending
+    assert raw_x(sim, body) == 5.0
+    sim.step_once()
+    assert seen == [5.0]
+    assert sim.unregister_callback(reader)
+    assert not sim._mirror_always  # the request is released with the callback
+    move_in_step(sim, obj, 7.0)
+    assert raw_x(sim, body) == 5.0  # lazy again

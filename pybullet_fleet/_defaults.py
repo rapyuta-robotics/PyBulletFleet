@@ -31,7 +31,8 @@ _DEFAULTS: Dict[str, Dict[str, Any]] = {
         "gui": True,
         "physics": False,
         # "lazy": PyBullet receives a kinematic body's pose only when something
-        # reads it there; "always": after every step, as before.
+        # reads it there; "always": after every step, as before. With physics
+        # on, every pose is written every step whatever this says.
         "mirror": "lazy",
         "monitor": True,
         # None: follow `gui`, so a headless run opens no window.

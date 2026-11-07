@@ -460,7 +460,7 @@ should be cheap.
 
 ### Parity Traces
 
-`tests/collision_parity/` keeps what the pipeline reports over ten small
+`tests/collision_parity/` keeps what the pipeline reports over eleven small
 scripted scenes: for every step, the `COLLISION_STARTED` / `COLLISION_ENDED`
 events, the active pairs of the collision observation and each pair's
 `signed_distance`. The traces recorded on the reference revision live under

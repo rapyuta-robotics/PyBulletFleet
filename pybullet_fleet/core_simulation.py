@@ -700,6 +700,7 @@ class MultiRobotSimulationCore:
         self._grid_half_margin: Optional[Tuple[float, float, float]] = None
         self._aabb_cache_valid: bool = False  # Flag indicating if AABB cache is valid
         self._last_ignore_static: Optional[bool] = None  # Track last ignore_static value to detect mode changes
+        self._last_ignore_attached: Optional[bool] = None  # the same for ignore_attached_collision
 
         # Incremental collision tracking
         self._active_collision_pairs: Set[Tuple[int, int]] = set()  # Currently colliding object_id pairs (sorted: i < j)
@@ -1326,9 +1327,19 @@ class MultiRobotSimulationCore:
     # ------------------------------------------------------------------
 
     def _request_mirror(self, target: Any) -> None:
-        """Count a plugin or callback that keeps body ids for PyBullet calls (``needs_mirror``)."""
+        """Count a plugin or callback that keeps body ids for PyBullet calls (``needs_mirror``).
+
+        The poses earlier lazy steps left pending are written now, so the
+        requester reads the current poses from its first run on.
+        """
         if getattr(target, "needs_mirror", False):
             self._mirror_requests += 1
+            self.sync_mirror()
+
+    def _release_mirror(self, target: Any) -> None:
+        """The plugin or callback counted by :meth:`_request_mirror` is gone."""
+        if getattr(target, "needs_mirror", False) and self._mirror_requests > 0:
+            self._mirror_requests -= 1
 
     def register_plugin(
         self,
@@ -1681,6 +1692,7 @@ class MultiRobotSimulationCore:
         for event, sub in self.events._subscriptions(_TIER_CALLBACK):
             if sub.handler is callback_func:
                 self.events._unsubscribe(event, sub)
+                self._release_mirror(callback_func)
                 return True
         return False
 
@@ -1987,15 +1999,31 @@ class MultiRobotSimulationCore:
         logger.debug(f"Object {object_id} marked as moved")
 
     def _add_plugin_to_batch(self, plugin: Any) -> bool:
-        """Add ``plugin`` to its class's batch; False when the class updates plugin by plugin."""
+        """Add ``plugin`` to its class's batch; False when it is updated plugin by plugin.
+
+        That is the case when the class has no batch, or when the batch does
+        not take this plugin (:meth:`PluginBatch.add` returned False).
+        """
         cls = type(plugin)
         if cls not in self._plugin_batches:
             self._plugin_batches[cls] = cls.create_batch(self)
         batch = self._plugin_batches[cls]
         if batch is None:
             return False
-        batch.add(plugin)
-        return True
+        return batch.add(plugin) is not False
+
+    def _note_needs_update(self, obj: SimObject) -> None:
+        """``obj._needs_update`` changed: it joins or leaves the step's update loop at once."""
+        if obj.object_id not in self._sim_objects_dict:
+            return
+        if obj._needs_update:
+            if obj not in self._updatable:
+                self._updatable.append(obj)
+        else:
+            try:
+                self._updatable.remove(obj)
+            except ValueError:
+                pass
 
     def _remove_plugin_from_batch(self, plugin: Any) -> None:
         batch = self._plugin_batches.get(type(plugin))
@@ -2066,11 +2094,19 @@ class MultiRobotSimulationCore:
         if parent is not None:
             self._set_per_object_pose(parent)
 
-    def _note_attachment_tree(self, obj: SimObject) -> None:
-        """Record the root of the attachment tree ``obj`` is in, for every member (``attach_root``)."""
+    def _note_attachment_tree(self, obj: SimObject, left: bool = False) -> None:
+        """Record the root of the attachment tree ``obj`` is in, for every member (``attach_root``).
+
+        With ``left``, ``obj``'s tree has just left another one (a detach, a
+        removed carrier): every member whose root changes counts as moved,
+        so a pair it made with the old tree (a rider's own rider against the
+        old carrier, say), no pair while they shared a root, is checked on
+        the next collision check, as a pair of a detached rider is.
+        """
         store = self._store
         root = obj._attachment_root()
         root_id = root.object_id
+        moved = self._moved_this_step
         pending = [root]
         seen = set()
         while pending:
@@ -2079,14 +2115,28 @@ class MultiRobotSimulationCore:
                 continue
             seen.add(id(member))
             row = store.row_of.get(member.object_id)
-            if row is not None:
+            if row is not None and store.attach_root[row] != root_id:
                 store.attach_root[row] = root_id
+                if left:
+                    moved.add(member.object_id)
             pending.extend(member.attached_objects)
 
     @property
     def _mirror_always(self) -> bool:
-        """Whether every pending pose is written to PyBullet in Phase 2 (GUI, ``mirror: always``, or a request)."""
-        return bool(self._params.gui) or self._params.mirror == "always" or self._mirror_requests > 0
+        """Whether every pending pose is written to PyBullet in Phase 2.
+
+        With ``physics`` on, PyBullet integrates and resolves contacts against
+        the kinematic bodies in ``stepSimulation()``, so it must hold their
+        poses at every step: the mirror is always written. Otherwise it is
+        written for a GUI, ``mirror: always``, or a plugin or callback that
+        asked for it (``needs_mirror``).
+        """
+        return (
+            bool(self._params.physics)
+            or bool(self._params.gui)
+            or self._params.mirror == "always"
+            or self._mirror_requests > 0
+        )
 
     def sync_mirror(self, object_ids: Optional[Iterable[int]] = None) -> None:
         """Write every pending pose (or those of ``object_ids``) to PyBullet.
@@ -2145,7 +2195,12 @@ class MultiRobotSimulationCore:
         store.mirror_dirty[rows] = False
 
     def _sync_object_mirror_if_dirty(self, obj: SimObject) -> None:
-        """Write ``obj``'s pose to PyBullet if PyBullet does not hold it (``SimObject.body_id`` calls this)."""
+        """Write ``obj``'s pose to PyBullet if a lazy flush left it pending (``SimObject.body_id`` calls this).
+
+        A pose set inside a step is buffered until Phase 2 and is not pending
+        in this sense: PyBullet receives it when the step flushes it, as it
+        always did.
+        """
         row = self._store.row_of.get(obj.object_id)
         if row is not None and self._store.mirror_dirty[row]:
             self._write_rows_to_pybullet(np.array([row], dtype=np.int64))
@@ -2369,8 +2424,9 @@ class MultiRobotSimulationCore:
         With ``mirror: lazy`` only the rows PyBullet needs after every step
         are written (physics bodies, articulated bodies, link-attachment
         parents); the others are marked pending in PyBullet and written when
-        something reads them there (:meth:`sync_mirror`). With ``mirror:
-        always``, a GUI or a plugin that asked for it, every row is written.
+        something reads them there (:meth:`sync_mirror`). With ``physics``
+        on, ``mirror: always``, a GUI or a plugin that asked for it, every
+        row is written (:attr:`_mirror_always`).
 
         Args:
             ids: Snapshot of object_ids to flush. The caller owns the lifecycle
@@ -2630,7 +2686,10 @@ class MultiRobotSimulationCore:
         element-wise absolute rotation (``btTransformAabb``), a sphere's
         apart, whose extents do not rotate. A body not at identity
         orientation is put there for the read and back at once, velocity
-        kept.
+        kept. The orientation it is put back at is the one read back, which
+        is its rotation matrix turned into a quaternion again, about an ulp
+        from the one it was given; that is why a simulation with physics on
+        reads every box from PyBullet instead (``_register_object_movement_type``).
         """
         client = self._client
         body = obj.body_id
@@ -2962,12 +3021,17 @@ class MultiRobotSimulationCore:
 
         # A physics body's AABB is read from PyBullet after each step, an
         # articulated body's from its links; a kinematic single body's is
-        # computed from its pose.
+        # computed from its pose. With physics on, every body's is read from
+        # PyBullet: reading a rotated body's local box means putting it at
+        # identity and back, which leaves its orientation an ulp away, and a
+        # contact with a dynamic body would amplify that.
         row = self._store.row_of.get(object_id)
         if row is not None:
             self._store.physics[row] = is_physics
             self._store.kinematic[row] = object_id in self._kinematic_objects
-            self._store.pybullet_aabb[row] = is_physics or self._aabb_links.get(object_id, ()) != ()
+            self._store.pybullet_aabb[row] = (
+                is_physics or bool(self._params.physics) or self._aabb_links.get(object_id, ()) != ()
+            )
             self._set_needs_mirror(object_id)
             carrier = obj._attached_to
             if carrier is not None:
@@ -3267,7 +3331,7 @@ class MultiRobotSimulationCore:
             mode=_MODE_CODE[obj.collision_mode],
             physics=False,  # set by _register_object_movement_type below
             pickable=bool(obj.pickable),
-            pybullet_aabb=links != (),
+            pybullet_aabb=links != () or bool(self._params.physics),
             pos=obj._cached_pose.position,
             orn=obj._cached_pose.orientation,
         )
@@ -3376,6 +3440,14 @@ class MultiRobotSimulationCore:
 
         # Remove from collision system (AABB, spatial grid)
         self._remove_object_from_collision_system(obj_id)
+        # It leaves its attachment tree: whatever rode on it is detached, in
+        # place, at the top of its own tree (two former riders are a pair for
+        # the broad phase again), and its carrier no longer lists it.
+        for rider in list(obj.attached_objects):
+            obj.detach_object(rider)
+        carrier = obj._attached_to
+        if carrier is not None:
+            carrier.detach_object(obj)
         for rider_id in self._base_children.pop(obj_id, []):
             self._base_parent_of.pop(rider_id, None)
             rider_row = self._store.row_of.get(rider_id)
@@ -3390,11 +3462,10 @@ class MultiRobotSimulationCore:
                 moved_obj = self._sim_objects_dict.get(relocated)
                 if moved_obj is not None:
                     moved_obj._bind_rows(self._store, self._store.row_of[relocated])
-        if obj._needs_update:
-            try:
-                self._updatable.remove(obj)
-            except ValueError:
-                pass
+        try:
+            self._updatable.remove(obj)  # whatever its flag says now
+        except ValueError:
+            pass
         if isinstance(obj, Agent):
             obj._release_plugins_from_batches()
 
@@ -4079,8 +4150,17 @@ class MultiRobotSimulationCore:
             self._clear_active_collision_state()
             logger.debug(f"ignore_static mode changed to {ignore_static}, resetting collision state and marking all as moved")
 
+        ignore_attached = bool(self._params.ignore_attached_collision)
+        if self._last_ignore_attached is not None and self._last_ignore_attached != ignore_attached:
+            # The same for ignore_attached_collision: a carrier and its load
+            # that overlap are a pair again (or no longer one) from this check.
+            moved_objects = set(self._sim_objects_dict.keys())
+            self._clear_active_collision_state()
+            logger.debug(f"ignore_attached_collision changed to {ignore_attached}, checking every pair again")
+
         # Update last mode (do this after the check)
         self._last_ignore_static = ignore_static
+        self._last_ignore_attached = ignore_attached
 
         # 2. AABBs: kept up to date by add_object(), set_pose(), the step's
         # flushes and the physics loop. Computed for every object once, here,
@@ -4095,8 +4175,10 @@ class MultiRobotSimulationCore:
             if not self._params.physics:
                 p.performCollisionDetection(physicsClientId=self._client)
             logger.debug(f"Full AABB rebuild for {len(self._sim_objects)} objects")
+            disabled = self._disabled_collision_objects
             for obj in self._sim_objects:
-                self._update_object_aabb(obj.object_id, update_grid=False)
+                if obj.object_id not in disabled:  # a DISABLED object holds no box (query_aabb reads PyBullet)
+                    self._update_object_aabb(obj.object_id, update_grid=False)
             # Mark cache as valid after update
             self._aabb_cache_valid = True
 
@@ -4127,7 +4209,7 @@ class MultiRobotSimulationCore:
             clearance,
             ignore_static=ignore_static,
             hybrid=hybrid,
-            ignore_attached=bool(self._params.ignore_attached_collision),
+            ignore_attached=ignore_attached,
         )
         pairs = [(a, b) if a < b else (b, a) for a, b in zip(ids_a.tolist(), ids_b.tolist())]
 
@@ -4714,6 +4796,7 @@ class MultiRobotSimulationCore:
 
         # Reset filter_aabb_pairs mode-change detection (#6: fresh start)
         self._last_ignore_static = None
+        self._last_ignore_attached = None
         self._recheck_stationary_pairs = False
 
         # Clear speed history (#2: prevents stale data in update_monitor)
@@ -4779,7 +4862,13 @@ class MultiRobotSimulationCore:
         for tree, _ in list(self._behavior_tree_callbacks):
             self.unregister_behavior_tree(tree)
 
-        # 2. Clear all Python-side object tracking
+        # 2. Clear all Python-side object tracking. An object kept across the
+        # reset gets its own pose storage back (its row is reused), and its
+        # plugins come back from the batches.
+        for obj in self._sim_objects:
+            obj._unbind_rows()
+            if isinstance(obj, Agent):
+                obj._release_plugins_from_batches()
         self._sim_objects.clear()
         self._sim_objects_dict.clear()
         self._agents.clear()

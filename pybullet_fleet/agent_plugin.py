@@ -180,6 +180,10 @@ class AgentPlugin:
         the batch's :meth:`PluginBatch.update` runs once per step in place of
         each plugin's :meth:`on_update`. ``None`` (the default) keeps the
         plugin-by-plugin updates.
+
+        A batched plugin is updated by the simulation's step, not by
+        :meth:`Agent.update`: calling ``agent.update(dt)`` by hand runs the
+        agent's per-agent plugins only.
         """
         return None
 
@@ -223,7 +227,13 @@ class PluginBatch:
     batch, not the agent, updates it.
     """
 
-    def add(self, plugin: "AgentPlugin") -> None:
+    def add(self, plugin: "AgentPlugin") -> bool:
+        """Take ``plugin`` into the batch.
+
+        Returns ``False`` for a plugin the batch does not take (one whose
+        behaviour it cannot reproduce, say); the agent then updates that
+        plugin itself. ``None`` counts as taken.
+        """
         raise NotImplementedError
 
     def remove(self, plugin: "AgentPlugin") -> None:

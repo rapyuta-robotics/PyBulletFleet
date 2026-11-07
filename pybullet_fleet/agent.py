@@ -396,7 +396,7 @@ class Agent(SimObject):
     so the API follows ROS message conventions.
     """
 
-    _needs_update = True  # Agents always participate in the step_once() update loop
+    _wants_update = True  # Agents always participate in the step_once() update loop
 
     _entity_type_name = "agent"  # Auto-registers in ENTITY_REGISTRY via SimObject.__init_subclass__
 
@@ -795,8 +795,16 @@ class Agent(SimObject):
             self._per_agent_plugins.append(plugin)
 
     def _bind_plugin_to_batch(self, plugin: AgentPlugin) -> bool:
-        """Hand ``plugin`` to the simulation's batch for its class, if there is one."""
-        hook = getattr(self.sim_core, "_add_plugin_to_batch", None)
+        """Hand ``plugin`` to the simulation's batch for its class, if there is one.
+
+        Only while the agent is in the simulation: a plugin added to an agent
+        that left it (or never joined) is updated by the agent.
+        """
+        core = self.sim_core
+        registered = getattr(core, "_sim_objects_dict", None)
+        if registered is None or self.object_id not in registered:
+            return False
+        hook = getattr(core, "_add_plugin_to_batch", None)
         return bool(hook is not None and hook(plugin))
 
     def _bind_plugins_to_batches(self) -> None:

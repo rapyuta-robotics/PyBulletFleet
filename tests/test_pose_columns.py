@@ -332,3 +332,26 @@ def test_a_carrier_with_only_base_riders_takes_the_batch_fast_path(sim):
         sim.step_once()
     assert a.get_pose().x > 0.1
     assert load.get_pose().x == pytest.approx(a.get_pose().x, abs=1e-6)
+
+
+def test_reset_gives_a_kept_object_its_own_pose_back(sim):
+    kept = box(sim, 1.0)
+    sim.reset()
+    fresh = box(sim, 7.0)  # reuses the row the kept object had
+    assert kept.get_pose().x == 1.0
+    assert fresh.get_pose().x == 7.0
+
+
+def test_a_physics_pose_is_a_snapshot_of_its_step():
+    sim = MultiRobotSimulationCore(
+        SimulationParams(gui=False, physics=True, monitor=False, timestep=1.0 / 60.0, log_level="warning")
+    )
+    try:
+        falling = box(sim, 0.0, z=2.0, mass=1.0)
+        start = falling.get_pose()
+        for _ in range(30):
+            sim.step_once()
+        assert start.z == 2.0  # the pose kept from before the fall did not fall with the box
+        assert falling.get_pose().z < 1.5
+    finally:
+        p.disconnect(sim.client)

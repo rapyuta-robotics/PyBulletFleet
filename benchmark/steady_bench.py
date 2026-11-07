@@ -16,7 +16,7 @@ Scenarios (``--scenario``):
 - ``carrying``: ``sparse`` with one box attached to every robot's base, as a
   fleet carrying bins.
 - ``warehouse``: N robots in the aisles of a field of static boxes: floor tiles
-  on a 1 m grid over x in [-2, 230] and y in [-2, --field-width], and bins on
+  on a 1 m grid over x in [-2, 230] and y in [-2, field width] (``--field-width``), and bins on
   three of four tiles of every odd row. Robots and statics never overlap in z
   or y, so every static pair is broad-phase work only.
 - ``idle``: the ``sparse`` layout with no goals.

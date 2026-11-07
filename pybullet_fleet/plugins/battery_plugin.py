@@ -75,7 +75,13 @@ class _BatteryBatch(PluginBatch):
         self._agent_rows: Optional[np.ndarray] = None
         self._rows_key: Any = None
 
-    def add(self, plugin: "BatteryPlugin") -> None:
+    def add(self, plugin: "BatteryPlugin") -> bool:
+        from pybullet_fleet.agent import Agent  # noqa: F811  (runtime: TYPE_CHECKING import above)
+
+        if type(plugin) is not BatteryPlugin or type(plugin.agent).is_moving is not Agent.is_moving:
+            # A subclass with its own rates, SOC or update, or an agent that
+            # answers is_moving itself: the batch cannot stand in for them.
+            return False
         n = len(self.plugins)
         if n == len(self.values):
             grown = np.zeros((2 * n, 5))
@@ -86,6 +92,7 @@ class _BatteryBatch(PluginBatch):
         plugin._row = n
         self.plugins.append(plugin)
         self._rows_key = None
+        return True
 
     def remove(self, plugin: "BatteryPlugin") -> None:
         row = plugin._row
@@ -107,9 +114,15 @@ class _BatteryBatch(PluginBatch):
         store = self.sim_core._store
         key = (self.sim_core._fleet_revision, len(self.plugins))
         if self._rows_key != key or self._agent_rows is None:
-            self._agent_rows = store.rows([plugin.agent.object_id for plugin in self.plugins])
+            row_of = store.row_of
+            # An agent that left the simulation has no row: it is not moving.
+            self._agent_rows = np.array([row_of.get(plugin.agent.object_id, -1) for plugin in self.plugins], dtype=np.int64)
             self._rows_key = key
-        return store.is_moving[self._agent_rows]
+        rows = self._agent_rows
+        moving = np.zeros(len(rows), dtype=bool)
+        known = rows >= 0
+        moving[known] = store.is_moving[rows[known]]
+        return moving
 
     def update(self, dt: float) -> None:
         n = len(self.plugins)
@@ -221,9 +234,13 @@ class BatteryPlugin(AgentPlugin):
 
     @classmethod
     def create_batch(cls, sim_core: Any) -> Optional["_BatteryBatch"]:
-        """One batch per simulation, for the plain :class:`BatteryPlugin` (a subclass with its own
-        ``on_update`` keeps its per-agent update)."""
-        if cls.on_update is not BatteryPlugin.on_update or not hasattr(sim_core, "_store"):
+        """One batch per simulation, for the plain :class:`BatteryPlugin`.
+
+        A subclass keeps its per-agent update, whatever it overrides (a rate,
+        ``soc``, ``on_update``); so does a plain battery on an agent whose
+        class answers ``is_moving`` itself (see :meth:`_BatteryBatch.add`).
+        """
+        if cls is not BatteryPlugin or not hasattr(sim_core, "_store"):
             return None
         return _BatteryBatch(sim_core)
 

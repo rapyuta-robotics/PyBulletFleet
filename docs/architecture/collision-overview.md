@@ -253,13 +253,13 @@ params = SimulationParams(gui=True, enable_collision_shapes=True)
 
 2. **Check AABB caches**:
 ```python
-aabb = sim_core._cached_aabbs_dict.get(obj.body_id)
+aabb = sim_core.cached_aabb(obj.object_id)  # None for a DISABLED object
 print(f"AABB: {aabb}")
 ```
 
 3. **Inspect spatial grid**:
 ```python
-cells = sim_core._cached_object_to_cell.get(obj.body_id)
+cells = sim_core.grid_cells_of(obj.object_id)
 print(f"Object in cells: {cells}")
 ```
 

@@ -211,3 +211,40 @@ def test_settled_joints_let_an_arm_take_the_fast_path_until_a_new_target(sim):
     arm.set_joint_target("shoulder_to_elbow", 0.0)
     assert not arm._joints_settled
     assert arm.update(0.1) is True  # moving again
+
+
+class CountingBox(SimObject):
+    """A SimObject subclass that asks for updates after ``super().__init__()`` ran."""
+
+    calls: int
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.calls = 0
+        self._needs_update = True
+
+    def update(self, dt: float) -> bool:
+        self.calls += 1
+        return False
+
+
+def test_a_subclass_may_ask_for_updates_after_init_and_a_removed_object_gets_none(sim):
+    shape = ShapeParams(shape_type="box", half_extents=[0.1, 0.1, 0.1])
+    obj = CountingBox.from_mesh(
+        visual_shape=shape, collision_shape=shape, pose=Pose.from_xyz(0.0, 0.0, 0.1), mass=0.0, sim_core=sim
+    )
+    assert isinstance(obj, CountingBox)
+    for _ in range(5):
+        sim.step_once()
+    assert obj.calls == 5  # the flag set after add_object() counts
+    obj._needs_update = False  # dormant: left the update loop at once
+    sim.step_once()
+    assert obj.calls == 5
+    obj._needs_update = True
+    sim.step_once()
+    assert obj.calls == 6
+    obj._needs_update = False
+    sim.remove_object(obj)
+    for _ in range(3):
+        sim.step_once()
+    assert obj.calls == 6  # removed while dormant: never visited again

@@ -12,8 +12,42 @@ profiles. A declared kinematic profile supports fixed-arm and mobile-arm validat
 they do not provide general save/load for arbitrary simulations and
 are not recommended for production use yet.
 
+### Breaking
+
+- `Pose` fields may be NumPy array views. What `get_pose()` returns for a
+  kinematic object in a simulation is the object's live row of the pose
+  columns: its `position` and `orientation` follow the object, and they are
+  arrays, not lists. `pose.position == [x, y, z]` raises (compare
+  `list(pose.position)` or the `Pose` objects, which compare by value),
+  `pos + [0, 0, 1]` adds element by element, and `json.dumps` needs
+  `list(...)`. Hold the `Pose`, not its arrays, across steps: an array taken
+  from it stops following the object once the object's row moves (after
+  another object's removal, or the columns growing) and it no longer follows
+  it after `remove_object()` or `reset()`. Copy a value to keep it. A
+  physics object's `get_pose()` still returns a snapshot.
+- `mirror: lazy` is the default: a kinematic body's pose reaches PyBullet
+  only when something reads it there. Code that calls PyBullet with a body
+  id kept from earlier reads the pose of the last sync; set `mirror: always`
+  or give the plugin or callback `needs_mirror = True`. With `physics` on,
+  every pose is written at every step whatever `mirror` says.
+
 ### Changed
 
+- A rider that leaves its carrier counts as moved, and so does every
+  object that leaves with it: after `a.detach_object(b)` the riders of `b`
+  are checked against `a` on the next collision check too. A removed
+  object leaves its attachment tree: its riders are detached, in place,
+  each at the top of its own tree (two former riders are a pair for the
+  broad phase again), and its carrier no longer lists it; they used to
+  stay attached to a body that was gone. A change of
+  `ignore_attached_collision` at run time checks every pair again on the
+  next collision check, as a change of `ignore_static_collision` does.
+- With `physics` on, every body's AABB is read from PyBullet after the
+  step, as before. The local box a kinematic body's box is computed from
+  is read by putting the body at identity orientation and back, and the
+  orientation it comes back with is the one PyBullet reads back, about an
+  ulp from the one it was given; a contact with a dynamic body would
+  amplify that. The computed boxes serve kinematic simulations.
 - Agent plugins can be updated as a batch. `AgentPlugin.create_batch(sim_core)`
   may return a `PluginBatch`; the simulation then adds every plugin of that
   class to it as the agents join and calls the batch's `update(dt)` once
@@ -21,10 +55,13 @@ are not recommended for production use yet.
   its state (rates, state of charge, charging flag) lives in the batch's
   columns, its properties read and write its row, and the batch drains or
   charges every battery in one array operation, reading whether each agent
-  moves from the simulation's column. A `BatteryPlugin` subclass with its
-  own `on_update()` stays plugin by plugin, as does a plugin on an agent
-  outside a simulation. An agent whose plugins are all in batches takes the
-  batch-driven fast path in `update()`.
+  moves from the simulation's column. A `BatteryPlugin` subclass stays
+  plugin by plugin whatever it overrides, as does a plain battery on an
+  agent whose class answers `is_moving` itself (`PluginBatch.add()` may
+  return `False` to leave a plugin to its agent), and a plugin on an agent
+  outside a simulation. A batched plugin is updated by the simulation's
+  step, not by `Agent.update()`. An agent whose plugins are all in batches
+  takes the batch-driven fast path in `update()`.
 - A `MoveAction` on a batch-driven agent no longer polls its request every
   step: once the batch controller follows (or holds) the request, the agent
   sleeps, and the controller wakes it when the request's fate changes (the
@@ -49,6 +86,9 @@ are not recommended for production use yet.
   per-step `update()` (agents and devices), kept in a list as objects are
   added and removed, instead of testing every body in the scene; a scene
   of tens of thousands of static tiles no longer pays for them each step.
+  `_needs_update` is a property: a subclass may set it at any time, also
+  after `super().__init__()`, and the loop follows the change at once; a
+  removed object leaves the loop whatever its flag says.
   A batch-driven agent with nothing of its own to run this step (no action,
   no joint on its way, nothing attached, no plugin, no entity event
   handlers) is skipped: its motion is the batch controller's. An agent's
@@ -63,10 +103,14 @@ are not recommended for production use yet.
   does (the narrow phase of a collision pair, an AABB query, a recording,
   the accessors `SimObject.body_id` and `sim.client`). Physics bodies,
   articulated bodies and link-attachment parents are written at every
-  step. `sim.sync_mirror()` writes every pending pose on demand. Code that
-  calls PyBullet with a body id kept from earlier should run with
-  `mirror: always` (in `SimulationParams` or YAML), or a plugin or callback
-  can set `needs_mirror = True` to ask for the same.
+  step, and with `physics` on every body is (PyBullet integrates against the
+  kinematic bodies and computes the contacts of `CONTACT_POINTS` and
+  `HYBRID` in `stepSimulation()`). `sim.sync_mirror()` writes every pending
+  pose on demand. Code that calls PyBullet with a body id kept from earlier
+  should run with `mirror: always` (in `SimulationParams` or YAML), or a
+  plugin or callback can set `needs_mirror = True` to ask for the same: the
+  poses earlier steps left pending are written when it is registered, and
+  `unregister_callback()` releases the request.
 - Poses are columns of the simulation. Every registered object's position
   and orientation live in one array each (in the collision store), an
   object's pose cache (what `get_pose()` returns for a kinematic object) is
@@ -103,7 +147,7 @@ are not recommended for production use yet.
 
 ### Added
 
-- Collision parity traces (`tests/collision_parity/`): ten small scripted
+- Collision parity traces (`tests/collision_parity/`): eleven small scripted
   scenes (lanes crossing within the margin, a per-axis clearance and margin
   changes, collision mode changes, ignored static bodies, attachment, the
   ignore filter, a collision check every other step, `CONTACT_POINTS` and

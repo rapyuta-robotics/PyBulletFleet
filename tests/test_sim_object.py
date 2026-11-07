@@ -1524,7 +1524,7 @@ class TestSimObjectUpdate:
         call_count = 0
 
         class UpdatingObject(SimObject):
-            _needs_update = True
+            _wants_update = True  # the class default of _needs_update, as Agent sets it
 
             def update(self, dt):
                 nonlocal call_count

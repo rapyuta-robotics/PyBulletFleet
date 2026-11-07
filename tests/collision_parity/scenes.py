@@ -324,7 +324,7 @@ def link_contact(sim: MultiRobotSimulationCore) -> Iterator[None]:
         if step == 4:
             arm.set_joint_position("shoulder_to_elbow", 1.57)
         if step == 14:
-            arm.set_joint_target_by_name("shoulder_to_elbow", 0.0)
+            arm.set_joint_target("shoulder_to_elbow", 0.0)
 
 
 @scene("agents_crossing", **dict(KINEMATIC, spatial_hash_cell_size=2.0))

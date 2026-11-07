@@ -31,7 +31,8 @@ simulation:
 
   # When PyBullet receives a kinematic body's pose: "lazy" (only when
   # something reads it there: a collision pair, a query, a GUI) or "always"
-  # (after every step, for code that calls PyBullet with a kept body id)
+  # (after every step, for code that calls PyBullet with a kept body id).
+  # With physics on, every pose is written every step whatever this says.
   mirror: lazy
 
   # Enable external data monitor (true/false)

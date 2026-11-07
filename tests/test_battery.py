@@ -361,3 +361,53 @@ def test_a_subclass_with_its_own_update_stays_per_agent():
         assert agent.battery_soc == pytest.approx(0.99)
     finally:
         p.disconnect(sim._client)
+
+
+def test_a_battery_subclass_and_an_agent_that_answers_is_moving_itself_keep_the_per_agent_update():
+    sim, agents, close = _fleet_with_batteries(2, discharge_rate=0.1)
+    try:
+        from pybullet_fleet.agent import Agent
+
+        class Tagged(BatteryPlugin):
+            pass  # no override at all, still per-agent: the batch stands in for the plain class only
+
+        tagged = Tagged(agents[0], initial_soc=1.0, discharge_rate=0.1)
+        agents[0].remove_plugin(BatteryPlugin)
+        agents[0].add_plugin(tagged)
+        assert agents[0]._per_agent_plugins == [tagged] and tagged._batch is None
+
+        class Restless(Agent):
+            @property
+            def is_moving(self) -> bool:
+                return True
+
+        restless = Restless.from_params(
+            AgentSpawnParams(
+                urdf_path="robots/simple_cube.urdf",
+                initial_pose=Pose.from_xyz(10.0, 0.0, 0.0),
+                plugins=[{"type": "battery", "config": dict(initial_soc=1.0, discharge_rate=0.1)}],
+            ),
+            sim_core=sim,
+        )
+        battery = restless.battery_plugin
+        assert restless._per_agent_plugins == [battery] and battery._batch is None
+        for _ in range(10):
+            sim.step_once()
+        assert battery.soc == pytest.approx(0.9)  # drained at the discharge rate: its is_moving was asked
+        assert agents[1].battery_plugin.soc == pytest.approx(0.51)  # idle (idle_rate 0), batched
+    finally:
+        close()
+
+
+def test_a_battery_added_to_a_removed_agent_is_the_agents_own_and_the_batch_still_steps():
+    sim, agents, close = _fleet_with_batteries(3)
+    try:
+        gone = agents[0]
+        sim.remove_object(gone)
+        late = BatteryPlugin(gone, initial_soc=0.5)
+        gone.add_plugin(late)
+        assert late._batch is None and late in gone._per_agent_plugins
+        sim.step_once()  # the batch of the two remaining batteries steps
+        assert len(sim._plugin_batches[BatteryPlugin].plugins) == 2
+    finally:
+        close()
