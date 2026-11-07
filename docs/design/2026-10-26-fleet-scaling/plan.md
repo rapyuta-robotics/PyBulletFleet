@@ -678,6 +678,19 @@ C++/Rust のブリッジ) の話になるので、1.05 倍は目標から外す�
 
   main のマージで数値は変わっていない (1000 台 sparse 1.19 → 1.17 ms)。`docs/benchmarking/results.md` に
   同じ表を載せた。P5 (state plane、`perf/p5a` / `p5b` / `p5c`) と PC は別 PR のまま。
+- **#149 のレビュー対応 (2026-11-07):** maintainer の差分実行 (randomized differential、小さな repro) で main と結果が
+  異なった 11 項目と Copilot の 8 項目に対応した。主なもの: physics あり + lazy mirror で `stepSimulation()` が
+  古い kinematic pose を見る (CONTACT_POINTS / HYBRID の接触が 1 ステップ遅れる) → physics ありではミラーを
+  毎ステップ書く。`_needs_update` が add/remove 時にしか読まれない → property にして変更時に更新リストを
+  出し入れ、削除時はフラグに関わらず外す。detach した子の子が旧 carrier と再判定されない → 離れた部分木を
+  moved にする (attach 側は従来どおり。両方にすると `attach_detach` の golden の sample_step が変わる)。
+  `_read_local_box` の identity 往復で kinematic body の姿勢が 1 ulp ずれ physics シーンが main と分岐 →
+  physics ありでは全ボディの AABB を PyBullet から読む (main と bit 一致)。reset() の行の解放、`needs_mirror`
+  の登録時 sync と解除、physics の `get_pose()` をスナップショットに戻す、battery batch はプレーンクラス +
+  プレーンな `is_moving` の agent のみ、`ignore_attached_collision` の実行時変更、DISABLED の全再構築、
+  CHANGELOG の Breaking 項目。main になかった挙動変更が 1 つ: 削除されたオブジェクトは attachment tree から
+  抜ける (子は detach、親のリストからも消える)。テスト 14 件追加、フルスイート 4128 passed、parity golden は不変。
+  性能への影響: kinematic シミュレーションの経路は変えていない (physics ありは plan の対象外)。
 - **PC の後:** `accepted` モードで最大速度の 1000 台の `/fleet/navigate` の ack が 10 ms を超えていれば、コマンドリングを
   follow-up から本計画に入れる (2026-11-05: `applied` 既定で計測済み。`accepted` の計測はスケールチェッカーに
   `ack_mode` を渡す口を足してから)。
