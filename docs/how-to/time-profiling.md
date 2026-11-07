@@ -8,7 +8,7 @@ It helps identify performance bottlenecks by breaking down where time is spent e
 | Component | What it measures |
 |-----------|-----------------|
 | `agent_update` | All `Agent.update(dt)` calls (kinematics, path following, actions) |
-| `callbacks` | User-registered callbacks via `register_callback()` |
+| `callbacks` | `register_callback()` callbacks of the default `STEP` phase |
 | `step_simulation` | `p.stepSimulation()` (physics mode) or AABB/spatial grid updates |
 | `collision_check` | Spatial-hash broad phase + PyBullet narrow phase |
 | `monitor_update` | `DataMonitor` overlay refresh |
@@ -152,12 +152,14 @@ All times are in milliseconds.
 | `phase2_pose_flush` | Phase 2: flush buffered poses to PyBullet |
 | `phase3_aabb_grid_flush` | Post-commit synchronization: kinematic AABB refresh + spatial-grid update (the metric name is retained for compatibility) |
 | `agent_update` | Per-object update loop only (subset of `phase1_update`, kept for backward compat) |
-| `callbacks` | User-registered callbacks via `register_callback()` |
+| `callbacks` | `register_callback()` callbacks of the default `STEP` phase |
 | `step_simulation` | `p.stepSimulation()` plus physics-object AABB/grid refresh — non-zero only when `physics=True` |
 | `collision_check` | Broad phase (spatial hash) + narrow phase total |
 | `collision_breakdown` | Nested dict — present only when collision ran (see below) |
 | `events_pre_step` | EventBus `pre_step` dispatch |
-| `events_post_step` | EventBus `post_step` dispatch |
+| `events_step` | EventBus `step` handlers (before the `STEP` callbacks; plugin `on_step` is counted only in `phase1_update`) |
+| `events_post_step` | EventBus `post_step` handlers |
+| `callbacks_post_step` | `register_callback(..., phase="post_step")` callbacks |
 | `events_collision` | EventBus collision-pair dispatch |
 | `monitor_update` | DataMonitor overlay refresh |
 | `total` | End-to-end step time |

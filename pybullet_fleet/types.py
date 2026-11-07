@@ -118,15 +118,26 @@ class DoorState(str, Enum):
 
 
 class CallbackPhase(str, Enum):
-    """When in a simulation step a ``register_callback()`` callback runs.
+    """When in a simulation step a ``register_callback()`` callback or a plugin's ``on_step()`` runs.
+
+    Each value is the name of the step event it subscribes to on
+    ``sim.events`` (:attr:`SimEvents.PRE_STEP <pybullet_fleet.events.SimEvents.PRE_STEP>`,
+    :attr:`SimEvents.STEP <pybullet_fleet.events.SimEvents.STEP>`,
+    :attr:`SimEvents.POST_STEP <pybullet_fleet.events.SimEvents.POST_STEP>`);
+    callbacks run after that event's handlers, and plugins after the callbacks.
 
     Attributes:
+        PRE_STEP: At the start of the step, right after the ``pre_step``
+            event's handlers and before the clock advances: ``sim_time`` is
+            still the previous state's time, and nothing has moved yet. Use it
+            to apply commands that this step should act on.
         STEP: After the objects have been updated, before their new poses are
             written to PyBullet and before the collision check.
         POST_STEP: At the end of the step, right after the ``post_step`` event,
             once the poses are written and the step's collision check has run.
     """
 
+    PRE_STEP = "pre_step"
     STEP = "step"
     POST_STEP = "post_step"
 

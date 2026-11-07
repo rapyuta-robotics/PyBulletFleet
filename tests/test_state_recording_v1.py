@@ -184,6 +184,35 @@ def test_checkpoint_selection_and_rejection(recorded_run: tuple[Path, dict]) -> 
         load_supported_checkpoint(directory, at_or_before=2.5, profile=_profile(directory))
 
 
+def test_artifact_recorded_before_max_angular_decel_restores_symmetric_rotation(
+    recorded_run: tuple[Path, dict],
+) -> None:
+    import pybullet as p
+
+    from pybullet_fleet.replay.state_recording import restore_supported_simulation
+
+    directory, _ = recorded_run
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    parameters = manifest["construction"]["agents"]["mobile-arm"]["controller"]["parameters"]
+    assert parameters.pop("max_angular_decel") is None
+    manifest_path.write_text(json.dumps(manifest))
+
+    manifest, checkpoint = load_supported_checkpoint(directory, at_or_before=2.5, profile=_profile(directory))
+    sim = restore_supported_simulation(manifest, checkpoint, profile=_profile(directory))
+    try:
+        agent = sim.get_unique_agent_by_name("mobile-arm")
+        assert agent.controller.params.max_angular_decel is None
+        assert list(agent.max_angular_decel) == list(agent.max_angular_accel)
+    finally:
+        if p.isConnected(sim.client):
+            p.disconnect(sim.client)
+
+    manifest["construction"]["agents"]["mobile-arm"]["controller"]["parameters"].pop("goal_replacement")
+    with pytest.raises(ValueError, match="Unsupported controller parameters"):
+        restore_supported_simulation(manifest, checkpoint, profile=_profile(directory))
+
+
 @pytest.mark.parametrize("stream", ["frames.jsonl", "inputs.jsonl"])
 def test_restore_rejects_corrupt_recording_stream(recorded_run: tuple[Path, dict], stream: str) -> None:
     directory, _ = recorded_run
@@ -202,7 +231,7 @@ def test_required_custom_data_and_state_type_are_checked_before_restore(recorded
 
     for change, message in (
         (lambda state: state["records"].pop("scenario"), "data records"),
-        (lambda state: state["agents"]["mobile-arm"].update({"version": 3}), "Agent state type"),
+        (lambda state: state["agents"]["mobile-arm"].update({"version": 3}), "Agent state version"),
     ):
         changed = json.loads(json.dumps(original))
         change(changed)
@@ -211,6 +240,80 @@ def test_required_custom_data_and_state_type_are_checked_before_restore(recorded
         manifest_path.write_text(json.dumps(manifest))
         with pytest.raises(ValueError, match=message):
             load_supported_checkpoint(directory, at_or_before=2.5, profile=_profile(directory))
+
+
+@pytest.mark.parametrize(
+    "version, message",
+    [
+        (1, r"'mobile-arm'.*'kinematic_agent' version 1.*'kinematic_agent' version 2"),
+        (2, r"joint has missing or unsupported fields"),
+    ],
+    ids=["refused-by-version", "refused-by-joint-shape"],
+)
+def test_agent_state_without_joint_motion_profiles_is_refused(
+    recorded_run: tuple[Path, dict], version: int, message: str
+) -> None:
+    """Version 1 joint entries carry no motion limits, speed or plan.
+
+    Restoring one would put a ramped joint back at rest under no profile, so a
+    resumed run would take a different path. At version 1 it is refused by
+    version, naming the version found and the one this build restores; the
+    same joints under version 2 are refused by their shape.
+    """
+    directory, _ = recorded_run
+    manifest_path = directory / "manifest.json"
+    checkpoint_path = directory / "checkpoints" / "000000025.json"
+    manifest = json.loads(manifest_path.read_text())
+    checkpoint = json.loads(checkpoint_path.read_text())
+    agent = checkpoint["agents"]["mobile-arm"]
+    agent["version"] = version
+    agent["state"]["joints"] = [
+        {key: joint[key] for key in ("name", "position", "target")} for joint in agent["state"]["joints"]
+    ]
+    checkpoint_path.write_text(json.dumps(checkpoint))
+    manifest["checkpoint_sha256"]["25"] = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match=message):
+        load_supported_checkpoint(directory, at_or_before=2.5, profile=_profile(directory))
+
+
+def test_agent_state_type_and_version_are_refused_each_for_its_own_reason(recorded_run: tuple[Path, dict]) -> None:
+    """A wrong type is reported as the type, and a wrong version as the version."""
+    directory, _ = recorded_run
+    manifest_path = directory / "manifest.json"
+    checkpoint_path = directory / "checkpoints" / "000000025.json"
+    manifest = json.loads(manifest_path.read_text())
+    original = json.loads(checkpoint_path.read_text())
+
+    for change, message in (
+        ({"version": 3}, r"Agent state version for 'mobile-arm': 'kinematic_agent' version 3;"),
+        ({"type": "other"}, r"Agent state type for 'mobile-arm': 'other'; this build restores 'kinematic_agent'$"),
+    ):
+        changed = json.loads(json.dumps(original))
+        changed["agents"]["mobile-arm"].update(change)
+        checkpoint_path.write_text(json.dumps(changed))
+        manifest["checkpoint_sha256"]["25"] = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest))
+        with pytest.raises(ValueError, match=message):
+            load_supported_checkpoint(directory, at_or_before=2.5, profile=_profile(directory))
+
+
+@pytest.mark.parametrize("version", [2.0, True], ids=["float", "bool"])
+def test_profile_validation_refuses_a_version_that_only_compares_equal(
+    recorded_run: tuple[Path, dict], version: object
+) -> None:
+    """``2.0 == 2``, but it is not the integer version this build restores.
+
+    The loader's envelope check refuses it first; the profile's own check is
+    what a caller of ``validate_checkpoint()`` gets.
+    """
+    directory, _ = recorded_run
+    manifest = json.loads((directory / "manifest.json").read_text())
+    checkpoint = json.loads((directory / "checkpoints" / "000000025.json").read_text())
+    checkpoint["agents"]["mobile-arm"]["version"] = version
+    with pytest.raises(ValueError, match=rf"Agent state version for 'mobile-arm': 'kinematic_agent' version {version!r};"):
+        _profile(directory).validate_checkpoint(manifest, checkpoint)
 
 
 @pytest.mark.parametrize("change", ["speed", "trajectory"])

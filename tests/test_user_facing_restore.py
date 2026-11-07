@@ -275,7 +275,7 @@ box = SimObject.from_params(SimObjectSpawnParams(name='box', initial_pose=Pose.f
     collision_shape=ShapeParams(shape_type='box', half_extents=[0.05]*3)), s)
 arm.set_goal_pose(Pose.from_xyz(2, 0, 0.3))
 arm.set_joint_motion_profile('shoulder_to_elbow', max_velocity=0.4, max_accel=1.0, max_decel=0.3)
-arm.set_joint_target_by_name('shoulder_to_elbow', 0.6)
+arm.set_joint_target('shoulder_to_elbow', 0.6)
 assert arm.attach_object(box, parent_link_index='end_effector', relative_pose=Pose.from_xyz(0, 0, 0.1))
 s.configure_state_recording(profile=KinematicProfile(), output=sys.argv[1])
 s.run_simulation(duration=2.0)

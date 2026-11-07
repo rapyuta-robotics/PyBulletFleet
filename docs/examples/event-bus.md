@@ -36,7 +36,7 @@ mistakes while still allowing custom string names for application events.
 
 | Group | Event | Global handler arguments | Per-entity handler arguments |
 |---|---|---|---|
-| Step | `PRE_STEP`, `POST_STEP` | `dt`, `sim_time` | — |
+| Step | `PRE_STEP`, `STEP`, `POST_STEP` | `dt`, `sim_time` | — |
 | Object lifecycle | `OBJECT_SPAWNED`, `OBJECT_REMOVED` | `obj` | no arguments |
 | Agent lifecycle | `AGENT_SPAWNED`, `AGENT_REMOVED` | `agent` | — |
 | Collision | `COLLISION_STARTED`, `COLLISION_ENDED` | `obj_a`, `obj_b` | `other` |
@@ -102,9 +102,14 @@ sim.events.emit("battery_low", agent_id=agent.object_id, level=0.15)
 Event handlers run synchronously in the simulation loop. An exception is logged
 and later handlers still run, but a slow handler delays the next simulation
 step. Use events for transitions such as `ACTION_COMPLETED` or
-`COLLISION_STARTED`; keep `PRE_STEP`, `POST_STEP`, and per-entity update
+`COLLISION_STARTED`; keep `PRE_STEP`, `STEP`, `POST_STEP`, and per-entity update
 handlers bounded. Move blocking I/O or expensive analysis to another queue or
 thread.
+
+A handler of a step event can run at a fixed rate instead of every step:
+`sim.events.on(SimEvents.POST_STEP, publish, frequency=10.0)` calls `publish`
+when the simulated time reaches 0.1 s, 0.2 s, ..., with `dt` the time since it
+last ran -- the same schedule as `register_callback(..., frequency=10.0)`.
 
 Developers writing reusable integrations should read
 [Plugins and Events](../architecture/plugins-events) for lifecycle and

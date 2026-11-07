@@ -342,7 +342,7 @@ class TestElevatorInstantRide:
 
         elev.request_floor("L2", instant=True)
 
-        assert elev.get_joint_state_by_name("lift")[0] == pytest.approx(4.0)
+        assert elev.get_joint_state("lift")[0] == pytest.approx(4.0)
         assert box.get_pose().position[2] == pytest.approx(z + 4.0, abs=1e-6)
         assert box.is_attached()
 
@@ -367,7 +367,7 @@ class TestElevatorInstantRide:
         sim_core.tick(1)
 
         assert elev.current_floor == "L3"
-        assert elev.get_joint_state_by_name("lift")[0] == pytest.approx(8.0)
+        assert elev.get_joint_state("lift")[0] == pytest.approx(8.0)
 
 
 class TestElevatorCarriedLoad:
@@ -441,7 +441,7 @@ class TestElevatorRedirect:
         def run(steps):
             for _ in range(steps):
                 sim_core.tick(1)
-                heights.append(elev.get_joint_state_by_name("lift")[0])
+                heights.append(elev.get_joint_state("lift")[0])
 
         elev.request_floor("L3")
         run(int(3.0 / dt))  # up to full speed, 2.5 m up

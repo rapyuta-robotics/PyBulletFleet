@@ -115,6 +115,36 @@ are not recommended for production use yet.
   down in its `DOCUMENTED_DIFFERENCES`, and on a written-down difference
   that no longer occurs. `python -m tests.collision_parity.record` records
   the goldens again (`--check` compares without writing).
+
+- `SimEvents.STEP` (`"step"`): an event at the point where `register_callback()`
+  callbacks run by default -- after the object update, before the new poses are
+  written to PyBullet and before the collision check -- with `dt` and
+  `sim_time` (the time of the new state). Its handlers run before the `STEP`
+  callbacks and plugin `on_step`; time profiling reports them as `events_step`
+  (issue #84).
+
+- `events.on(event, handler, priority=0, frequency=None)`: a handler of a step
+  event (`pre_step`, `step`, `post_step`) on `sim.events` can run at a fixed
+  rate, on the same fixed grid of simulated time as callbacks and plugins
+  (#80), with `dt` the simulated time since it last ran. `initialize_simulation()`
+  and `reset()` restart its schedule. A per-entity or bare `EventBus` has no
+  simulation clock and raises `ValueError` for `frequency`, as does any other
+  event (issue #84). `frequency=0` means every step, as it does for
+  `register_callback()`.
+
+- `ControllerParams.max_angular_decel`: the braking rate of a turn, so a
+  rotation can stop at a different rate than it starts, as `max_linear_decel`
+  already allows for translation. Same scalar or per-axis form as
+  `max_angular_accel`; unset mirrors it, so every existing configuration keeps
+  the same symmetric rotation profile, bit for bit. A zero, negative or
+  non-finite value (or a per-axis value whose yaw component is not above
+  zero) raises `ValueError` when it is set, not at the first turn. Every rotation honours it:
+  per-agent and batched, omnidirectional final rotation and differential-drive
+  turns, with `Agent.max_angular_decel` as the read-only view. The batched
+  controllers carry the braking scalar per row, and their closed form agrees
+  with the per-agent trajectory to floating-point noise. The kinematic replay profile records it; a `pbf.kinematic.v4`
+  artifact recorded before it existed still loads, with the field unset.
+
 - `PathRequest` (`pybullet_fleet.path_request`): the waypoints and how to follow
   them (`final_orientation_align`, `direction`, `auto_approach`) as one
   object. `Agent.request_path(request)` and the controllers'
@@ -255,6 +285,61 @@ are not recommended for production use yet.
   checkpoint proof's record version 3.
 
 ### Changed
+
+- A mesh collision shape PyBullet cannot build (a Gazebo `.dae`, say) gives a
+  visual-only body as before, and the warning now says that later spawns with
+  the same shape on the same client reuse that result without another attempt
+  (#120). It stays cached on purpose: the same mesh fails the same way, and
+  retrying would log once per spawn.
+
+- Per-step hooks share one mechanism: `register_callback()` callbacks and
+  `SimPlugin.on_step()` are subscriptions on `sim.events`, in tiers after the
+  event's own handlers (handlers by priority, then callbacks in registration
+  order, then plugins in load order). Their order, schedule, arguments and
+  exception handling are unchanged: a callback's exception still propagates
+  out of `step_once()`, a plugin's or a handler's is logged. `events.off()` and
+  `events.clear()` affect only handlers registered with `events.on()`;
+  `has_handlers()` also counts callbacks and plugins. An emit now calls the
+  subscriptions present when it starts, in every tier: a handler, callback or
+  plugin added by one of the same event first runs on the next emit (a handler
+  added by a handler used to run in the same one), and one removed still runs
+  in the current emit. The
+  kinematic replay profile rejects a frequency-limited event handler, as it
+  does a frequency-limited callback. No change in step time without hooks
+  (issue #84).
+
+- Callbacks and plugins can run at any of the three step events.
+  `CallbackPhase.PRE_STEP` (`"pre_step"`) joins `STEP` and `POST_STEP`: such a
+  callback runs at the start of the step, after the `pre_step` handlers, before
+  the clock advances and before anything moves. A plugin's `on_step()` takes a
+  phase too (`SimPlugin.step_phase`): set by the class (`default_step_phase =
+  "post_step"`), by `register_plugin(..., phase=...)` or by the YAML
+  `phase` field, with `step` as before by default; it is fixed once the plugin
+  is registered (setting it then raises `RuntimeError`). Plugins run after the
+  callbacks of their event, with their `frequency`; an unknown phase raises
+  `ValueError`. The time profile adds `callbacks_pre_step`. `SimPlugin` adds
+  the attribute names `step_phase` and `default_step_phase`; a plugin of your
+  own that already uses either for something else needs to rename it.
+
+- A kinematic joint with an acceleration ramp (`set_joint_motion_profile(...,
+  max_accel=...)`) is evaluated each step from its trajectory's phase scalars,
+  read once per target change, instead of `TwoPointInterpolation.get_point()`.
+  The motion is the same, to float noise. Evaluating 1,400 ramped joints
+  (200 bodies x 7) went from 1.6 ms to 0.85 ms per step; the whole joint
+  update, which also writes every joint to PyBullet, from 6.6 ms to 5.9 ms.
+
+- `Agent.set_joint_target()`, `get_joint_state()` and `is_joint_at_target()`
+  take a joint by index or by name, as `set_joint_position()` and
+  `is_joint_moving()` do: `set_joint_target("lift", 1.0)` now works. The first
+  parameter is renamed from `joint_index` to `joint`; a call that passes it as
+  `joint_index=` still works, and `set_joint_target_by_name()`,
+  `get_joint_state_by_name()` and `is_joint_at_target_by_name()` remain as
+  aliases, both deprecated (see Deprecated). An unknown joint is handled as before: `set_joint_target()` ignores
+  it with a warning, `get_joint_state()` returns `(0.0, 0.0)` with a warning
+  for a name and lets PyBullet raise for an index, and `is_joint_at_target()`
+  returns `False`. A negative index given to `set_joint_target()` is now also
+  ignored with a warning; before, it recorded a target for a joint that does
+  not exist, or failed inside PyBullet with physics on.
 
 - A `MoveAction` ends by what becomes of its own `PathRequest`: `CANCELLED` as
   soon as another request replaces it, drops it from the hold, brakes or stops
@@ -611,7 +696,11 @@ are not recommended for production use yet.
   it is carrying and re-plans from it under the new limits.
   `Agent.is_joint_moving()` reports whether a ramped joint is still in
   motion, which `Elevator` arrival now waits for instead of taking the
-  action's tolerance as arrival.
+  action's tolerance as arrival. Both raise for a joint the body does not
+  have: `KeyError` for an unknown name, `IndexError` for an index out of
+  range (unlike the target and state APIs, which warn): a profile on a
+  missing joint would be silently ignored, and `False` from
+  `is_joint_moving()` would read as "stopped".
 - Add a PBF-owned, versioned kinematic recording profile for supported URDF
   Agents, all kinematic joints, constructed primitives and attachments. A trusted
   registry and `load_supported_simulation()` reconstruct a complete artifact
@@ -706,6 +795,14 @@ are not recommended for production use yet.
 
 ### Deprecated
 
+- The `joint_index=` keyword of `Agent.set_joint_target()`,
+  `get_joint_state()` and `is_joint_at_target()`, and the single-joint aliases
+  `set_joint_target_by_name()`, `get_joint_state_by_name()` and
+  `is_joint_at_target_by_name()`, are deprecated and will be removed in
+  0.10.0. Each gives a `FutureWarning` pointing at the call. Pass the joint as
+  the first argument or as `joint=`, by index or by name. The multi-joint
+  `*_by_name` methods, which take a dict or list of names, are not affected.
+
 - Overriding `Controller.set_path()` in a subclass is deprecated; override
   `request_path()` instead, which receives the `PathRequest` itself. Defining
   such a class gives a `FutureWarning` naming it (once, at class definition).
@@ -744,11 +841,76 @@ are not recommended for production use yet.
 
 ### Fixed
 
-- `resolve_joint_index()` and `resolve_link_index()` (and every agent and
-  attachment call that resolves a joint or link by name) read the body on
-  the simulation's physics client. They used PyBullet's default client, so
-  with another client connected in the process a name could resolve against
-  the wrong body: `set_joint_target_by_name()` then set no target.
+- A ramped kinematic joint restored from a checkpoint now follows the same
+  path as the run it was taken from in every state, not only while it follows
+  a trajectory (issue #71). A joint braking with no trajectory -- its target
+  inside its stopping distance, or behind it -- shed speed over
+  `now - step_start`, two joint-clock readings whose difference rounds
+  differently depending on how far the clock has run. Restored into an agent
+  whose clock had run further, it came to rest a step apart from the original
+  and took a different path back. The braking step now uses the step's `dt`.
+  A joint following a trajectory had the same defect at a much smaller scale:
+  it was evaluated at a clock reading minus the trajectory's start, rebuilt on
+  restore as clock plus `t0_offset`, so a restored joint matched the original
+  only to about 1e-16 (more on a long-running clock) and could in principle
+  end its motion a step apart. Each joint now counts the time it has followed
+  its trajectory by adding `dt`, the trajectory starts at `t0 = 0`, and the
+  agent keeps no joint clock; `t0_offset` is that count negated, so a restored
+  joint is bit-identical to the original every step and ends on the same one.
+  Existing checkpoints restore as before.
+  The checkpoint format is otherwise unchanged: since the kinematic profile's agent
+  state version 2, each joint entry already carries its motion limits
+  (`max_velocity`, `max_accel`, `max_decel`) alongside its signed `speed`,
+  `braking` flag and trajectory, and a restore builds each joint with its
+  limits before its execution state, so a freshly constructed agent with no
+  profile of its own resumes the same ramp. An agent entry at version 1, whose
+  joints had position and target only, is refused with a message naming the
+  version found and the one supported.
+
+- Batched controllers (`batch_omni`, `batch_differential`): a goal replaced
+  while the agent moves faster than `max_linear_vel` -- the limit lowered
+  during the motion -- now brakes down to the limit at the configured
+  deceleration, as the per-agent controllers do. The batched closed form used
+  to accelerate further in that first phase, so the agent ran ahead of its
+  trajectory until it cruised. The closed form (`trapezoid_distance()`,
+  `trapezoid_speed()`, and the scalar `trapezoid_point()` that ramped joints
+  use) takes each phase's formula from one set of helpers, and is checked
+  against `TwoPointInterpolation.get_point()` for start speeds toward and away
+  from the target, above `vmax`, asymmetric ramps and either direction (end
+  speeds too for the scalar form). Batched rotations evaluate their braking
+  phase with the trajectory's deceleration rather than its first-phase
+  acceleration, so a rotation with its own braking limit
+  (`max_angular_decel`) follows the same trajectory as per agent.
+
+- A joint name given to `set_joint_target()`, `get_joint_state()`,
+  `is_joint_at_target()`, `set_joint_position()` or the `*_by_name` aliases is
+  looked up on the agent's own physics client. With a second simulation
+  running, it was looked up on PyBullet's default client: a valid name was
+  reported missing, or resolved to a joint of another body.
+
+- `get_joints_state_by_name()`, `set_joints_targets_by_name()`,
+  `are_joints_at_targets_by_name()` and `IKParams.ik_joint_names` also look
+  joint names up on the agent's own physics client. With a second simulation
+  running, targets were dropped, states came back empty, at-target checks
+  returned `False` for a joint at its target, and IK locked the named joints.
+  `tools.resolve_joint_index()` takes an optional `physics_client_id`
+  (default `0`, as before).
+
+- Link names given as an end-effector link, as `attach_object()`'s
+  `parent_link_index` or as `PickAction.attach_link` are looked up on the
+  object's own physics client. With a second simulation running, a valid link
+  name was reported missing (falling back to the base link) or resolved to a
+  link of another body. `tools.resolve_link_index()` takes an optional
+  `physics_client_id` (default `0`, as before).
+
+- `BatchOmniController` and `BatchDifferentialController` turn at the yaw
+  (`z`) component of a per-axis angular limit (`max_angular_vel`,
+  `max_angular_accel`, `max_angular_decel` given as `[x, y, z]`), as the
+  per-agent controllers do. Before this change they read the `x` component.
+  A batched agent whose `x` and `z` limits differ now turns at a different
+  rate than before, the same as its per-agent counterpart, and a limit such as
+  `[0, 0, 2]` no longer raises `ValueError` in the batched path only.
+
 - The collision broadphase AABB of an articulated body covers all of its
   links, not only the base link (issue #68). `p.getAABB(body)` returns the base
   link's box, so a child link touching another object (an arm's wrist, a

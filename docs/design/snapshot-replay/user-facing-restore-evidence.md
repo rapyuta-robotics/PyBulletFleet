@@ -51,7 +51,18 @@ positions and signed speeds match every subsequent reference frame within
 `1e-6`. The PBF-owned joint record now includes motion limits, speed and the
 primitive TPI inputs with a start-time offset; the development profile schema
 was `pbf.kinematic.v3` for the navigation acceptance. The current profile is
-`pbf.kinematic.v4` after adding primitive construction state. Omni navigation
+`pbf.kinematic.v4` after adding primitive construction state. Issue #71
+added in-process step-by-step comparisons for one ramped joint
+(`tests/test_joint_checkpoint_profile.py`): checkpoints taken while
+accelerating, braking with no trajectory, still heading away from a target
+behind it, and travelling back after turning round are restored into a freshly
+constructed Agent with no profile of its own and back into the same Agent after
+it has run on; position, signed speed and the braking flag match the
+uninterrupted run at every step within `1e-9` until rest. Restoring into the
+same Agent exposed a braking step sized by a difference of two joint-clock
+readings, which rounds differently once the clock has run further and put the
+restored joint at rest a step apart from the original; it now uses the step's
+`dt`. Omni navigation
 also records asymmetric forward deceleration; the mobile-arm fresh-process
 comparison exercises it. A separate
 differential-drive comparison restores both mid-turn and mid-forward checkpoints,

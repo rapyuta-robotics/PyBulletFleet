@@ -10,7 +10,7 @@ wrong positions.
 
 import pytest
 
-from pybullet_fleet._tpi import build_tpi, extract_phase_params
+from pybullet_fleet._tpi import build_tpi, extract_profile
 from pybullet_fleet.controller_params import ControllerParams
 
 
@@ -43,11 +43,17 @@ class TestBuildTpiDecel:
         assert tpi.amax_decel == pytest.approx(0.25)
 
 
-class TestExtractPhaseParams:
+def _phase_params(tpi):
+    """The phase scalars the batched controllers store, from :func:`extract_profile`."""
+    p = extract_profile(tpi)
+    return p.t_accel, p.t_const, p.t_total, p.accel, p.decel
+
+
+class TestExtractProfile:
     def test_it_carries_both_scalars_out(self):
         # Far enough that vmax is reached and all three phases are populated.
         tpi = build_tpi(p0=0.0, pe=20.0, vmax=2.5, accel=1.5, t0=0.0, decel=0.5)
-        t_accel, t_const, t_total, accel, decel = extract_phase_params(tpi)
+        t_accel, t_const, t_total, accel, decel = _phase_params(tpi)
         assert accel == pytest.approx(1.5)
         assert decel == pytest.approx(0.5)
         assert t_accel > 0.0 and t_const > 0.0
@@ -57,8 +63,8 @@ class TestExtractPhaseParams:
         """TwoPointInterpolation computed them from both scalars already, so
         a softer brake lengthens the final phase rather than needing any
         special handling here."""
-        soft = extract_phase_params(build_tpi(p0=0.0, pe=20.0, vmax=2.5, accel=1.5, t0=0.0, decel=0.5))
-        hard = extract_phase_params(build_tpi(p0=0.0, pe=20.0, vmax=2.5, accel=1.5, t0=0.0, decel=6.0))
+        soft = _phase_params(build_tpi(p0=0.0, pe=20.0, vmax=2.5, accel=1.5, t0=0.0, decel=0.5))
+        hard = _phase_params(build_tpi(p0=0.0, pe=20.0, vmax=2.5, accel=1.5, t0=0.0, decel=6.0))
         assert soft[2] > hard[2]
         # vmax is reached either way, so the ramp up is the same and only the
         # braking phase accounts for the difference.
@@ -66,7 +72,7 @@ class TestExtractPhaseParams:
         assert soft[2] - soft[0] - soft[1] > hard[2] - hard[0] - hard[1]
 
     def test_a_symmetric_profile_still_reports_equal_scalars(self):
-        _, _, _, accel, decel = extract_phase_params(build_tpi(p0=0.0, pe=5.0, vmax=2.0, accel=1.0, t0=0.0))
+        _, _, _, accel, decel = _phase_params(build_tpi(p0=0.0, pe=5.0, vmax=2.0, accel=1.0, t0=0.0))
         assert accel == pytest.approx(decel)
 
 
@@ -586,3 +592,77 @@ class TestRowCompactionCarriesTheBrakingScalar:
         overlap = min(len(undisturbed), len(after_removal))
         worst = max(abs(a - b) for a, b in zip(undisturbed[:overlap], after_removal[:overlap]))
         assert worst < 1e-9, f"removing another agent moved this one by {worst} m"
+
+
+class TestBatchedRotationKeepsItsDecel:
+    """A batched rotation evaluates its closed form with the trajectory's own
+    deceleration, not with its first-phase acceleration.
+
+    ``max_angular_decel`` at a quarter of ``max_angular_accel`` makes the
+    rotation asymmetric, so a dropped ``decel`` shows up as a wrong orientation
+    in the braking phase. The rotation's trajectory is built in
+    ``BatchKinematicController._set_rotation_row``; it is recorded there to
+    compare against.
+    """
+
+    DT = 0.02
+
+    @pytest.fixture
+    def sim_core_params(self):
+        return {"timestep": self.DT}
+
+    @pytest.mark.parametrize(
+        "kind,module,motion_mode",
+        [
+            ("batch_differential", "pybullet_fleet.controllers.batch_differential", "DIFFERENTIAL"),
+            ("batch_omni", "pybullet_fleet.controllers.batch_omni", "OMNIDIRECTIONAL"),
+        ],
+    )
+    def test_the_rotation_follows_an_asymmetric_trajectory(self, sim_core, monkeypatch, kind, module, motion_mode):
+        import importlib
+        import math
+
+        from pybullet_fleet import Agent, AgentSpawnParams, MotionMode
+        from pybullet_fleet.agent_manager import AgentManager
+        from pybullet_fleet.geometry import Pose
+
+        importlib.import_module(module)  # registers the controller type
+        batch_base = importlib.import_module("pybullet_fleet.controllers.batch_base")
+        built = []
+
+        def recorded(**kwargs):
+            tpi = build_tpi(**kwargs)
+            built.append(tpi)
+            return tpi
+
+        monkeypatch.setattr(batch_base, "build_tpi", recorded)
+        agent = Agent.from_params(
+            AgentSpawnParams(
+                urdf_path="robots/simple_cube.urdf",
+                initial_pose=Pose.from_xyz(0.0, 0.0, 0.1),
+                motion_mode=MotionMode[motion_mode],
+                controller={"max_angular_vel": 1.0, "max_angular_accel": 2.0, "max_angular_decel": 0.5},
+            ),
+            sim_core=sim_core,
+        )
+        AgentManager(sim_core=sim_core, fleet_controller={"type": kind}).add_object(agent)
+        # Differential turns toward the goal first; omni turns at the end.
+        goal = Pose.from_yaw(0.0, 0.5, 0.1, math.pi / 2) if kind == "batch_omni" else Pose.from_xyz(0.0, 0.5, 0.1)
+        agent.set_path([goal], auto_approach=False)
+
+        worst = 0.0
+        compared = 0
+        for _ in range(500):
+            sim_core.step_once()
+            if built:
+                tpi = built[0]
+                if tpi.t0 < sim_core.sim_time < tpi.get_end_time():
+                    _, _, qz, qw = agent.get_pose().orientation
+                    yaw = 2.0 * math.atan2(qz, qw)
+                    worst = max(worst, abs(yaw - tpi.get_point(sim_core.sim_time)[0]))
+                    compared += 1
+            if not agent.is_moving:
+                break
+        assert built and built[0].amax_decel == pytest.approx(0.25 * built[0].amax_accel)
+        assert compared > 10
+        assert worst < 1e-6, f"the rotation is off its trajectory by {worst} rad"

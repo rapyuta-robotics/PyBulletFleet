@@ -156,13 +156,13 @@ class TestBoxFollowsTheJoints:
     def test_kinematic_joint_motion_refreshes_the_box(self, sim):
         robot = arm(sim)
         target = box(sim, 0.0, -0.42, 0.35)
-        robot.set_joint_target_by_name(ELBOW, BENT)
+        robot.set_joint_target(ELBOW, BENT)
 
         for _ in range(60):  # 1.57 rad at the URDF's 1.8 rad/s takes 44 steps
             sim.step_once()
             assert_box_equal(sim.cached_aabb(robot.object_id), whole_body_aabb(sim, robot))
 
-        assert robot.get_joint_state_by_name(ELBOW)[0] == pytest.approx(BENT, abs=1e-3)
+        assert robot.get_joint_state(ELBOW)[0] == pytest.approx(BENT, abs=1e-3)
         assert pair(robot, target) in sim.get_active_collision_pairs()
 
     def test_joint_placed_from_a_step_callback_is_refreshed_by_the_step(self, sim):
@@ -205,7 +205,7 @@ class TestBoxFollowsTheJoints:
     def test_physics_joint_motion_refreshes_the_box(self, physics_sim):
         robot = arm(physics_sim, mass=None)
         assert robot.object_id in physics_sim._physics_objects
-        robot.set_joint_target_by_name(ELBOW, BENT)
+        robot.set_joint_target(ELBOW, BENT)
 
         for _ in range(100):
             physics_sim.step_once()
@@ -337,12 +337,12 @@ class TestStaticArmFollowsItsJoints:
         robot = static_arm(sim)
         assert robot.object_id in sim._static_collision_objects
         target = box(sim, 0.0, -0.42, 0.35)
-        robot.set_joint_target_by_name(ELBOW, BENT)
+        robot.set_joint_target(ELBOW, BENT)
 
         for _ in range(60):
             sim.step_once()
 
-        assert robot.get_joint_state_by_name(ELBOW)[0] == pytest.approx(BENT, abs=1e-3)
+        assert robot.get_joint_state(ELBOW)[0] == pytest.approx(BENT, abs=1e-3)
         assert_box_equal(sim.cached_aabb(robot.object_id), whole_body_aabb(sim, robot))
         assert pair(robot, target) in sim.get_active_collision_pairs()
         p.disconnect(sim.client)

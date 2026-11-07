@@ -1,5 +1,11 @@
 # Kinematic Robot Arm Implementation Plan
 
+> **Note:** This is the original design record. The single-joint APIs have since
+> changed: `set_joint_target()`, `get_joint_state()` and `is_joint_at_target()`
+> take `joint: Union[int, str]` (a joint index or a URDF joint name) instead of
+> `joint_index: int`, and kinematic joint state lives in `Agent._joints`. See
+> `docs/architecture/overview.md` for the current API.
+
 > **For Claude:** REQUIRED SUB-SKILL: Use executing-plans to implement this plan task-by-task.
 
 **Goal:** Enable arm joint control for kinematic robots (`mass=0`) using `resetJointState()` with smooth per-step interpolation, so `set_joint_target()` and `JointAction` work transparently in both physics and kinematic modes.

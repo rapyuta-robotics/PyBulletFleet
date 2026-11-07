@@ -484,8 +484,8 @@ class WorkcellHandler(BridgePlugin):
         """Publish periodic workcell state messages.
 
         Pending action checks and return-home processing are handled
-        automatically by ``WorkcellPlugin.on_step()`` (called by
-        ``sim_core._step_plugins``).  This method only publishes ROS
+        automatically by ``WorkcellPlugin.on_step()`` (run by the
+        simulation's ``step`` event).  This method only publishes ROS
         state messages periodically.
         """
         if sim_time - self._last_state_publish < self._state_publish_interval:

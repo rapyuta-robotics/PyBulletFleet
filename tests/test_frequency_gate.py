@@ -384,3 +384,17 @@ class TestPluginFrequency:
         with pytest.raises(ValueError):
             sim.register_plugin(SimPlugin(sim), frequency=-1.0)
         assert sim.plugins == []
+
+    def test_reset_restarts_a_plugin_schedule_once(self, sim, monkeypatch):
+        # initialize_simulation() owns schedule resets; reset() must not add a second one.
+        plugin = sim.register_plugin(SimPlugin(sim), frequency=2.0)
+        resets = []
+        original = FrequencyGate.reset
+
+        def counting_reset(gate):
+            resets.append(gate)
+            original(gate)
+
+        monkeypatch.setattr(FrequencyGate, "reset", counting_reset)
+        sim.reset()
+        assert sum(gate is plugin._frequency_gate for gate in resets) == 1

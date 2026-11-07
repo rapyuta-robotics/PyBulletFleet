@@ -159,7 +159,8 @@ object attachment via `update_attached_objects_kinematics()`.
 - **Kinematic joint cache** (`_kinematic_joint_positions`): Joint positions cached in a Python dict, initialized via batch `p.getJointStates()`, updated after each `resetJointState()`. `get_joint_state()` returns cached values for kinematic robots — zero PyBullet calls per step.
 
 **Key Joint Methods:**
-- `set_joint_target(index, position)`: Set single joint target (transparent mode switching)
+- `set_joint_target(joint, position)`: Set single joint target, by index or joint name (transparent mode switching)
+- `get_joint_state(joint)` / `is_joint_at_target(joint, target, tolerance)`: Read or check a single joint, by index or joint name
 - `set_all_joints_targets(positions)`: Set all joint targets at once
 - `are_all_joints_at_targets(targets, tolerance)`: Check if all joints reached targets
 - `are_joints_at_targets(targets, tolerance)`: Unified check — accepts list, dict, or `None` (uses `_last_joint_targets`)

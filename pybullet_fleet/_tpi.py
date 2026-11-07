@@ -7,14 +7,18 @@ subclasses to construct a single trajectory. :func:`try_build_tpi` is the
 same construction without the fallback, for callers that have to tell an
 infeasible request apart from a trajectory that simply finishes early.
 
-:func:`extract_phase_params` lifts the symmetric trapezoidal phase scalars
-(``t_accel``, ``t_const``, ``t_total``, ``accel``) out of a constructed
+:func:`extract_profile` lifts the phase scalars (``t_accel``, ``t_const``,
+``t_total``, ``accel``, ``decel``, ``v0``, ...) out of a constructed
 ``TwoPointInterpolation`` so the batched controllers can store them in
 ``(N,)`` arrays for vectorised evaluation.
 
 :func:`trapezoid_distance` evaluates the distance traveled at time ``tau``
 for ``(N,)`` arrays of such trajectories — the batched eval hot path — and
 :func:`trapezoid_speed` the speed, its time derivative.
+:func:`trapezoid_point` is the scalar form of both, for one trajectory. All
+three take each phase's formula from the same helpers (``_ramp_distance``
+and so on), which accept floats and arrays alike, so the kinematics are
+written once.
 
 :func:`build_tpi_from_speed` starts a trajectory from a body already moving
 along the travel axis, for a goal replaced mid-motion; :func:`try_build_tpi`
@@ -23,7 +27,7 @@ with the same ``v0`` says whether it can stop in time.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import numpy as np
 from two_point_interpolation import TwoPointInterpolation
@@ -186,38 +190,131 @@ def build_tpi_from_speed(
     return tpi
 
 
-def extract_phase_params(tpi: TwoPointInterpolation) -> Tuple[float, float, float, float, float]:
-    """Read trapezoidal phase scalars from a constructed TPI.
+class PhaseProfile(NamedTuple):
+    """A solved trajectory as the scalars the closed form evaluates.
 
-    Returns ``(t_accel, t_const, t_total, accel, decel)`` relative to
-    ``tpi.t0`` in the form expected by :func:`trapezoid_distance` for batched
-    eval.
+    Everything is measured along the direction of travel, so the closed form
+    only ever runs forward: ``distance >= 0``, and ``v0``/``ve`` are signed
+    with negative meaning away from the target. A world position is
+    ``p0 + direction * s`` for the distance ``s`` the closed form returns, and
+    a world velocity ``direction * v``. ``pe`` is kept as given so a finished
+    trajectory is exactly at it, as ``get_point()`` puts it.
 
-    Handles all three TPI cases:
+    ``accel`` is the first phase's acceleration, which is not always the ramp
+    limit: from a start above ``vmax`` the solver brakes down to it at
+    ``decel``, and ``accel`` is then ``-decel``.
+    """
 
-    - ``case == -1`` (degenerate / zero distance): all zeros.
+    t0: float
+    p0: float
+    pe: float
+    direction: float
+    distance: float
+    t_accel: float
+    t_const: float
+    t_total: float
+    accel: float
+    decel: float
+    v0: float
+    ve: float
+
+
+def extract_profile(tpi: TwoPointInterpolation) -> PhaseProfile:
+    """Read everything the closed form needs out of a constructed TPI.
+
+    Phase durations come from ``tpi.dt``, which ``TwoPointInterpolation``
+    computed from both ramp limits and both end speeds; nothing is solved
+    again here. Handles all three TPI cases:
+
+    - ``case == -1`` (degenerate / zero distance): all durations zero.
     - ``case == 0`` (triangle, ``vmax`` not reached): ``t_const = 0``.
     - ``case == 1`` (full trapezoid): three populated phases.
-
-    An asymmetric profile needs nothing special here. ``tpi.dt`` already holds
-    the phase durations ``TwoPointInterpolation`` computed from both scalars;
-    only ``decel`` had to be carried out alongside ``accel`` for
-    :func:`trapezoid_distance` to integrate the braking phase with it.
     """
     dt = tpi.dt
+    span = float(tpi.pe) - float(tpi.p0)
+    direction = -1.0 if span < 0.0 else 1.0
     accel = float(tpi.amax_accel)
     decel = float(tpi.amax_decel)
-    if len(dt) == 0:
-        return 0.0, 0.0, 0.0, accel, decel
+    t_accel = t_const = t_total = 0.0
     if len(dt) == 2:
         t_accel = float(dt[0])
-        t_decel = float(dt[1])
-        return t_accel, 0.0, t_accel + t_decel, accel, decel
-    # len == 3 (full trapezoid)
-    t_accel = float(dt[0])
-    t_const = float(dt[1])
-    t_total = float(dt[0] + dt[1] + dt[2])
-    return t_accel, t_const, t_total, accel, decel
+        t_total = t_accel + float(dt[1])
+    elif len(dt) == 3:
+        t_accel = float(dt[0])
+        t_const = float(dt[1])
+        t_total = float(dt[0] + dt[1] + dt[2])
+    if len(dt) >= 2:
+        # Signed along the travel: -decel when the first phase brakes down to vmax.
+        accel = direction * float(tpi.a[0])
+    return PhaseProfile(
+        t0=float(tpi.t0),
+        p0=float(tpi.p0),
+        pe=float(tpi.pe),
+        direction=direction,
+        distance=abs(span),
+        t_accel=t_accel,
+        t_const=t_const,
+        t_total=t_total,
+        accel=accel,
+        decel=decel,
+        v0=direction * float(tpi.v0),
+        ve=direction * float(tpi.ve),
+    )
+
+
+def _ramp_distance(v0, accel, t):
+    """Distance ``t`` into the first phase: ``v0 * t + 0.5 * a * t^2``."""
+    return v0 * t + 0.5 * accel * t * t
+
+
+def _ramp_speed(v0, accel, t):
+    """Speed ``t`` into the first phase."""
+    return v0 + accel * t
+
+
+def _cruise_distance(v0, accel, t_accel, t):
+    """Distance at ``t`` in the constant-speed phase, after a ramp of ``t_accel``."""
+    return v0 * t_accel + 0.5 * accel * t_accel * t_accel + (v0 + accel * t_accel) * (t - t_accel)
+
+
+def _brake_distance(distance, ve, decel, t_left):
+    """Distance ``t_left`` before the end of the final phase, counted back
+    from the end: ``distance - ve * t_left - 0.5 * d * t_left^2``."""
+    return distance - ve * t_left - 0.5 * decel * t_left * t_left
+
+
+def _brake_speed(ve, decel, t_left):
+    """Speed ``t_left`` before the end of the final phase."""
+    return ve + decel * t_left
+
+
+def trapezoid_point(profile: PhaseProfile, t: float) -> Tuple[float, float]:
+    """``(position, velocity)`` at simulation time ``t``, for one trajectory.
+
+    The scalar counterpart of :func:`trapezoid_distance` and
+    :func:`trapezoid_speed`, in world coordinates: what
+    ``TwoPointInterpolation.get_point()`` returns, without its per-call phase
+    search. For a caller that evaluates a handful of trajectories each step,
+    where building ``(N,)`` arrays would cost more than it saves. Unlike the
+    batched forms it honours an end speed ``ve`` (a restored trajectory can
+    carry one).
+    """
+    tau = t - profile.t0
+    if tau >= profile.t_total:
+        return profile.pe, profile.direction * profile.ve
+    if tau <= 0.0:
+        s, v = 0.0, profile.v0
+    elif tau <= profile.t_accel:
+        s = _ramp_distance(profile.v0, profile.accel, tau)
+        v = _ramp_speed(profile.v0, profile.accel, tau)
+    elif tau <= profile.t_accel + profile.t_const:
+        s = _cruise_distance(profile.v0, profile.accel, profile.t_accel, tau)
+        v = _ramp_speed(profile.v0, profile.accel, profile.t_accel)
+    else:
+        t_left = profile.t_total - tau
+        s = _brake_distance(profile.distance, profile.ve, profile.decel, t_left)
+        v = _brake_speed(profile.ve, profile.decel, t_left)
+    return profile.p0 + profile.direction * s, profile.direction * v
 
 
 def trapezoid_distance(
@@ -232,10 +329,14 @@ def trapezoid_distance(
 ) -> np.ndarray:
     """Vectorised distance-traveled lookup for trapezoidal profiles.
 
-    All inputs are ``(N,)`` arrays; returns ``(N,)``.
+    All inputs are ``(N,)`` arrays; returns ``(N,)``. Every trajectory ends at
+    rest, as every batched path leg does.
 
     ``v0`` is the speed each trajectory starts at (``None``: at rest), as built
-    by :func:`build_tpi_from_speed`; the ramp up then starts from it.
+    by :func:`build_tpi_from_speed`; the ramp up then starts from it. Negative
+    is moving away from the target: the first phase brakes through zero and
+    reverses, which is the same ``v0 * t + 0.5 * a * t^2``. It is measured
+    along the travel, as :func:`extract_profile` returns it.
 
     ``decel`` is the braking scalar for the final phase. ``None`` reuses
     ``accel``, which is the symmetric profile and what every caller got before
@@ -252,22 +353,12 @@ def trapezoid_distance(
 
     if v0 is None:
         v0 = np.zeros_like(tau)
-    # accel phase: v0 * t + 0.5 * a * t^2
     if in_accel.any():
-        t = tau[in_accel]
-        out[in_accel] = v0[in_accel] * t + 0.5 * accel[in_accel] * t * t
-    # const phase: v0 * t_accel + 0.5 * a * t_accel^2 + v_peak * (t - t_accel),
-    # where v_peak = v0 + a * t_accel
+        out[in_accel] = _ramp_distance(v0[in_accel], accel[in_accel], tau[in_accel])
     if in_const.any():
-        ta = t_accel[in_const]
-        a = accel[in_const]
-        u = v0[in_const]
-        out[in_const] = u * ta + 0.5 * a * ta * ta + (u + a * ta) * (tau[in_const] - ta)
-    # decel phase: total_distance - 0.5 * a * (t_total - t)^2
+        out[in_const] = _cruise_distance(v0[in_const], accel[in_const], t_accel[in_const], tau[in_const])
     if in_decel.any():
-        d = decel[in_decel]
-        t_left = t_total[in_decel] - tau[in_decel]
-        out[in_decel] = total_distance[in_decel] - 0.5 * d * t_left * t_left
+        out[in_decel] = _brake_distance(total_distance[in_decel], 0.0, decel[in_decel], t_total[in_decel] - tau[in_decel])
     if done.any():
         out[done] = total_distance[done]
     return out
@@ -299,13 +390,11 @@ def trapezoid_speed(
     in_decel = (tau > t_accel + t_const) & (tau < t_total)
     done = tau >= t_total
     in_accel = ~in_const & ~in_decel & ~done
-    # accel phase: v0 + a * t (t clipped at 0: before the start it is v0)
+    # t clipped at 0: before the start the speed is v0
     if in_accel.any():
-        out[in_accel] = v0[in_accel] + accel[in_accel] * np.maximum(tau[in_accel], 0.0)
-    # const phase: v_peak = v0 + a * t_accel
+        out[in_accel] = _ramp_speed(v0[in_accel], accel[in_accel], np.maximum(tau[in_accel], 0.0))
     if in_const.any():
-        out[in_const] = v0[in_const] + accel[in_const] * t_accel[in_const]
-    # decel phase: d * (t_total - t)
+        out[in_const] = _ramp_speed(v0[in_const], accel[in_const], t_accel[in_const])
     if in_decel.any():
-        out[in_decel] = decel[in_decel] * (t_total[in_decel] - tau[in_decel])
+        out[in_decel] = _brake_speed(0.0, decel[in_decel], t_total[in_decel] - tau[in_decel])
     return out

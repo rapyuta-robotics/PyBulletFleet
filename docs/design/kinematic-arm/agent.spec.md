@@ -1,5 +1,11 @@
 # Kinematic Robot Arm - Agent Specification
 
+> **Note:** This is the original design record. The single-joint APIs have since
+> changed: `set_joint_target()`, `get_joint_state()` and `is_joint_at_target()`
+> take `joint: Union[int, str]` (a joint index or a URDF joint name) instead of
+> `joint_index: int`, and kinematic joint state lives in `Agent._joints`. See
+> `docs/architecture/overview.md` for the current API.
+
 ## Requirements
 
 - `Agent.set_joint_target()` must work for kinematic robots (`mass=0` / `is_kinematic=True`) using `resetJointState()` with smooth per-step interpolation
@@ -71,8 +77,9 @@ def _update_kinematic_joints(self, dt: float) -> None:
 ### `set_joint_target()` modification
 
 ```python
-def set_joint_target(self, joint_index, target_position, max_force=500.0):
-    # ... existing validation ...
+def set_joint_target(self, joint, target_position, max_force=500.0):
+    # joint: index or URDF joint name
+    # ... existing validation; resolves joint to joint_index ...
     if self.is_kinematic:
         # Kinematic mode (mass=0): store target for smooth interpolation
         self._kinematic_joint_targets[joint_index] = (target_position, max_force)

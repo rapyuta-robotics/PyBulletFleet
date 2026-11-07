@@ -85,8 +85,9 @@ velocity limits without requiring `stepSimulation()`.
 # Set all joints at once
 arm_agent.set_all_joints_targets([1.5, 1.5, 1.5, 0.0])
 
-# Set a single joint by index
-arm_agent.set_joint_target(joint_index=0, target_position=1.5)
+# Set a single joint by index or by name
+arm_agent.set_joint_target(0, 1.5)
+arm_agent.set_joint_target("base_to_shoulder", 1.5)
 
 # Check arrival
 if arm_agent.are_all_joints_at_targets([1.5, 1.5, 1.5, 0.0], tolerance=0.05):

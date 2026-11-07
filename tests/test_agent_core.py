@@ -1626,10 +1626,10 @@ class TestAgentJointControl:
     # -- get/set by name -------------------------------------------------
 
     def test_get_joint_state_by_name(self, pybullet_env, mass):
-        """get_joint_state_by_name should return same result as by index and pybullet."""
+        """get_joint_state with a joint name should return the same result as by index and pybullet."""
         agent = self._create_arm(pybullet_env, mass)
         pos_idx, vel_idx = agent.get_joint_state(0)
-        pos_name, vel_name = agent.get_joint_state_by_name("base_to_shoulder")
+        pos_name, vel_name = agent.get_joint_state("base_to_shoulder")
         pb_state = p.getJointState(agent.body_id, 0)
         pb_pos, pb_vel = pb_state[0], pb_state[1]
 
@@ -1641,18 +1641,18 @@ class TestAgentJointControl:
         assert abs(vel_idx - pb_vel) < 1e-6, f"vel by index={vel_idx} != pybullet={pb_vel}"
 
     def test_set_joint_target_by_name(self, pybullet_env, mass):
-        """set_joint_target_by_name should move joint like set_joint_target."""
+        """set_joint_target with a joint name should move the joint as with its index."""
         agent = self._create_arm(pybullet_env, mass)
 
         # Initially at 0
-        assert agent.is_joint_at_target_by_name("shoulder_to_elbow", 0.0, tolerance=0.01)
+        assert agent.is_joint_at_target("shoulder_to_elbow", 0.0, tolerance=0.01)
 
         target = 0.4
-        agent.set_joint_target_by_name("shoulder_to_elbow", target)
+        agent.set_joint_target("shoulder_to_elbow", target)
 
         self._step(agent, mass, n=500)
 
-        assert agent.is_joint_at_target_by_name("shoulder_to_elbow", target, tolerance=0.05)
+        assert agent.is_joint_at_target("shoulder_to_elbow", target, tolerance=0.05)
 
     # -- Batch operations ------------------------------------------------
 

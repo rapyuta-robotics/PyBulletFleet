@@ -32,7 +32,7 @@ def _travel_time(sim_core, agent, distance=TRAVEL, limit=4000):
     agent.add_action(JointAction(target_joint_positions={JOINT: distance}))
     for step in range(limit):
         sim_core.step_once()
-        if abs(agent.get_joint_state_by_name(JOINT)[0] - distance) < 1e-6:
+        if abs(agent.get_joint_state(JOINT)[0] - distance) < 1e-6:
             return (step + 1) * DT
     raise AssertionError("joint never reached its target")
 
@@ -102,7 +102,7 @@ class TestAccelerationRamp:
         agent.add_action(JointAction(target_joint_positions={JOINT: 0.0}))
         for _ in range(4000):
             sim_core.step_once()
-            if abs(agent.get_joint_state_by_name(JOINT)[0]) < 1e-6:
+            if abs(agent.get_joint_state(JOINT)[0]) < 1e-6:
                 break
         asymmetric = _travel_time(sim_core, agent)
         assert asymmetric > symmetric
@@ -116,7 +116,7 @@ class TestAccelerationRamp:
         """The reason the trapezoid is integrated step by step rather than
         planned once: there is no plan to invalidate.
 
-        The replacement goes through ``set_joint_target_by_name``, not a
+        The replacement goes through ``set_joint_target`` (by name), not a
         second ``JointAction``: ``add_action()`` appends to the queue, so a
         second action would wait for the first to finish rather than replace
         its target, and the test would not exercise this at all.
@@ -133,19 +133,19 @@ class TestAccelerationRamp:
         for _ in range(40):
             sim_core.step_once()
         # Up to speed and still travelling, which is the state being replaced.
-        assert agent.get_joint_state_by_name(JOINT)[0] > 0.0
+        assert agent.get_joint_state(JOINT)[0] > 0.0
         assert agent._joints[index].speed > 0.0
 
         agent.clear_actions()
-        agent.set_joint_target_by_name(JOINT, 0.9)
+        agent.set_joint_target(JOINT, 0.9)
         carried = agent._joints[index].speed
         assert abs(carried) > 0.0, "the speed is carried into the new travel, not reset"
 
         for _ in range(4000):
             sim_core.step_once()
-            if abs(agent.get_joint_state_by_name(JOINT)[0] - 0.9) < 1e-6:
+            if abs(agent.get_joint_state(JOINT)[0] - 0.9) < 1e-6:
                 break
-        assert agent.get_joint_state_by_name(JOINT)[0] == pytest.approx(0.9, abs=1e-6)
+        assert agent.get_joint_state(JOINT)[0] == pytest.approx(0.9, abs=1e-6)
         assert agent._joints[index].speed == 0.0, "the speed is dropped on arrival"
 
 
@@ -170,29 +170,29 @@ class TestDirectionReversal:
         assert agent._joints[index].speed > 0.0
 
         agent.clear_actions()
-        agent.set_joint_target_by_name(JOINT, -1.0)
+        agent.set_joint_target(JOINT, -1.0)
         sim_core.step_once()
 
         assert agent._joints[index].speed > 0.0, "still travelling the old way while braking"
 
     def test_it_brakes_through_zero_before_reversing(self, sim_core):
         agent, index = self._moving_agent(sim_core)
-        before = agent.get_joint_state_by_name(JOINT)[0]
+        before = agent.get_joint_state(JOINT)[0]
         speed = agent._joints[index].speed
 
         agent.clear_actions()
-        agent.set_joint_target_by_name(JOINT, -1.0)
+        agent.set_joint_target(JOINT, -1.0)
 
         # It must still be moving the old way for at least one step: braking
         # from `speed` at 1.0 m/s^2 takes `speed` seconds, many steps at DT.
         sim_core.step_once()
-        assert agent.get_joint_state_by_name(JOINT)[0] > before
+        assert agent.get_joint_state(JOINT)[0] > before
 
         peak = before
         steps_still_advancing = 0
         for _ in range(400):
             sim_core.step_once()
-            position = agent.get_joint_state_by_name(JOINT)[0]
+            position = agent.get_joint_state(JOINT)[0]
             if position > peak:
                 peak, steps_still_advancing = position, steps_still_advancing + 1
             if agent._joints[index].speed < 0.0:
@@ -208,7 +208,7 @@ class TestDirectionReversal:
     def test_it_still_reaches_the_new_target(self, sim_core):
         agent, index = self._moving_agent(sim_core)
         agent.clear_actions()
-        agent.set_joint_target_by_name(JOINT, -1.0)
+        agent.set_joint_target(JOINT, -1.0)
 
         # Run until the trajectory is finished rather than until the position
         # looks close: a tolerance on position can be met a step before the
@@ -219,7 +219,7 @@ class TestDirectionReversal:
             if not agent._joints[index].is_moving:
                 break
 
-        assert agent.get_joint_state_by_name(JOINT)[0] == pytest.approx(-1.0, abs=1e-6)
+        assert agent.get_joint_state(JOINT)[0] == pytest.approx(-1.0, abs=1e-6)
         assert agent._joints[index].speed == 0.0
 
     def test_a_reversal_takes_longer_than_the_same_move_from_rest(self, sim_core):
@@ -227,24 +227,24 @@ class TestDirectionReversal:
         magnitude-only carry threw away."""
         agent, _ = self._moving_agent(sim_core)
         agent.clear_actions()
-        agent.set_joint_target_by_name(JOINT, -1.0)
+        agent.set_joint_target(JOINT, -1.0)
         moving = 0
         for _ in range(4000):
             sim_core.step_once()
             moving += 1
-            if abs(agent.get_joint_state_by_name(JOINT)[0] + 1.0) < 1e-6:
+            if abs(agent.get_joint_state(JOINT)[0] + 1.0) < 1e-6:
                 break
 
         rested = Agent.from_params(AgentSpawnParams(urdf_path=URDF, name="b", use_fixed_base=True), sim_core=sim_core)
         rested.set_joint_motion_profile(JOINT, max_velocity=0.4, max_accel=1.0)
-        start = agent.get_joint_state_by_name(JOINT)[0]
+        start = agent.get_joint_state(JOINT)[0]
         del start
-        rested.set_joint_target_by_name(JOINT, -1.0)
+        rested.set_joint_target(JOINT, -1.0)
         from_rest = 0
         for _ in range(4000):
             sim_core.step_once()
             from_rest += 1
-            if abs(rested.get_joint_state_by_name(JOINT)[0] + 1.0) < 1e-6:
+            if abs(rested.get_joint_state(JOINT)[0] + 1.0) < 1e-6:
                 break
         assert moving > from_rest
 
@@ -288,7 +288,7 @@ class TestRestorePreservesTheRamp:
 
         for _ in range(4000):
             sim_core.step_once()
-            if abs(agent.get_joint_state_by_name(JOINT)[0] - 2.0) < 1e-6:
+            if abs(agent.get_joint_state(JOINT)[0] - 2.0) < 1e-6:
                 break
         else:
             raise AssertionError("the restored joint never reached its target")
@@ -448,7 +448,7 @@ class TestThirdRoundReviewFollowUps:
         for _ in range(2000):
             sim_core.step_once()
             if car.current_floor == "1" and not car.is_moving:
-                return car, car.get_joint_state_by_name(JOINT)[0]
+                return car, car.get_joint_state(JOINT)[0]
         raise AssertionError("the cabin never arrived")
 
     def test_a_ramped_cabin_is_at_its_floor_when_it_says_so(self, sim_core):
@@ -472,7 +472,7 @@ class TestThirdRoundReviewFollowUps:
             sim_core.step_once()
             if not agent.is_joint_moving(JOINT):
                 break
-        assert agent.get_joint_state_by_name(JOINT)[0] == pytest.approx(0.6, abs=1e-9)
+        assert agent.get_joint_state(JOINT)[0] == pytest.approx(0.6, abs=1e-9)
 
 
 class TestTargetInsideBrakingDistance:
@@ -491,23 +491,23 @@ class TestTargetInsideBrakingDistance:
         """An agent whose lift is at full speed, aimed well past its target."""
         agent = Agent.from_params(AgentSpawnParams(urdf_path=URDF, name="a", use_fixed_base=True), sim_core=sim_core)
         agent.set_joint_motion_profile(JOINT, max_velocity=self.SPEED, max_accel=self.ACCEL, max_decel=self.DECEL)
-        agent.set_joint_target_by_name(JOINT, 5.0)
+        agent.set_joint_target(JOINT, 5.0)
         for _ in range(200):
             sim_core.step_once()
-            if agent.get_joint_state_by_name(JOINT)[0] > 0.5:
+            if agent.get_joint_state(JOINT)[0] > 0.5:
                 return agent
         raise AssertionError("the joint never got up to speed")
 
     def test_the_joint_does_not_jump_to_an_unreachable_target(self, sim_core):
         agent = self._moving_agent(sim_core)
-        here = agent.get_joint_state_by_name(JOINT)[0]
+        here = agent.get_joint_state(JOINT)[0]
         agent.clear_actions()
-        agent.set_joint_target_by_name(JOINT, here + 0.1)  # 0.4 m of braking needed
+        agent.set_joint_target(JOINT, here + 0.1)  # 0.4 m of braking needed
 
         previous, largest = here, 0.0
         for _ in range(2000):
             sim_core.step_once()
-            position = agent.get_joint_state_by_name(JOINT)[0]
+            position = agent.get_joint_state(JOINT)[0]
             largest = max(largest, abs(position - previous))
             previous = position
         # Without the fix the first step alone covered the whole 0.1 m.
@@ -515,15 +515,15 @@ class TestTargetInsideBrakingDistance:
 
     def test_it_brakes_at_the_configured_rate_and_recovers(self, sim_core):
         agent = self._moving_agent(sim_core)
-        here = agent.get_joint_state_by_name(JOINT)[0]
+        here = agent.get_joint_state(JOINT)[0]
         target = here + 0.1
         agent.clear_actions()
-        agent.set_joint_target_by_name(JOINT, target)
+        agent.set_joint_target(JOINT, target)
 
         overshot = False
         for _ in range(4000):
             sim_core.step_once()
-            position = agent.get_joint_state_by_name(JOINT)[0]
+            position = agent.get_joint_state(JOINT)[0]
             overshot = overshot or position > target
             if abs(position - target) < 1e-6:
                 break
@@ -536,9 +536,9 @@ class TestTargetInsideBrakingDistance:
         """is_joint_moving() is what a lift asks before releasing its
         passengers, so it has to stay true through the unplannable steps."""
         agent = self._moving_agent(sim_core)
-        here = agent.get_joint_state_by_name(JOINT)[0]
+        here = agent.get_joint_state(JOINT)[0]
         agent.clear_actions()
-        agent.set_joint_target_by_name(JOINT, here + 0.1)
+        agent.set_joint_target(JOINT, here + 0.1)
         sim_core.step_once()
         assert agent.is_joint_moving(JOINT) is True
 
@@ -570,20 +570,20 @@ class TestBrakingStopsWithinItsDistance:
         decel = 0.3  # 0.4 / 0.3 = 1.33 s, which is not a whole number of steps
         agent.set_joint_motion_profile(JOINT, max_velocity=0.4, max_accel=1.0, max_decel=decel)
         index = agent._joint_index_by_name(JOINT)
-        agent.set_joint_target_by_name(JOINT, 5.0)
+        agent.set_joint_target(JOINT, 5.0)
         for _ in range(200):
             sim_core.step_once()
-            if agent.get_joint_state_by_name(JOINT)[0] > 0.5:
+            if agent.get_joint_state(JOINT)[0] > 0.5:
                 break
-        here, speed = agent.get_joint_state_by_name(JOINT)[0], agent._joints[index].speed
+        here, speed = agent.get_joint_state(JOINT)[0], agent._joints[index].speed
 
         agent.clear_actions()
-        agent.set_joint_target_by_name(JOINT, here)  # nowhere to go but to stop
+        agent.set_joint_target(JOINT, here)  # nowhere to go but to stop
 
         furthest = here
         for _ in range(4000):
             sim_core.step_once()
-            furthest = max(furthest, agent.get_joint_state_by_name(JOINT)[0])
+            furthest = max(furthest, agent.get_joint_state(JOINT)[0])
             if agent._joints[index].speed == 0.0:
                 break
         assert furthest - here == pytest.approx(speed**2 / (2 * decel), abs=1e-9)
@@ -602,23 +602,23 @@ class TestTargetAtTheJointsOwnPosition:
     def _moving_agent(self, sim_core):
         agent = Agent.from_params(AgentSpawnParams(urdf_path=URDF, name="a", use_fixed_base=True), sim_core=sim_core)
         agent.set_joint_motion_profile(JOINT, max_velocity=self.SPEED, max_accel=self.ACCEL, max_decel=self.DECEL)
-        agent.set_joint_target_by_name(JOINT, 5.0)
+        agent.set_joint_target(JOINT, 5.0)
         for _ in range(200):
             sim_core.step_once()
-            if agent.get_joint_state_by_name(JOINT)[0] > 0.5:
+            if agent.get_joint_state(JOINT)[0] > 0.5:
                 agent.clear_actions()
                 return agent, agent._joint_index_by_name(JOINT)
         raise AssertionError("the joint never got up to speed")
 
     def test_it_keeps_moving_and_brakes_within_its_limit(self, sim_core):
         agent, index = self._moving_agent(sim_core)
-        here = agent.get_joint_state_by_name(JOINT)[0]
-        agent.set_joint_target_by_name(JOINT, here)
+        here = agent.get_joint_state(JOINT)[0]
+        agent.set_joint_target(JOINT, here)
 
         speeds, previous = [], here
         for _ in range(8):
             sim_core.step_once()
-            position = agent.get_joint_state_by_name(JOINT)[0]
+            position = agent.get_joint_state(JOINT)[0]
             speeds.append((position - previous) / DT)
             previous = position
         assert position > here, "it cannot stop where it stands, so it runs on"
@@ -627,8 +627,8 @@ class TestTargetAtTheJointsOwnPosition:
 
     def test_it_reports_motion_until_it_has_actually_stopped(self, sim_core):
         agent, _ = self._moving_agent(sim_core)
-        here = agent.get_joint_state_by_name(JOINT)[0]
-        agent.set_joint_target_by_name(JOINT, here)
+        here = agent.get_joint_state(JOINT)[0]
+        agent.set_joint_target(JOINT, here)
 
         steps = 0
         for _ in range(4000):
@@ -640,22 +640,22 @@ class TestTargetAtTheJointsOwnPosition:
             raise AssertionError("the joint never settled")
         # 0.4 m/s shed at 0.2 m/s^2 is 2 s of braking before it even turns round.
         assert steps * DT > self.SPEED / self.DECEL
-        assert agent.get_joint_state_by_name(JOINT)[0] == pytest.approx(here, abs=1e-6)
+        assert agent.get_joint_state(JOINT)[0] == pytest.approx(here, abs=1e-6)
 
     def test_a_joint_at_rest_on_its_target_is_still_skipped(self, sim_core):
         """The early exit is the common case and has to stay."""
         agent, index = self._moving_agent(sim_core)
-        agent.set_joint_target_by_name(JOINT, agent.get_joint_state_by_name(JOINT)[0])
+        agent.set_joint_target(JOINT, agent.get_joint_state(JOINT)[0])
         for _ in range(4000):
             sim_core.step_once()
             if not agent.is_joint_moving(JOINT):
                 break
-        settled = agent.get_joint_state_by_name(JOINT)[0]
+        settled = agent.get_joint_state(JOINT)[0]
 
         assert agent._joints[index].speed == 0.0
         for _ in range(10):
             sim_core.step_once()
-        assert agent.get_joint_state_by_name(JOINT)[0] == settled
+        assert agent.get_joint_state(JOINT)[0] == settled
         assert agent.is_joint_moving(JOINT) is False
 
 
@@ -708,10 +708,10 @@ class TestProfileChangedMidTravel:
     def _moving_agent(self, sim_core):
         agent = Agent.from_params(AgentSpawnParams(urdf_path=URDF, name="a", use_fixed_base=True), sim_core=sim_core)
         agent.set_joint_motion_profile(JOINT, max_velocity=0.4, max_accel=1.0)
-        agent.set_joint_target_by_name(JOINT, 5.0)
+        agent.set_joint_target(JOINT, 5.0)
         for _ in range(200):
             sim_core.step_once()
-            if agent.get_joint_state_by_name(JOINT)[0] > 0.5:
+            if agent.get_joint_state(JOINT)[0] > 0.5:
                 return agent, agent._joint_index_by_name(JOINT)
         raise AssertionError("the joint never got up to speed")
 
@@ -729,7 +729,7 @@ class TestProfileChangedMidTravel:
     def test_velocity_is_continuous_and_within_the_new_limit(self, sim_core):
         agent, index = self._moving_agent(sim_core)
         carried = agent._joints[index].speed
-        previous = agent.get_joint_state_by_name(JOINT)[0]
+        previous = agent.get_joint_state(JOINT)[0]
 
         decel = 0.5
         agent.set_joint_motion_profile(JOINT, max_velocity=0.2, max_accel=1.0, max_decel=decel)
@@ -737,7 +737,7 @@ class TestProfileChangedMidTravel:
         speeds = []
         for _ in range(8):
             sim_core.step_once()
-            position = agent.get_joint_state_by_name(JOINT)[0]
+            position = agent.get_joint_state(JOINT)[0]
             speeds.append((position - previous) / DT)
             previous = position
         # No jump at the boundary. A sampled step speed is the average over
@@ -750,12 +750,12 @@ class TestProfileChangedMidTravel:
     def test_it_still_reaches_the_target(self, sim_core):
         agent, _ = self._moving_agent(sim_core)
         agent.clear_actions()
-        agent.set_joint_target_by_name(JOINT, 1.5)
+        agent.set_joint_target(JOINT, 1.5)
         agent.set_joint_motion_profile(JOINT, max_velocity=0.2, max_accel=0.5, max_decel=0.5)
 
         for _ in range(8000):
             sim_core.step_once()
-            if abs(agent.get_joint_state_by_name(JOINT)[0] - 1.5) < 1e-6:
+            if abs(agent.get_joint_state(JOINT)[0] - 1.5) < 1e-6:
                 break
         else:
             raise AssertionError("the joint never reached its target")
@@ -851,5 +851,87 @@ class TestProfileChangedWhileTheCabinBrakes:
             sim_core.step_once()
         else:
             raise AssertionError("the cabin never settled")
-        assert car.get_joint_state_by_name(JOINT)[0] == pytest.approx(TRAVEL, abs=1e-6)
+        assert car.get_joint_state(JOINT)[0] == pytest.approx(TRAVEL, abs=1e-6)
         assert car.current_floor == "1"
+
+
+class TestRampedJointsUseTheClosedForm:
+    """A ramped joint is evaluated from the phase scalars of its trajectory,
+    extracted once per target change, rather than by
+    ``TwoPointInterpolation.get_point()`` every step -- its per-call phase
+    search was most of the cost of a joint step. The motion is the same."""
+
+    def _agent(self, sim_core):
+        agent = Agent.from_params(AgentSpawnParams(urdf_path=URDF, name="a", use_fixed_base=True), sim_core=sim_core)
+        agent.set_joint_motion_profile(JOINT, max_velocity=0.4, max_accel=1.0, max_decel=2.5)
+        return agent, agent._joint_index_by_name(JOINT)
+
+    def _drive(self, sim_core, agent, index, targets):
+        """Step through targets set mid-travel: ahead from speed, behind, from rest."""
+        state = agent._joints[index]
+        trace = []
+        for target, steps in targets:
+            agent.set_joint_target(JOINT, target)
+            for _ in range(steps):
+                sim_core.step_once()
+                trace.append((agent.get_joint_state(JOINT)[0], state.trajectory, state.elapsed))
+        return trace
+
+    TARGETS = [(0.6, 20), (1.2, 25), (0.2, 120), (0.9, 150)]
+
+    def test_the_trace_matches_get_point_step_by_step(self, sim_core):
+        agent, index = self._agent(sim_core)
+        trace = self._drive(sim_core, agent, index, self.TARGETS)
+        planned = [(position, tpi.get_point(elapsed)[0]) for position, tpi, elapsed in trace if tpi is not None]
+        assert len(planned) > 100
+        for position, expected in planned:
+            assert position == pytest.approx(expected, abs=1e-9)
+        assert agent.get_joint_state(JOINT)[0] == pytest.approx(0.9, abs=1e-9)
+
+    def test_a_step_does_not_call_get_point(self, sim_core, monkeypatch):
+        from two_point_interpolation import TwoPointInterpolation
+
+        agent, index = self._agent(sim_core)
+
+        def forbidden(self, t):
+            raise AssertionError("get_point() called on the joint step path")
+
+        monkeypatch.setattr(TwoPointInterpolation, "get_point", forbidden)
+        self._drive(sim_core, agent, index, self.TARGETS)
+        assert agent.get_joint_state(JOINT)[0] == pytest.approx(0.9, abs=1e-9)
+
+    def _released_once_dropped(self, sim_core, agent, index, then):
+        """Plan a trajectory, run ``then`` until the joint drops it, and say
+        whether the solved trajectory was freed with it."""
+        import gc
+        import weakref
+
+        state = agent._joints[index]
+        agent.set_joint_target(JOINT, 0.6)
+        sim_core.step_once()
+        planned = weakref.ref(state.trajectory)
+        then()
+        assert state.trajectory is None
+        gc.collect()
+        return planned() is None
+
+    def test_an_arrived_joint_keeps_no_trajectory_alive(self, sim_core):
+        agent, index = self._agent(sim_core)
+
+        def arrive():
+            for _ in range(200):
+                sim_core.step_once()
+
+        assert self._released_once_dropped(sim_core, agent, index, arrive)
+
+    def test_a_braking_joint_keeps_no_trajectory_alive(self, sim_core):
+        agent, index = self._agent(sim_core)
+
+        def turn_back():
+            for _ in range(10):
+                sim_core.step_once()
+            # Behind the joint while it moves ahead: braked, not planned.
+            agent.set_joint_target(JOINT, 0.0)
+            sim_core.step_once()
+
+        assert self._released_once_dropped(sim_core, agent, index, turn_back)

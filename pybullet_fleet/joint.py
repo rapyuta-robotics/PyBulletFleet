@@ -10,10 +10,11 @@ was doing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 from typing import Any, Optional
 
+from pybullet_fleet._tpi import PhaseProfile, extract_profile
 from pybullet_fleet._tpi_state import capture_tpi_state, restore_tpi_state
 
 
@@ -32,8 +33,8 @@ class KinematicJoint:
     Each is ``None`` until given one, and :attr:`max_velocity` then falls back
     to the URDF's ``<limit velocity>``.
 
-    *Execution*: :attr:`speed`, :attr:`trajectory`, :attr:`trajectory_target`
-    and :attr:`braking` belong to the update loop. They say how the joint is
+    *Execution*: :attr:`speed`, :attr:`trajectory`, :attr:`trajectory_target`,
+    :attr:`elapsed` and :attr:`braking` belong to the update loop. They say how the joint is
     getting to its target right now, and mean nothing to anyone outside a
     step.
     """
@@ -61,13 +62,27 @@ class KinematicJoint:
     #: speed reaches exactly zero short of the target, which is what keeps
     #: that step counted as motion.
     braking: bool = False
+    #: Time :attr:`trajectory` has been followed, advanced by ``dt`` each step;
+    #: the trajectory starts at ``t0 = 0`` and is evaluated at this time.
+    #: Counted per joint rather than read off a clock, so a checkpoint carries
+    #: it exactly and a restored joint repeats the same steps.
+    elapsed: float = 0.0
+    #: :attr:`trajectory` as closed-form phase scalars, and the trajectory
+    #: they were read from. Derived, so neither is compared or captured;
+    #: :meth:`clear_trajectory` drops both with the trajectory.
+    _profile: Optional[PhaseProfile] = field(default=None, repr=False, compare=False)
+    _profile_of: Optional[Any] = field(default=None, repr=False, compare=False)
 
-    def capture_execution(self, name: str, clock: float) -> dict:
-        """Represent this joint's command and trajectory at a completed step."""
+    def capture_execution(self, name: str) -> dict:
+        """Represent this joint's command and trajectory at a completed step.
+
+        ``t0_offset`` is when the trajectory started, relative to this step:
+        minus :attr:`elapsed`, which a restore reads back exactly.
+        """
         trajectory = None
         if self.trajectory is not None:
             trajectory = capture_tpi_state(self.trajectory)
-            trajectory["t0_offset"] = trajectory.pop("t0") - clock
+            trajectory["t0_offset"] = trajectory.pop("t0") - self.elapsed
             trajectory["target"] = self.trajectory_target
         return {
             "name": name,
@@ -82,7 +97,7 @@ class KinematicJoint:
         }
 
     @classmethod
-    def from_execution(cls, index: int, state: dict, clock: float) -> "KinematicJoint":
+    def from_execution(cls, index: int, state: dict) -> "KinematicJoint":
         """Validate and rebuild one joint without changing the live robot."""
 
         def finite(value: object) -> bool:
@@ -105,6 +120,7 @@ class KinematicJoint:
         trajectory_data = state.get("trajectory")
         trajectory = None
         trajectory_target = None
+        elapsed = 0.0
         if trajectory_data is not None:
             required = {"p0", "pe", "v0", "ve", "vmax", "accel", "decel", "t0_offset", "target"}
             if not isinstance(trajectory_data, dict) or set(trajectory_data) != required or braking:
@@ -118,10 +134,11 @@ class KinematicJoint:
             trajectory = restore_tpi_state(
                 {
                     **{key: value for key, value in trajectory_data.items() if key not in {"t0_offset", "target"}},
-                    "t0": clock + trajectory_data["t0_offset"],
+                    "t0": 0.0,
                 }
             )
             trajectory_target = float(trajectory_data["target"])
+            elapsed = -float(trajectory_data["t0_offset"])
         return cls(
             index=index,
             position=float(position),
@@ -133,6 +150,7 @@ class KinematicJoint:
             trajectory=trajectory,
             trajectory_target=trajectory_target,
             braking=braking,
+            elapsed=elapsed,
         )
 
     @property
@@ -150,6 +168,20 @@ class KinematicJoint:
         """
         return self.trajectory is not None or self.braking or bool(self.speed)
 
+    def trajectory_profile(self) -> PhaseProfile:
+        """:attr:`trajectory` as the scalars :func:`trapezoid_point` evaluates.
+
+        Read once per trajectory, however it was set -- planned by the update
+        loop or rebuilt from a checkpoint -- and kept until it changes.
+        """
+        trajectory = self.trajectory
+        if trajectory is None:
+            raise RuntimeError(f"Joint {self.index} has no trajectory")
+        if self._profile_of is not trajectory:
+            self._profile = extract_profile(trajectory)
+            self._profile_of = trajectory
+        return self._profile
+
     @property
     def decel(self) -> Optional[float]:
         """The braking rate, which follows the acceleration when unset."""
@@ -158,8 +190,7 @@ class KinematicJoint:
     def clear_motion(self) -> None:
         """Put the joint at rest: no speed, no plan, not braking."""
         self.speed = 0.0
-        self.trajectory = None
-        self.trajectory_target = None
+        self.clear_trajectory()
         self.braking = False
 
     def clear_trajectory(self) -> None:
@@ -173,3 +204,7 @@ class KinematicJoint:
         """
         self.trajectory = None
         self.trajectory_target = None
+        self.elapsed = 0.0
+        # The cached profile would otherwise keep the dropped solver alive.
+        self._profile = None
+        self._profile_of = None

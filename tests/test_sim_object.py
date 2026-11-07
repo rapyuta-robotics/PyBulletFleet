@@ -1456,6 +1456,32 @@ class TestSharedShapesCache:
         # Cache should remain empty — primitives are never stored
         assert len(SimObject._shared_shapes) == 0
 
+    def test_a_mesh_collision_shape_that_fails_is_cached_visual_only_and_warned_once(self, pybullet_env, monkeypatch, caplog):
+        """A failed mesh collision shape gives a visual-only body. The result is
+        cached, so later spawns with the same shape reuse it without another
+        attempt or warning: the same mesh would fail the same way each time."""
+        import logging
+
+        attempts = []
+
+        def failing(shape, client):
+            attempts.append(shape.mesh_path)
+            raise RuntimeError("cannot build this mesh")
+
+        monkeypatch.setattr(SimObject, "_create_collision_shape", staticmethod(failing))
+        visual = ShapeParams(shape_type="mesh", mesh_path=MESH_PATH, mesh_scale=[0.2, 0.2, 0.2])
+        collision = ShapeParams(shape_type="mesh", mesh_path=MESH_PATH, mesh_scale=[0.2, 0.2, 0.2])
+
+        with caplog.at_level(logging.WARNING, logger="pybullet_fleet.sim_object"):
+            first = SimObject.create_shared_shapes(visual, collision, physics_client_id=pybullet_env)
+            second = SimObject.create_shared_shapes(visual, collision, physics_client_id=pybullet_env)
+
+        assert first == second and first[0] >= 0 and first[1] == -1
+        assert attempts == [MESH_PATH], "built once, then reused from the cache"
+        warnings = [r.getMessage() for r in caplog.records if "Failed to create collision shape" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "reuse it without another attempt" in warnings[0]
+
 
 # -------------------------------------------------------------------
 # SimObject._needs_update and update() hook

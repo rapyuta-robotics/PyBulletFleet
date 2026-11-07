@@ -428,7 +428,7 @@ def test_an_initial_speed_over_vmax_first_slows_down_to_it():
 def test_trapezoid_speed_matches_the_trajectory():
     """The batched speed lookup is the trajectory's own velocity, from rest,
     from speed and reversing, and the derivative of trapezoid_distance."""
-    from pybullet_fleet._tpi import build_tpi_from_speed, extract_phase_params, trapezoid_distance, trapezoid_speed
+    from pybullet_fleet._tpi import build_tpi_from_speed, extract_profile, trapezoid_distance, trapezoid_speed
 
     for v0 in (0.0, 0.5, 0.999 * VMAX, -0.75 * VMAX, -VMAX):
         for distance in (0.3, 1.0, 3.0, 10.0):
@@ -437,11 +437,20 @@ def test_trapezoid_speed_matches_the_trajectory():
                     tpi = build_tpi_from_speed(p0=0.0, pe=distance, vmax=VMAX, accel=accel, t0=0.0, v0=v0, decel=decel)
                 except ValueError:
                     continue  # inside the braking distance
-                t_accel, t_const, t_total, accel_eff, decel_eff = extract_phase_params(tpi)
+                profile = extract_profile(tpi)
+                t_total = profile.t_total
                 tau = np.linspace(-0.1, 1.05 * t_total, 400)
                 ta, tc, tt, a, d, v0s, dist_total = (
                     np.full_like(tau, value)
-                    for value in (t_accel, t_const, t_total, accel_eff, decel_eff, float(tpi.v0), distance)
+                    for value in (
+                        profile.t_accel,
+                        profile.t_const,
+                        t_total,
+                        profile.accel,
+                        profile.decel,
+                        profile.v0,
+                        distance,
+                    )
                 )
                 speed = trapezoid_speed(tau, ta, tc, tt, a, decel=d, v0=v0s)
                 expected = [tpi.get_point(max(t, 0.0))[1] for t in tau]

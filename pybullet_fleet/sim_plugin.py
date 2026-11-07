@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type
 
 from pybullet_fleet._frequency import FrequencyGate
 from pybullet_fleet.plugin_utils import PluginRegistry, from_config_introspect
+from pybullet_fleet.types import CallbackPhase
 
 if TYPE_CHECKING:
     from pybullet_fleet.core_simulation import MultiRobotSimulationCore
@@ -68,11 +69,20 @@ def register_sim_plugin(name: str, cls: Type["SimPlugin"]) -> None:
     _registry.register(name, cls)
 
 
+def _as_phase(phase: "CallbackPhase | str") -> CallbackPhase:
+    """``phase`` as a :class:`CallbackPhase`, or ``ValueError`` naming the valid values."""
+    try:
+        return CallbackPhase(phase)
+    except ValueError:
+        raise ValueError("phase must be one of {}, got {!r}".format([p.value for p in CallbackPhase], phase)) from None
+
+
 def create_sim_plugin(
     name: str,
     sim_core: "MultiRobotSimulationCore",
     config: Optional[Dict[str, Any]] = None,
     frequency: Optional[float] = None,
+    phase: Optional[str] = None,
 ) -> "SimPlugin":
     """Create a sim plugin by registered *name*.
 
@@ -83,6 +93,8 @@ def create_sim_plugin(
         sim_core: The simulation core instance.
         config: Optional configuration dict.
         frequency: Step frequency in Hz (``None`` = every step).
+        phase: When in the step ``on_step()`` runs (``"pre_step"``,
+            ``"step"`` or ``"post_step"``); ``None`` keeps the class's own.
 
     Raises:
         KeyError: If *name* is not registered.
@@ -90,6 +102,8 @@ def create_sim_plugin(
     entry: Dict[str, Any] = {"type": name, "config": config or {}}
     if frequency is not None:
         entry["frequency"] = frequency
+    if phase is not None:
+        entry["phase"] = phase
     return create_sim_plugin_from_entry(entry, sim_core)
 
 
@@ -104,19 +118,22 @@ def create_sim_plugin_from_entry(
     - **Registry shorthand**: ``{"type": "workcell", "config": {...}}``
     - **Dotted path**: ``{"class": "my_pkg.MyPlugin", "config": {...}}``
 
-    Both formats support an optional ``frequency`` field (Hz).
+    Both formats support an optional ``frequency`` field (Hz) and an
+    optional ``phase`` field (``pre_step``, ``step`` or ``post_step``; see
+    :attr:`SimPlugin.step_phase`).
 
     Args:
         entry: Plugin definition dict with ``type`` or ``class`` key.
         sim_core: The simulation core instance.
 
     Returns:
-        Instantiated :class:`SimPlugin` with ``frequency`` set.
+        Instantiated :class:`SimPlugin` with ``frequency`` and ``phase`` set.
 
     Raises:
         KeyError: If ``type`` is not in the registry.
         TypeError: If ``class`` does not resolve to a SimPlugin subclass.
-        ValueError: If neither ``type`` nor ``class`` is present.
+        ValueError: If neither ``type`` nor ``class`` is present, or
+            ``frequency`` or ``phase`` is not valid.
     """
     cls = _registry.resolve_from_entry(entry, SimPlugin)
     config = entry.get("config", {})
@@ -124,6 +141,8 @@ def create_sim_plugin_from_entry(
 
     plugin = cls.from_config(sim_core, config)
     plugin.frequency = freq
+    if entry.get("phase") is not None:
+        plugin.step_phase = entry["phase"]
     return plugin
 
 
@@ -168,12 +187,49 @@ class SimPlugin:
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
+        if "default_step_phase" in cls.__dict__:
+            cls.default_step_phase = _as_phase(cls.default_step_phase)  # fails at class definition if invalid
         _registry.auto_register_subclass(cls)
+
+    #: When in the step :meth:`on_step` runs, by default for this class: a
+    #: :class:`~pybullet_fleet.types.CallbackPhase` or its value. A subclass may
+    #: set ``"pre_step"`` or ``"post_step"``; ``register_plugin(phase=...)`` and
+    #: the YAML ``phase`` field override it per instance. Named ``step_phase``,
+    #: not ``phase``, so that a plugin's own state can keep that common name.
+    default_step_phase: "CallbackPhase | str" = CallbackPhase.STEP
 
     def __init__(self, sim_core: "MultiRobotSimulationCore") -> None:
         self.sim_core = sim_core
         self.config: Dict[str, Any] = {}
         self._frequency_gate = FrequencyGate()  # schedule for ``frequency``
+        self._step_phase = _as_phase(type(self).default_step_phase)
+        self._subscribed = False  # set by register_plugin(): step_phase is fixed from then on
+
+    @property
+    def step_phase(self) -> CallbackPhase:
+        """When in the step :meth:`on_step` runs, as for ``register_callback(phase=...)``.
+
+        - ``PRE_STEP``: at the start of the step, before the clock advances
+          and before anything moves (``sim_time`` is the previous state's).
+        - ``STEP`` (default): after the objects have been updated, before the
+          poses are written and the collision check.
+        - ``POST_STEP``: at the end of the step, after the collision check.
+
+        Read when the plugin is registered: set it before, through
+        ``register_plugin(phase=...)``, the YAML ``phase`` field or
+        :attr:`default_step_phase`. Setting it once the plugin is registered
+        raises ``RuntimeError``.
+        """
+        return self._step_phase
+
+    @step_phase.setter
+    def step_phase(self, phase: "CallbackPhase | str") -> None:
+        if getattr(self, "_subscribed", False):
+            raise RuntimeError(
+                f"{type(self).__name__}.step_phase is fixed once the plugin is registered; "
+                "set it before, with register_plugin(phase=...), the YAML phase field or default_step_phase"
+            )
+        self._step_phase = _as_phase(phase)
 
     @property
     def frequency(self) -> Optional[float]:

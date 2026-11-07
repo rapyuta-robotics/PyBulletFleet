@@ -38,7 +38,7 @@ def _box(sim_core, z=0.2):
 
 
 def _position(agent):
-    return agent.get_joint_state_by_name(JOINT)[0]
+    return agent.get_joint_state(JOINT)[0]
 
 
 class TestSetJointPosition:
@@ -62,7 +62,7 @@ class TestSetJointPosition:
     def test_a_joint_on_its_way_elsewhere_stops_where_it_is_put(self, sim_core):
         agent = _lift(sim_core)
         agent.set_joint_motion_profile(JOINT, max_velocity=0.5, max_accel=1.0, max_decel=1.0)
-        agent.set_joint_target_by_name(JOINT, 4.0)
+        agent.set_joint_target(JOINT, 4.0)
         for _ in range(20):
             sim_core.step_once()
         assert agent.is_joint_moving(JOINT)
@@ -74,7 +74,7 @@ class TestSetJointPosition:
         # The old target is replaced and the ramp's speed is gone: no braking past 1.0.
         assert _position(agent) == pytest.approx(1.0)
         assert not agent.is_joint_moving(JOINT)
-        assert agent.is_joint_at_target_by_name(JOINT, 1.0)
+        assert agent.is_joint_at_target(JOINT, 1.0)
 
     def test_the_index_works_as_well_as_the_name(self, sim_core):
         agent = _lift(sim_core)
@@ -173,8 +173,8 @@ class TestSetJointsPositions:
         assert agent.set_joints_positions(positions)
 
         for name, position in positions.items():
-            assert agent.get_joint_state_by_name(name)[0] == pytest.approx(position)
-        assert agent.get_joint_state_by_name("wrist_to_end")[0] == pytest.approx(0.0)
+            assert agent.get_joint_state(name)[0] == pytest.approx(position)
+        assert agent.get_joint_state("wrist_to_end")[0] == pytest.approx(0.0)
 
     def test_a_list_places_every_joint_and_ignores_the_fixed_ones(self, sim_core):
         agent = _manipulator(sim_core)
@@ -191,14 +191,14 @@ class TestSetJointsPositions:
 
         assert not agent.set_joints_positions([0.5])
 
-        assert agent.get_joint_state_by_name("mount_to_shoulder")[0] == pytest.approx(0.0)
+        assert agent.get_joint_state("mount_to_shoulder")[0] == pytest.approx(0.0)
 
     def test_a_dict_naming_a_fixed_or_unknown_joint_still_sets_the_others(self, sim_core):
         agent = _manipulator(sim_core)
 
         assert not agent.set_joints_positions({"base_to_mount": 1.0, "no_such_joint": 1.0, "mount_to_shoulder": 0.5})
 
-        assert agent.get_joint_state_by_name("mount_to_shoulder")[0] == pytest.approx(0.5)
+        assert agent.get_joint_state("mount_to_shoulder")[0] == pytest.approx(0.5)
 
     def test_attached_objects_follow_once_for_all_the_joints(self, sim_core, monkeypatch):
         agent = _lift(sim_core)

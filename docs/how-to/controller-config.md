@@ -121,8 +121,8 @@ runtime.
 `ControllerParams` holds the limits and behaviour flags shared by kinematic
 controllers. `Agent.controller_params` is the authoritative instance. The
 legacy `Agent.max_linear_vel`, `max_angular_vel`, `max_linear_accel`,
-`max_linear_decel`, and `max_angular_accel` properties are read-only views of
-it.
+`max_linear_decel`, `max_angular_accel`, and `max_angular_decel` properties
+are read-only views of it.
 
 ```python
 agent.controller_params.max_linear_vel = [2.0, 1.0, 0.0]
@@ -130,6 +130,10 @@ agent.controller_params.max_linear_vel = [2.0, 1.0, 0.0]
 # A vehicle that brakes harder than it accelerates.
 agent.controller_params.max_linear_accel = [1.5, 1.5, 0.0]
 agent.controller_params.max_linear_decel = [3.0, 3.0, 0.0]
+
+# A turn that brakes more gently than it starts.
+agent.controller_params.max_angular_accel = 4.0
+agent.controller_params.max_angular_decel = 1.0
 ```
 
 | Field | Meaning |
@@ -139,6 +143,7 @@ agent.controller_params.max_linear_decel = [3.0, 3.0, 0.0]
 | `max_linear_accel` | Scalar acceleration cap, or `[ax, ay, az]` per-axis cap in the body frame, used to construct translation trajectories. Differential drive uses `ax`. |
 | `max_linear_decel` | Braking cap, same form and frame as `max_linear_accel`. Unset mirrors `max_linear_accel`, which is the symmetric trapezoid every configuration had before this field existed. |
 | `max_angular_accel` | Scalar acceleration cap, or `[αx, αy, αz]` per-axis cap, used to construct rotation trajectories. Differential drive uses `αz`. |
+| `max_angular_decel` | Braking cap for rotation, same form as `max_angular_accel`. Unset mirrors `max_angular_accel`, which is the symmetric trapezoid every configuration had before this field existed. Must be above zero (per-axis: components of zero or more, yaw above zero); anything else raises `ValueError` when set. |
 | `cmd_vel_timeout` | Velocity-command watchdog in seconds; `0.0` disables it. |
 | `navigation_2d` | `True` preserves current Z for pose trajectories. `None` and `False` follow goal Z. |
 | `default_direction` | Default `set_path()` direction for differential drive. |
@@ -383,13 +388,13 @@ spatial-grid work.
 | `batch_omni` | `omni` |
 | `batch_differential` | `differential` |
 
-They honour `max_linear_decel` like the per-agent controllers. The batched
-path evaluates a closed form rather than the `TwoPointInterpolation` itself,
-and that form takes the braking scalar as its own argument, so the two agree
-to floating-point noise on the same profile.
-
-Rotation is the exception: angular limits carry no separate deceleration, so
-a turn is always symmetric.
+They honour `max_linear_decel` and `max_angular_decel` like the per-agent
+controllers. The batched path evaluates a closed form rather than the
+`TwoPointInterpolation` itself, and that form takes the braking scalar as its
+own argument, so the two agree to floating-point noise on the same profile,
+for translation and rotation alike. Both turn at the yaw (`z`) component of a
+per-axis angular limit (`max_angular_vel`, `max_angular_accel`,
+`max_angular_decel` given as `[x, y, z]`).
 
 ### Python API
 

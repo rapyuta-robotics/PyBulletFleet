@@ -107,6 +107,38 @@ class TestEventBusUnit:
         assert a_results == [1]
         assert b_results == []
 
+    def test_a_handler_added_during_an_emit_runs_from_the_next_one(self):
+        bus = EventBus()
+        order = []
+
+        def adder():
+            order.append("adder")
+            if len(order) == 1:
+                bus.on("test", lambda: order.append("added"), priority=-10)
+
+        bus.on("test", adder)
+        bus.emit("test")
+        assert order == ["adder"]
+        bus.emit("test")
+        assert order == ["adder", "added", "adder"]
+
+    def test_a_handler_removed_during_an_emit_still_runs_in_it(self):
+        bus = EventBus()
+        order = []
+
+        def second():
+            order.append("second")
+
+        def first():
+            order.append("first")
+            bus.off("test", second)
+
+        bus.on("test", first)
+        bus.on("test", second)
+        bus.emit("test")
+        bus.emit("test")
+        assert order == ["first", "second", "first"]
+
 
 # === SimEvents constants tests ===
 
@@ -117,6 +149,7 @@ class TestSimEvents:
     def test_constants_match_expected_names(self):
         """Verify each constant maps to the expected raw string (implies str type)."""
         assert SimEvents.PRE_STEP == "pre_step"
+        assert SimEvents.STEP == "step"
         assert SimEvents.POST_STEP == "post_step"
         assert SimEvents.PAUSED == "paused"
         assert SimEvents.RESUMED == "resumed"

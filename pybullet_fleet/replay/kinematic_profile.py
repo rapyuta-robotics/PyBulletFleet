@@ -19,6 +19,7 @@ from pybullet_fleet.agent import Agent, AgentSpawnParams
 from pybullet_fleet.controller import DifferentialController, OmniController
 from pybullet_fleet.controller_params import ControllerParams
 from pybullet_fleet.core_simulation import MultiRobotSimulationCore, SimulationParams
+from pybullet_fleet.events import _TIER_HANDLER
 from pybullet_fleet.geometry import Pose
 from pybullet_fleet.sim_object import PRIMITIVE_SHAPE_TYPES, ShapeParams, SimObject, SimObjectSpawnParams
 from pybullet_fleet.types import CollisionMode, ControllerMode, GoalReplacement, MotionMode, MovementDirection
@@ -38,12 +39,23 @@ from .state_recording import (
 
 PROFILE_ID = "pbf.kinematic.v4"
 PROFILE_VERSION = 4
+#: Version 2: each joint entry carries its motion limits (``max_velocity``,
+#: ``max_accel``, ``max_decel``) with its execution (signed ``speed``,
+#: ``braking`` and the solved ``trajectory``), so a ramped joint restored into
+#: a fresh Agent resumes the same path. Version 1 had position and target only.
+AGENT_STATE_VERSION = 2
 _SUPPORTED_CONTROLLER_NAMES_BY_TYPE = {
     OmniController: OmniController._registry_name,
     DifferentialController: DifferentialController._registry_name,
 }
 _SUPPORTED_CONTROLLER_TYPES = frozenset(_SUPPORTED_CONTROLLER_NAMES_BY_TYPE)
 _SUPPORTED_CONTROLLER_NAMES = frozenset(_SUPPORTED_CONTROLLER_NAMES_BY_TYPE.values())
+_CONTROLLER_PARAMETER_NAMES = frozenset(field.name for field in fields(ControllerParams))
+# ``max_angular_decel`` joined ControllerParams after v4 artifacts were first
+# written. Without it, rotation braked at ``max_angular_accel``, which is what
+# leaving it unset (the ControllerParams default) still means, so an artifact
+# that lacks it restores the same rotation and stays loadable.
+_OPTIONAL_CONTROLLER_PARAMETER_NAMES = frozenset({"max_angular_decel"})
 
 
 def _asset_fingerprint(path: str) -> str:
@@ -67,10 +79,19 @@ def _controller_spec(agent: Agent) -> dict:
 
 
 def _validate_controller_parameters(parameters: dict) -> None:
-    if not isinstance(parameters, dict) or set(parameters) != {field.name for field in fields(ControllerParams)}:
+    if not isinstance(parameters, dict) or not (
+        _CONTROLLER_PARAMETER_NAMES - _OPTIONAL_CONTROLLER_PARAMETER_NAMES <= set(parameters) <= _CONTROLLER_PARAMETER_NAMES
+    ):
         raise ValueError("Unsupported controller parameters")
-    for name in ("max_linear_vel", "max_angular_vel", "max_linear_accel", "max_linear_decel", "max_angular_accel"):
-        value = parameters[name]
+    for name in (
+        "max_linear_vel",
+        "max_angular_vel",
+        "max_linear_accel",
+        "max_linear_decel",
+        "max_angular_accel",
+        "max_angular_decel",
+    ):
+        value = parameters.get(name)
         if value is None:
             continue
         if isinstance(value, list):
@@ -251,8 +272,16 @@ def restore_attachment(sim: MultiRobotSimulationCore, obj: SimObject, value: dic
 
 def _validate_agent(name: str, construction: dict, entry: dict) -> None:
     _keys(entry, {"type", "version", "state"}, "Agent entry")
-    if entry["type"] != "kinematic_agent" or entry["version"] != 2:
-        raise ValueError(f"Unsupported Agent state type: {name!r}")
+    if entry["type"] != "kinematic_agent":
+        raise ValueError(
+            f"Unsupported Agent state type for {name!r}: {entry['type']!r}; this build restores 'kinematic_agent'"
+        )
+    # type() as well: 2.0 == 2 and True == 1, and neither is a version.
+    if type(entry["version"]) is not int or entry["version"] != AGENT_STATE_VERSION:
+        raise ValueError(
+            f"Unsupported Agent state version for {name!r}: 'kinematic_agent' version {entry['version']!r}; "
+            f"this build restores 'kinematic_agent' version {AGENT_STATE_VERSION}"
+        )
     value = _keys(entry["state"], {"pose", "velocity", "angular_velocity", "moving", "controller", "joints"}, "Agent state")
     _vector(value["pose"]["position"], 3, "Agent position")
     _quaternion(value["pose"]["orientation"], "Agent orientation")
@@ -554,7 +583,11 @@ class KinematicProfile:
         if any(id(info["func"]) not in allowed or info["gate"].frequency is not None for info in sim._callbacks):
             raise ValueError("Undeclared simulation callback is not checkpointable")
         event_allowed = {id(handler) for handler in self.allowed_event_handlers}
-        if any(id(handler) not in event_allowed for handlers in sim.events._handlers.values() for _, handler in handlers):
+        # Callbacks and plugins share the bus; they are checked above. A
+        # frequency-limited handler, like a callback, keeps a schedule that is not checkpointed.
+        if any(
+            id(sub.handler) not in event_allowed or sub.gate is not None for _, sub in sim.events._subscriptions(_TIER_HANDLER)
+        ):
             raise ValueError("Undeclared event handler is not checkpointable")
 
     def construction(self, sim: MultiRobotSimulationCore) -> dict:
@@ -646,7 +679,11 @@ class KinematicProfile:
             ):
                 raise ValueError(f"Unsupported Agent metadata or controller change: {agent.name!r}")
             names.add(agent.name)
-            agents[agent.name] = {"type": "kinematic_agent", "version": 2, "state": capture_agent_state(agent)}
+            agents[agent.name] = {
+                "type": "kinematic_agent",
+                "version": AGENT_STATE_VERSION,
+                "state": capture_agent_state(agent),
+            }
         for obj in sim.sim_objects:
             if obj in sim.agents:
                 continue

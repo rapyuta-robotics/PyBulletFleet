@@ -322,6 +322,43 @@ def test_frequency_callback_is_rejected_even_if_allowlisted(tmp_path: Path) -> N
         p.disconnect(sim.client)
 
 
+def test_frequency_event_handler_is_rejected_even_if_allowlisted(tmp_path: Path) -> None:
+    from pybullet_fleet.core_simulation import MultiRobotSimulationCore, SimulationParams
+    from pybullet_fleet.events import SimEvents
+
+    sim = MultiRobotSimulationCore(SimulationParams(gui=False, physics=False, collision_check_frequency=0))
+    try:
+
+        def handler(**_):
+            pass
+
+        sim.events.on(SimEvents.POST_STEP, handler, frequency=10)
+        with pytest.raises(ValueError, match="Undeclared event handler"):
+            sim.configure_state_recording(
+                profile=KinematicProfile(allowed_event_handlers=(handler,)), output=str(tmp_path / "recording")
+            )
+    finally:
+        p.disconnect(sim.client)
+
+
+def test_allowlisted_callback_is_not_mistaken_for_an_event_handler(tmp_path: Path) -> None:
+    """Callbacks subscribe to the event bus too; only the callback allowlist applies to them."""
+    from pybullet_fleet.core_simulation import MultiRobotSimulationCore, SimulationParams
+
+    sim = MultiRobotSimulationCore(SimulationParams(gui=False, physics=False, collision_check_frequency=0))
+    try:
+
+        def callback(_sim, _dt):
+            pass
+
+        sim.register_callback(callback)
+        sim.configure_state_recording(
+            profile=KinematicProfile(allowed_callbacks=(callback,)), output=str(tmp_path / "recording")
+        )
+    finally:
+        p.disconnect(sim.client)
+
+
 @pytest.mark.parametrize("change", ["metadata", "controller", "pickable", "batch"])
 def test_live_agent_construction_change_is_rejected(change: str) -> None:
     from pybullet_fleet.agent import Agent

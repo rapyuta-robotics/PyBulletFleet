@@ -126,7 +126,7 @@ def assert_joints_near(agent, targets, tol, label=""):
 def assert_joints_near_dict(agent, targets_dict, tol, label=""):
     """Assert named joints are near their target values (dict-based, by name)."""
     for name, target in targets_dict.items():
-        pos = agent.get_joint_state_by_name(name)[0]
+        pos = agent.get_joint_state(name)[0]
         assert abs(pos - target) < tol, f"{label} Joint '{name}': expected ~{target:.3f}, got {pos:.3f}"
 
 
@@ -997,7 +997,7 @@ class TestMobileManipulatorE2E:
         assert_ee_pos_near(robot, ee_link, [0.5, -1.5, 0.6], self.EE_TOL, "After IK pick:")
         # Wheels should still be near 0 (IK locked them)
         for wheel_name in ("base_to_left_wheel", "base_to_right_wheel"):
-            wheel_pos = robot.get_joint_state_by_name(wheel_name)[0]
+            wheel_pos = robot.get_joint_state(wheel_name)[0]
             assert abs(wheel_pos) < 0.1, f"Wheel '{wheel_name}' should be near 0 (IK locked), got {wheel_pos:.3f}"
 
         # Phase 2: Carry + navigate + IK drop
@@ -1034,5 +1034,5 @@ class TestMobileManipulatorE2E:
         )
         # Wheels should still be near 0 (IK locked them)
         for wheel_name in ("base_to_left_wheel", "base_to_right_wheel"):
-            wheel_pos = robot.get_joint_state_by_name(wheel_name)[0]
+            wheel_pos = robot.get_joint_state(wheel_name)[0]
             assert abs(wheel_pos) < 0.1, f"Wheel '{wheel_name}' should be near 0 (IK locked), got {wheel_pos:.3f}"

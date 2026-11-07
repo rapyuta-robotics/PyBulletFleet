@@ -60,7 +60,7 @@ from pybullet_fleet.types import ControllerMode, GoalReplacement, MovementDirect
 
 from two_point_interpolation import TwoPointInterpolation
 
-from pybullet_fleet._tpi import build_tpi, build_tpi_from_speed, extract_phase_params
+from pybullet_fleet._tpi import build_tpi, build_tpi_from_speed, extract_profile
 from pybullet_fleet._replacement import GoalReplacementPolicy, _checked_braking_request
 import pybullet_fleet._replan as _replan
 from pybullet_fleet._replan import HEADING_TOL
@@ -152,13 +152,16 @@ SET_PATH_OVERRIDE_DEPRECATION = (
 def _class_statement_level() -> int:
     """``stacklevel`` for a warning from ``__init_subclass__`` that points at the class statement.
 
-    Class creation goes through the metaclass (``ABCMeta``, from abc.py) first.
+    Class creation goes through the metaclass (``ABCMeta.__new__``) first.
+    Its frames are recognised by the code's own file name, not ``abc.__file__``:
+    from Python 3.11 the module is frozen and its frames report ``<frozen abc>``.
     """
     import abc
     import sys
 
+    abc_file = abc.ABCMeta.__new__.__code__.co_filename
     frame, level = sys._getframe(2), 2  # stacklevel 1 is __init_subclass__ itself
-    while frame is not None and frame.f_code.co_filename == abc.__file__:
+    while frame is not None and frame.f_code.co_filename == abc_file:
         frame, level = frame.f_back, level + 1
     return level
 
@@ -937,10 +940,12 @@ class KinematicController(GoalReplacementPolicy, Controller):
 
         angular_vel = self.params.scalar_max_angular_vel()
         angular_accel = self.params.scalar_max_angular_accel()
+        angular_decel = self.params.scalar_max_angular_decel()
 
-        self._tpi_rotation_angle = build_tpi(p0=0.0, pe=rotation_angle, vmax=angular_vel, accel=angular_accel, t0=t0)
-        _, _, t_tot, _, _ = extract_phase_params(self._tpi_rotation_angle)
-        if t_tot <= 0.0:
+        self._tpi_rotation_angle = build_tpi(
+            p0=0.0, pe=rotation_angle, vmax=angular_vel, accel=angular_accel, t0=t0, decel=angular_decel
+        )
+        if extract_profile(self._tpi_rotation_angle).t_total <= 0.0:
             # build_tpi produced a degenerate zero-duration trajectory (velocity or
             # accel limits are too small to plan the rotation). Treat as failure so
             # the caller can fall back gracefully instead of silently snapping.

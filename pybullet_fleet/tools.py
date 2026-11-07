@@ -114,6 +114,10 @@ def resolve_link_index(body_id: int, link: Union[int, str], physics_client_id: i
     Args:
         body_id: PyBullet body ID
         link: Link index (int) or name (str). -1 or "base_link" for base link.
+        physics_client_id: PyBullet client the body lives on. Pass the
+            simulation's client (``sim_core.client``) when more than one
+            simulation runs in the process; the default is PyBullet's
+            first client.
 
     Returns:
         Link index (int). Returns -1 if link is "base_link" or if link name not found.
@@ -151,7 +155,10 @@ def resolve_joint_index(body_id: int, joint: Union[int, str], physics_client_id:
     Args:
         body_id: PyBullet body ID
         joint: Joint index (int) or name (str)
-        physics_client_id: The client the body lives on (PyBullet's default otherwise)
+        physics_client_id: PyBullet client the body lives on. Pass the
+            simulation's client (``sim_core.client``) when more than one
+            simulation runs in the process; the default is PyBullet's
+            first client.
 
     Returns:
         Joint index (int). Returns -1 if joint name not found.

@@ -35,6 +35,7 @@ import numpy as np
 
 from pybullet_fleet._replacement import GoalReplacementPolicy, _checked_braking_request
 import pybullet_fleet._replan as _replan
+from pybullet_fleet._tpi import build_tpi, extract_profile
 from pybullet_fleet.path_request import PathRequest, PathRequestState, request_state
 from pybullet_fleet.controller import Controller, _log_dropped, _set_braking_path, send_request
 from pybullet_fleet.types import GoalReplacement, MovementDirection
@@ -75,6 +76,16 @@ class BatchKinematicController(GoalReplacementPolicy, Controller):
         # Usage:
         #   AgentManager(sim_core=sim, fleet_controller={"type": "my_batch"})
     """
+
+    # Rotation timing rows, filled by _set_rotation_row(). Subclasses that
+    # rotate in place allocate them alongside the rest of their _rot_* state.
+    _rot_t_start: np.ndarray
+    _rot_total_angle: np.ndarray
+    _rot_t_accel: np.ndarray
+    _rot_t_const: np.ndarray
+    _rot_t_total: np.ndarray
+    _rot_accel: np.ndarray
+    _rot_decel: np.ndarray
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -455,6 +466,31 @@ class BatchKinematicController(GoalReplacementPolicy, Controller):
         """Set row ``idx``'s path and start its first trajectory at ``now`` from
         ``initial_velocity`` (``None``: from rest). Subclasses implement it."""
         raise NotImplementedError
+
+    def _set_rotation_row(self, idx: int, agent: "Agent", angle: float, t0: float) -> None:
+        """Fill row ``idx``'s rotation timing for an in-place turn of ``angle`` rad from ``t0``.
+
+        Reads the yaw-axis scalar angular limits (``ControllerParams.scalar_max_angular_*``),
+        as the per-agent controllers do, so a per-axis ``[x, y, z]`` limit turns at
+        its ``z`` component. Subclasses own the ``_rot_*`` arrays and the slerp state.
+        """
+        params = agent.controller_params
+        tpi = build_tpi(
+            p0=0.0,
+            pe=angle,
+            vmax=params.scalar_max_angular_vel(),
+            accel=params.scalar_max_angular_accel(),
+            t0=t0,
+            decel=params.scalar_max_angular_decel(),
+        )
+        profile = extract_profile(tpi)
+        self._rot_t_start[idx] = t0
+        self._rot_total_angle[idx] = angle
+        self._rot_t_accel[idx] = profile.t_accel
+        self._rot_t_const[idx] = profile.t_const
+        self._rot_t_total[idx] = profile.t_total
+        self._rot_accel[idx] = profile.accel
+        self._rot_decel[idx] = profile.decel
 
     def _row_start_velocity(self, idx: int) -> np.ndarray:
         """World-frame velocity row ``idx``'s trajectory starts with.
