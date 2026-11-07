@@ -657,6 +657,27 @@ C++/Rust のブリッジ) の話になるので、1.05 倍は目標から外す�
   collision の残りは broad phase の配列処理と Python の台帳) ので、速度のためには着手しない。P4 に残る価値は
   narrow phase から PyBullet を外して headless の静的プリミティブに Bullet のボディを作らなくする (spawn 時間、
   P2 の follow-up) ことで、必要になったときに判断する。
+- **PR 作成時 (2026-11-07):** `perf/p1-collision-store` に upstream main `f7a70b7` (#116 の step hook の
+  event bus 化、#110/#112 の ramped joint、#109 の関節名 API、#148) をマージし、P0 のベンチマークブランチも
+  取り込んで 1 本の PR にした。衝突は 7 ファイル: 関節 / リンク名の解決は main 側も #109 でクライアントを
+  渡すようになっていたので main 側を採り、重複する Fixed 項目は落とした。プラグインとコールバックの
+  `needs_mirror` の計数は event bus 登録 (`_add_plugin` / `register_callback`) に移した。
+  lint、フルスイート 4102 passed、docs ビルド (warnings = errors) を確認。
+  同一セッションで main `f7a70b7` と交互に再計測 (1000 台 3 回中央値、10000 台 1 回):
+
+  | シーン | main `f7a70b7` | ブランチ |
+  |---|---|---|
+  | 1000 sparse | 9.24 ms (10.8x) | 1.17 ms (85x) |
+  | 1000 dense | 8.82 ms (11.3x) | 1.25 ms (80x) |
+  | 1000 carrying | 27.3 ms (3.7x) | 2.18 ms (46x) |
+  | 1000 idle | 0.51 ms (198x) | 0.18 ms (554x) |
+  | 200 warehouse (33k 静的) | 3.27 ms (30.6x) | 0.52 ms (194x) |
+  | 10000 sparse | 170 ms (0.6x) | 14.5 ms (6.9x) |
+  | 10000 dense | 170 ms (0.6x) | 17.8 ms (5.6x) |
+  | 10000 carrying | 403 ms (0.2x) | 28.7 ms (3.5x) |
+
+  main のマージで数値は変わっていない (1000 台 sparse 1.19 → 1.17 ms)。`docs/benchmarking/results.md` に
+  同じ表を載せた。P5 (state plane、`perf/p5a` / `p5b` / `p5c`) と PC は別 PR のまま。
 - **PC の後:** `accepted` モードで最大速度の 1000 台の `/fleet/navigate` の ack が 10 ms を超えていれば、コマンドリングを
   follow-up から本計画に入れる (2026-11-05: `applied` 既定で計測済み。`accepted` の計測はスケールチェッカーに
   `ack_mode` を渡す口を足してから)。
