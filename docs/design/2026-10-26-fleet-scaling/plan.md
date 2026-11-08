@@ -709,6 +709,14 @@ C++/Rust のブリッジ) の話になるので、1.05 倍は目標から外す�
   (59x)、2000 台 15.91 ms → 3.33 ms、100 台 0.56 → 0.43 ms。spawn は 6-16% 遅い (列ストアへの行登録。follow-up
   の spawn cost に含める)、メモリは同じ。v0.9.0 側の計測はリリースの表を再現した。README / index の表と
   `benchmark_sweep_10.0s.json` はリリース時の更新に委ね、本 PR では触らない。
+- **#149 の follow-up レビュー対応 (2026-11-08、`9f098b3`):** maintainer の再実行で 11 項目すべて main と一致。残った
+  軽微な 2 点: クラス本体の `_needs_update = True` (旧来の書き方) が property を隠す → `__init_subclass__` で
+  `_wants_update` に移して属性を消す。`agent.update(dt)` を手で呼ぶループでは batch 化した plugin が動かない →
+  CHANGELOG に明記。Copilot の 2 回目の指摘から: update loop 中に他オブジェクトの削除や自分の flag の解除で
+  次のオブジェクトが飛ばされる → スナップショット上を回り、離脱した集合 (`_updatable_left`) を飛ばす
+  (1000 体で 9 µs、10000 体で 58 µs/ステップ)。generator を `sync_mirror()` に渡す件は元から動作 (テストで固定)。
+  idle な batch agent の `update()` 呼び出しは follow-up のまま (wake 経路は別 PR)。フルスイート 4132 passed、
+  parity golden 不変。
 - **PC の後:** `accepted` モードで最大速度の 1000 台の `/fleet/navigate` の ack が 10 ms を超えていれば、コマンドリングを
   follow-up から本計画に入れる (2026-11-05: `applied` 既定で計測済み。`accepted` の計測はスケールチェッカーに
   `ack_mode` を渡す口を足してから)。
