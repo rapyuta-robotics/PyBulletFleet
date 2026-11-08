@@ -410,6 +410,13 @@ class SimObject:
             from pybullet_fleet.entity_registry import register_entity_class
 
             register_entity_class(name, cls)
+        # A class body that says ``_needs_update = True`` (the old spelling)
+        # would hide the property: keep the value as ``_wants_update`` and
+        # let the property show through again.
+        wants = cls.__dict__.get("_needs_update")
+        if wants is not None and not isinstance(wants, property):
+            cls._wants_update = bool(wants)
+            delattr(cls, "_needs_update")
 
     def __init__(
         self,
@@ -502,10 +509,12 @@ class SimObject:
     # ------------------------------------------------------------------
 
     def update(self, dt: float) -> bool:
-        """Called every simulation step for objects with ``_needs_update = True``.
+        """Called every simulation step while ``_needs_update`` is true.
 
         Override in subclasses to implement per-step behavior (e.g. device
-        state machines, animated objects).
+        state machines, animated objects), and opt in with the class
+        attribute ``_wants_update = True`` (``_needs_update = True`` in a
+        class body means the same), or by assigning ``self._needs_update``.
 
         Args:
             dt: Time step in seconds.
@@ -1321,9 +1330,10 @@ class SimObject:
         """Whether the simulation calls :meth:`update` every step.
 
         A subclass sets the class attribute ``_wants_update = True`` (as
-        :class:`Agent` does), or assigns ``self._needs_update`` at any time,
-        also after ``super().__init__()``: the simulation's update loop
-        follows the change at once.
+        :class:`Agent` does; ``_needs_update = True`` in a class body is
+        kept as that), or assigns ``self._needs_update`` at any time, also
+        after ``super().__init__()``: the simulation's update loop follows
+        the change at once.
         """
         return self._wants_update
 

@@ -55,8 +55,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   agent whose class answers `is_moving` itself (`PluginBatch.add()` may
   return `False` to leave a plugin to its agent), and a plugin on an agent
   outside a simulation. A batched plugin is updated by the simulation's
-  step, not by `Agent.update()`. An agent whose plugins are all in batches
-  takes the batch-driven fast path in `update()`.
+  step, not by `Agent.update()`: a loop that calls `agent.update(dt)` by
+  hand instead of `step_once()` no longer drains a plain `BatteryPlugin`
+  on an agent in a simulation (step the simulation, or use a subclass,
+  which stays per agent). An agent whose plugins are all in batches takes
+  the batch-driven fast path in `update()`.
 - A `MoveAction` on a batch-driven agent no longer polls its request every
   step: once the batch controller follows (or holds) the request, the agent
   sleeps, and the controller wakes it when the request's fate changes (the
@@ -83,7 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   of tens of thousands of static tiles no longer pays for them each step.
   `_needs_update` is a property: a subclass may set it at any time, also
   after `super().__init__()`, and the loop follows the change at once; a
-  removed object leaves the loop whatever its flag says.
+  removed object leaves the loop whatever its flag says. A class body that
+  says `_needs_update = True` (the old spelling) is kept as
+  `_wants_update = True`, so the property still works for its instances.
+  The loop runs over a snapshot: an `update()` that removes another object
+  or clears its flag does not make the loop skip the next object.
   A batch-driven agent with nothing of its own to run this step (no action,
   no joint on its way, nothing attached, no plugin, no entity event
   handlers) is skipped: its motion is the batch controller's. An agent's

@@ -752,6 +752,10 @@ class MultiRobotSimulationCore:
         # The objects with a per-step update() (agents, devices): the step
         # visits these, not every body in the scene.
         self._updatable: List[SimObject] = []
+        # The objects that left _updatable since the update loop began: the
+        # loop runs over a snapshot and skips these (an update() may remove
+        # another object, or clear its _needs_update).
+        self._updatable_left: Set[SimObject] = set()
         #: Bumped when an object is added, removed or renamed: readers that
         #: cache the fleet's rows and names (the state plane) compare it.
         self._fleet_revision: int = 0
@@ -2024,6 +2028,8 @@ class MultiRobotSimulationCore:
                 self._updatable.remove(obj)
             except ValueError:
                 pass
+            else:
+                self._updatable_left.add(obj)
 
     def _remove_plugin_from_batch(self, plugin: Any) -> None:
         batch = self._plugin_batches.get(type(plugin))
@@ -3466,6 +3472,8 @@ class MultiRobotSimulationCore:
             self._updatable.remove(obj)  # whatever its flag says now
         except ValueError:
             pass
+        else:
+            self._updatable_left.add(obj)
         if isinstance(obj, Agent):
             obj._release_plugins_from_batches()
 
@@ -4886,6 +4894,7 @@ class MultiRobotSimulationCore:
         self._base_children.clear()
         self._base_parent_of.clear()
         self._updatable.clear()
+        self._updatable_left.clear()
         self._plugin_batches.clear()
         self._aabb_links.clear()
         self._pending_geometry_ids.clear()
@@ -5701,9 +5710,11 @@ class MultiRobotSimulationCore:
             # Poses written from pre_step are still pending (buffered).
             self._restamp_pending_pose_cache()
 
-            # Update all simulation objects that need per-step updates.
-            # Agent and Device subclasses set _needs_update = True.
-            # Unified loop replaces the former _agents-only iteration.
+            # Update the objects with a per-step update (_updatable: agents,
+            # devices, a subclass with _wants_update = True or that set its
+            # _needs_update). The loop runs over a snapshot of the list and
+            # skips the objects that leave it meanwhile: an update() may
+            # remove another object or clear its _needs_update.
             if measure_timing:
                 t0 = time.perf_counter()
 
@@ -5721,8 +5732,13 @@ class MultiRobotSimulationCore:
 
             kinematic = self._kinematic_objects
             moved_ids = self._moved_this_step
-            for obj in self._updatable:
-                if obj.update(self._params.timestep) and obj.object_id in kinematic:
+            left = self._updatable_left
+            left.clear()
+            dt = self._params.timestep
+            for obj in tuple(self._updatable):
+                if left and obj in left:
+                    continue
+                if obj.update(dt) and obj.object_id in kinematic:
                     moved_ids.add(obj.object_id)
             # Agent plugins with a batch: every plugin of the class in one call.
             for batch in self._plugin_batches.values():

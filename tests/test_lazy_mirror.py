@@ -272,3 +272,12 @@ def test_a_mirror_request_syncs_the_pending_poses_and_a_released_one_stops_the_m
     assert not sim._mirror_always  # the request is released with the callback
     move_in_step(sim, obj, 7.0)
     assert raw_x(sim, body) == 5.0  # lazy again
+
+
+def test_sync_mirror_takes_any_iterable_of_ids(sim):
+    objs = [box(sim, 10.0 * k) for k in range(3)]
+    for k, obj in enumerate(objs):
+        move_in_step(sim, obj, 10.0 * k + 5.0)
+    assert [raw_x(sim, obj._body_id) for obj in objs] == [0.0, 10.0, 20.0]  # pending after lazy steps
+    sim.sync_mirror(obj.object_id for obj in objs)  # a generator, not a sequence
+    assert [raw_x(sim, obj._body_id) for obj in objs] == [5.0, 15.0, 25.0]

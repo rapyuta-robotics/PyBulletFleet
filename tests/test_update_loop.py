@@ -248,3 +248,72 @@ def test_a_subclass_may_ask_for_updates_after_init_and_a_removed_object_gets_non
     for _ in range(3):
         sim.step_once()
     assert obj.calls == 6  # removed while dormant: never visited again
+
+
+class OldSpellingBox(SimObject):
+    """A subclass that opts in the old way, with ``_needs_update = True`` in its class body."""
+
+    _needs_update = True  # type: ignore[assignment]  # kept as _wants_update by __init_subclass__
+    calls: int = 0
+
+    def update(self, dt: float) -> bool:
+        self.calls += 1
+        return False
+
+
+def _counting_box(cls, sim, x=0.0):
+    shape = ShapeParams(shape_type="box", half_extents=[0.1, 0.1, 0.1])
+    obj = cls.from_mesh(visual_shape=shape, collision_shape=shape, pose=Pose.from_xyz(x, 0.0, 0.1), mass=0.0, sim_core=sim)
+    assert isinstance(obj, cls)
+    return obj
+
+
+def test_a_class_body_may_still_say_needs_update_and_the_property_keeps_working(sim):
+    assert OldSpellingBox._wants_update is True
+    assert isinstance(SimObject.__dict__["_needs_update"], property)
+    obj = _counting_box(OldSpellingBox, sim)
+    for _ in range(3):
+        sim.step_once()
+    assert obj.calls == 3
+    obj._needs_update = False  # reaches the property, so the loop drops the object at once
+    for _ in range(3):
+        sim.step_once()
+    assert obj.calls == 3
+
+
+class RemovingBox(CountingBox):
+    """Removes another object (or drops itself) from inside its update."""
+
+    victim: "SimObject | None" = None
+    drop_self: bool = False
+
+    def update(self, dt: float) -> bool:
+        super().update(dt)
+        if self.victim is not None and self.sim_core is not None:
+            self.sim_core.remove_object(self.victim)
+            self.victim = None
+        if self.drop_self:
+            self._needs_update = False
+        return False
+
+
+def test_an_update_that_removes_another_object_does_not_skip_the_next_one(sim):
+    first = _counting_box(RemovingBox, sim, 0.0)
+    second = _counting_box(CountingBox, sim, 1.0)
+    third = _counting_box(CountingBox, sim, 2.0)
+    first.victim = second
+    sim.step_once()
+    assert (first.calls, second.calls, third.calls) == (1, 0, 1)  # the removed one is skipped, the next is not
+    assert second.object_id not in sim._sim_objects_dict
+    sim.step_once()
+    assert (first.calls, second.calls, third.calls) == (2, 0, 2)
+
+
+def test_an_update_that_clears_its_own_flag_does_not_skip_the_next_object(sim):
+    first = _counting_box(RemovingBox, sim, 0.0)
+    second = _counting_box(CountingBox, sim, 1.0)
+    first.drop_self = True
+    sim.step_once()
+    assert (first.calls, second.calls) == (1, 1)
+    sim.step_once()
+    assert (first.calls, second.calls) == (1, 2)  # first left the loop, second stays
