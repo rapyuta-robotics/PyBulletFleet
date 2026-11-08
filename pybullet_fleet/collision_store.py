@@ -28,6 +28,10 @@ MODE_DISABLED = 3
 
 _CELL_OFFSET = 1 << 20  # cells are packed as unsigned offsets of this size per axis
 _CELL_SPAN = 1 << 21
+#: A query box is answered through the hash when it spans at most this many
+#: cells per row of the store (a scan tests every row; a cell costs about as
+#: much as this many rows).
+_ROWS_PER_CELL = 4
 
 Box = Tuple[Tuple[float, float, float], Tuple[float, float, float]]
 
@@ -96,6 +100,9 @@ class CollisionStore:
         self._moving_keys = np.empty(0, np.int64)
         self._moving_rows = np.empty(0, np.int64)
         self._hash_built = False
+        # The rows with an AABB that the hash leaves out (collision DISABLED),
+        # as of the last sync; None when the rows moved since.
+        self._boxed_unregistered: Optional[np.ndarray] = None
 
     def _allocate(self, capacity: int) -> None:
         self.object_id = np.zeros(capacity, np.int64)
@@ -254,6 +261,7 @@ class CollisionStore:
         if self._hash_built:
             self._static_keys, self._static_rows = self._drop_row(self._static_keys, self._static_rows, row, last)
             self._moving_keys, self._moving_rows = self._drop_row(self._moving_keys, self._moving_rows, row, last)
+        self._boxed_unregistered = None
         moved: Optional[int] = None
         n = self._n
         parent_row = self.parent_row[:n]
@@ -286,6 +294,7 @@ class CollisionStore:
         self._moving_keys = np.empty(0, np.int64)
         self._moving_rows = np.empty(0, np.int64)
         self._hash_built = False
+        self._boxed_unregistered = None
 
     def rows(self, object_ids: Sequence[int]) -> np.ndarray:
         """The rows of the given objects, skipping ids without a row."""
@@ -382,14 +391,78 @@ class CollisionStore:
         return float(np.sort(extents)[len(extents) // 2])
 
     def query_overlapping(self, lo: Sequence[float], hi: Sequence[float]) -> np.ndarray:
-        """Rows with an AABB overlapping the box ``[lo, hi]``."""
+        """Rows with an AABB overlapping the box ``[lo, hi]``, in row order.
+
+        Through the spatial hash when it exists and the box spans few cells
+        (:data:`_ROWS_PER_CELL`): the rows in the box's cells, the rows the
+        hash does not hold up to date (changed since its last sync, or
+        collision DISABLED with a box) are tested against the box exactly, so
+        the answer is the same as a scan of every row's AABB, which is what a
+        wide box, or a store without a hash, gets.
+        """
         n = self._n
         if n == 0:
             return np.empty(0, np.int64)
         lo_a = np.asarray(lo, dtype=float)
         hi_a = np.asarray(hi, dtype=float)
-        inside = (self.aabb_min[:n] <= hi_a).all(axis=1) & (self.aabb_max[:n] >= lo_a).all(axis=1)
-        return np.flatnonzero(inside & self.has_aabb[:n])
+        rows = self._rows_in_cells(lo_a, hi_a)
+        if rows is None:
+            inside = (self.aabb_min[:n] <= hi_a).all(axis=1) & (self.aabb_max[:n] >= lo_a).all(axis=1)
+            return np.flatnonzero(inside & self.has_aabb[:n])
+        inside = (self.aabb_min[rows] <= hi_a).all(axis=1) & (self.aabb_max[rows] >= lo_a).all(axis=1)
+        return rows[inside & self.has_aabb[rows]]
+
+    def _rows_in_cells(self, lo: np.ndarray, hi: np.ndarray) -> Optional[np.ndarray]:
+        """The rows that may hold an AABB overlapping ``[lo, hi]``, by the hash: None when a scan is the better path.
+
+        A row is registered in every cell its AABB (enlarged by the margin)
+        touches, so a row overlapping the box has an entry in one of the
+        box's cells, as of the last sync. The rows changed since (dirty) and
+        the rows the hash leaves out are added whatever their cells.
+        """
+        if self.cell_size is None or not self._hash_built:
+            return None
+        n = self._n
+        cell = self.cell_size
+        x0, y0, z0 = (math.floor(v / cell) for v in lo.tolist())
+        x1, y1, z1 = (math.floor(v / cell) for v in hi.tolist())
+        cells = (x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1)
+        if cells * _ROWS_PER_CELL > n:
+            return None
+        if cells == 1:
+            keys = np.array([((x0 + _CELL_OFFSET) * _CELL_SPAN + (y0 + _CELL_OFFSET)) * _CELL_SPAN + (z0 + _CELL_OFFSET)])
+        else:
+            xs = np.arange(x0 + _CELL_OFFSET, x1 + _CELL_OFFSET + 1, dtype=np.int64)
+            ys = np.arange(y0 + _CELL_OFFSET, y1 + _CELL_OFFSET + 1, dtype=np.int64)
+            zs = np.arange(z0 + _CELL_OFFSET, z1 + _CELL_OFFSET + 1, dtype=np.int64)
+            keys = ((xs[:, None, None] * _CELL_SPAN + ys[None, :, None]) * _CELL_SPAN + zs[None, None, :]).ravel()
+        parts = []
+        dirty = self.hash_dirty[:n]
+        if dirty.any():
+            parts.append(np.flatnonzero(dirty))
+        if self._boxed_unregistered is None:
+            self._boxed_unregistered = np.flatnonzero(self.has_aabb[:n] & (self.mode[:n] == MODE_DISABLED))
+        if len(self._boxed_unregistered):
+            parts.append(self._boxed_unregistered)
+        # A row has at most one entry per cell, and a side holds each row
+        # once per cell, so the hash's rows repeat only across several cells.
+        distinct = cells == 1 and not parts
+        for side_keys, side_rows in ((self._static_keys, self._static_rows), (self._moving_keys, self._moving_rows)):
+            if len(side_keys) == 0:
+                continue
+            left = np.searchsorted(side_keys, keys, "left")
+            right = np.searchsorted(side_keys, keys, "right")
+            counts = right - left
+            total = int(counts.sum())
+            if total == 0:
+                continue
+            starts = np.cumsum(counts) - counts
+            parts.append(side_rows[np.repeat(left - starts, counts) + np.arange(total)])
+        if not parts:
+            return np.empty(0, np.int64)
+        if len(parts) == 1 and distinct:
+            return np.sort(parts[0])
+        return np.unique(np.concatenate(parts))
 
     # --- spatial hash -----------------------------------------------------
 
@@ -479,6 +552,7 @@ class CollisionStore:
                 self._moving_keys, self._moving_rows = self._sorted_entries(rows[~static])
         self.hash_dirty[:n] = False
         self._hash_built = True
+        self._boxed_unregistered = np.flatnonzero(self.has_aabb[:n] & (self.mode[:n] == MODE_DISABLED))
 
     def _sorted_entries(self, rows: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """The sorted ``(keys, rows)`` entries of the registered rows among ``rows``; their cell ranges are stored."""

@@ -145,7 +145,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   events and distances. `sim.cached_aabb(object_id)` and
   `sim.grid_cells_of(object_id)` replace reading the former
   `_cached_aabbs_dict` and `_cached_object_to_cell` dicts, which are gone
-  along with `_cached_spatial_grid`.
+  along with `_cached_spatial_grid`. `query_aabb()` (and through it
+  `find_nearest_pickable()` and an elevator's passenger search) answers a
+  narrow box through the hash, as before: the rows in the box's cells, plus
+  those changed since the hash's last sync, tested against the box; a box
+  spanning more cells than a quarter of the objects tests every AABB in one
+  array operation instead.
 
 ### Added
 

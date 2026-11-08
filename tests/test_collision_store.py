@@ -269,6 +269,46 @@ def test_query_overlapping_reports_rows_with_an_aabb_in_the_box():
     assert store.median_extent() == 1.0
 
 
+@pytest.mark.parametrize("seed", range(8))
+def test_query_overlapping_through_the_hash_is_the_scan(seed):
+    """A narrow box is answered through the hash, whatever the rows did since its sync; a wide one by a scan."""
+    rng = random.Random(seed)
+    store = _random_store(rng, 60, cell=rng.choice([0.5, 1.0, 2.0]), half_margin=(0.1, 0.1, 0.0))
+    store.sync_hash()
+
+    def scan(lo, hi):
+        n = len(store)
+        inside = (store.aabb_min[:n] <= np.asarray(hi)).all(axis=1) & (store.aabb_max[:n] >= np.asarray(lo)).all(axis=1)
+        return np.flatnonzero(inside & store.has_aabb[:n]).tolist()
+
+    def check():
+        for _ in range(25):
+            lo = np.array([rng.uniform(-5, 5) for _ in range(3)])
+            hi = lo + np.array([rng.choice([0.05, 0.3]) for _ in range(3)])
+            assert store._rows_in_cells(lo, hi) is not None  # a few cells: the hash answers
+            assert store.query_overlapping(lo, hi).tolist() == scan(lo, hi)
+        lo, hi = np.array([-10.0, -10.0, -10.0]), np.array([10.0, 10.0, 10.0])
+        assert store._rows_in_cells(lo, hi) is None  # more cells than rows: a scan
+        assert store.query_overlapping(lo, hi).tolist() == scan(lo, hi)
+
+    check()
+    # Rows changed since the sync: the hash still holds their old cells.
+    for row in rng.sample(range(len(store)), 15):
+        lo = np.array([rng.uniform(-4, 4) for _ in range(3)])
+        store.set_aabb(row, (tuple(lo), tuple(lo + rng.choice([0.1, 0.8]))))
+    for mode in (MODE_DISABLED, MODE_NORMAL_3D):  # a mode change, as the core writes it
+        row = rng.randrange(len(store))
+        store.mode[row] = mode
+        store.hash_dirty[row] = True
+    check()
+    # A removed row: the last row takes its place.
+    for _ in range(3):
+        store.remove(int(store.object_id[rng.randrange(len(store))]))
+    check()
+    store.sync_hash()
+    check()
+
+
 def test_capacity_grows_and_keeps_the_columns():
     store = CollisionStore(capacity=1)
     for i in range(10):

@@ -3971,10 +3971,12 @@ class MultiRobotSimulationCore:
     def query_aabb(self, aabb_min: Sequence[float], aabb_max: Sequence[float]) -> List[SimObject]:
         """Objects whose AABB overlaps the box ``[aabb_min, aabb_max]``.
 
-        Tests the AABB the collision system holds for every object, in one
-        array operation, so the cost is a few microseconds per thousand
-        objects. Kinematic and physics objects' boxes are refreshed on every
-        step whatever the collision check frequency, so the answer is for the
+        Answers from the AABBs the collision system holds: through its
+        spatial hash when the box spans few cells (tens of microseconds,
+        whatever the number of objects), by testing every object's AABB in
+        one array operation when it spans many, or before the hash exists.
+        Kinematic and physics objects' boxes are refreshed on every step
+        whatever the collision check frequency, so the answer is for the
         current step.
 
         Objects with collision ``DISABLED`` hold no box; they are tested
